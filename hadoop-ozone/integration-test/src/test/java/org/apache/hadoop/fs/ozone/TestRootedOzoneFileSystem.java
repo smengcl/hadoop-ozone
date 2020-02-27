@@ -18,7 +18,6 @@
 
 package org.apache.hadoop.fs.ozone;
 
-import com.sun.tools.javac.util.List;
 import org.apache.commons.io.IOUtils;
 import org.apache.commons.lang3.RandomStringUtils;
 import org.apache.hadoop.fs.CommonConfigurationKeysPublic;
@@ -52,6 +51,8 @@ import org.junit.rules.Timeout;
 
 import java.io.IOException;
 import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.Collections;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Set;
@@ -643,7 +644,7 @@ public class TestRootedOzoneFileSystem {
         userRights, ACCESS);
     // Construct VolumeArgs
     VolumeArgs volumeArgs = new VolumeArgs.Builder()
-        .setAcls(new ArrayList<>(List.of(aclWorldAccess))).build();
+        .setAcls(Collections.singletonList(aclWorldAccess)).build();
     // Sanity check
     Assert.assertNull(volumeArgs.getOwner());
     Assert.assertNull(volumeArgs.getAdmin());
