@@ -21,6 +21,7 @@ package org.apache.hadoop.fs.ozone;
 import org.apache.commons.io.IOUtils;
 import org.apache.commons.lang3.RandomStringUtils;
 import org.apache.hadoop.fs.CommonConfigurationKeysPublic;
+import org.apache.hadoop.fs.FSDataOutputStream;
 import org.apache.hadoop.fs.FileStatus;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
@@ -672,12 +673,9 @@ public class TestRootedOzoneFileSystem {
     // Write under /tmp/, OFS will create the temp bucket if not exist
     fs.mkdirs(new Path("/tmp/dir1"));
 
-//    FSDataOutputStream stream = fs.create(new Path("/tmp/dir1/file1"));
-//    stream.write(1);
-
-//    try (FSDataOutputStream stream = fs.create(new Path("/tmp/dir1/file1"))) {
-//      stream.write(1);
-//    }
+    try (FSDataOutputStream stream = ofs.create(new Path("/tmp/dir1/file1"))) {
+      stream.write(1);
+    }
 
     // Verify temp bucket creation
     OzoneBucket bucket = vol.getBucket(hashedUsername);
@@ -687,6 +685,12 @@ public class TestRootedOzoneFileSystem {
     Assert.assertEquals(1, fileStatuses.length);
     Assert.assertEquals(
         "/tmp/dir1", fileStatuses[0].getPath().toUri().getPath());
+    // Verify file1 creation
+    FileStatus[] fileStatusesInDir1 =
+        fs.listStatus(new Path("/tmp/dir1"));
+    Assert.assertEquals(1, fileStatusesInDir1.length);
+    Assert.assertEquals("/tmp/dir1/file1",
+        fileStatusesInDir1[0].getPath().toUri().getPath());
   }
 
 }
