@@ -18,7 +18,7 @@
 SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" >/dev/null 2>&1 && pwd )"
 
 : "${SCM_DIR:="${OZONE_VOLUME}/scm"}"
-: "${OZONE_RUNNER_VERSION:="20200625-1"}"
+: "${OZONE_RUNNER_VERSION:="dev"}"
 : "${OZONE_RUNNER_IMAGE:="doaste/ozone-runner"}"
 
 docker run --rm -v "${SCM_DIR}":/scm -v "${SCRIPT_DIR}/1.0.0":/upgrade -w /scm/metadata "${OZONE_RUNNER_IMAGE}:${OZONE_RUNNER_VERSION}" /upgrade/01-migrate-scm-db.sh
