@@ -14,7 +14,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-FROM apache/ozone-runner:@docker.ozone-runner.version@
+FROM doaste/ozone-runner:@docker.ozone-runner.version@
 
 
 ADD --chown=hadoop . /opt/hadoop
