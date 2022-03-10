@@ -50,7 +50,7 @@ with_new_version_pre_finalized() {
 
   validate old1
   # HDDS-6261: overwrite the same keys intentionally
-  generate old1
+  generate old1 --exclude create-volume-and-bucket
 
   generate new1
   validate new1
@@ -65,7 +65,7 @@ with_old_version_downgraded() {
 
   # HDDS-6261: overwrite the same keys again to trigger the precondition check
   # that exists <= 1.1.0 OM
-  generate old1
+  generate old1 --exclude create-volume-and-bucket
 }
 
 with_new_version_finalized() {
