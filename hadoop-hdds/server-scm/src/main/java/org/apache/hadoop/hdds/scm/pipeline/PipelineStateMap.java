@@ -391,6 +391,18 @@ class PipelineStateMap {
       // query2OpenPipelines
       if (pipelineList != null) {
         pipelineList.remove(pipeline);
+      } else {
+
+        LOG.error("!!!! pipelineList is null for ReplicationConfig: {}",
+            pipeline.getReplicationConfig());
+        new RuntimeException().printStackTrace();
+        try {
+          // Block here
+          System.in.read();
+        } catch (IOException e) {
+          throw new RuntimeException(e);
+        }
+
       }
     }
     return updatedPipeline;
