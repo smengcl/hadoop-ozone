@@ -77,6 +77,7 @@ with_new_version_finalized() {
   validate new1
   validate old2
 
+  echo "!!!! Might trigger the bug in the next step"
   generate new2
   validate new2
 }

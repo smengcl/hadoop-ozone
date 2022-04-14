@@ -87,12 +87,17 @@ services:
     environment:
       ENSURE_SCM_INITIALIZED: /data/metadata/scm/current/VERSION
       OZONE-SITE.XML_hdds.scm.safemode.min.datanode: ${OZONE_SAFEMODE_MIN_DATANODES:-1}
+      OZONE_SCM_OPTS: -agentlib:jdwp=transport=dt_socket,server=y,suspend=n,address=*:5005
+      OZONE_OPTS: -Dhadoop.root.logger=TRACE,console
+      OZONE_DAEMON_ROOT_LOGGER: TRACE,RFA
       <<: *replication
     networks:
       net:
         ipv4_address: 10.9.0.14
     ports:
       - 9876:9876
+      - 9860:9860
+      - 5005:5005
     volumes:
       - ${OZONE_VOLUME}/scm:/data
       - *ozone-dir

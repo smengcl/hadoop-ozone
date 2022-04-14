@@ -203,11 +203,13 @@ execute_robot_test(){
 
   if [[ ${rc} -gt 0 ]] && [[ ${rc} -le 250 ]]; then
     create_stack_dumps
+    echo "!!!! yay, exit code non-zero. we have a repro"
   fi
 
   set -e
 
   if [[ ${rc} -gt 0 ]]; then
+    read -p "Press Enter to DESTROY the cluster .."
     stop_docker_env
   fi
 
