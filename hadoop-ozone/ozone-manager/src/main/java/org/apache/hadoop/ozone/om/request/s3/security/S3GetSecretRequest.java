@@ -22,7 +22,7 @@ import java.io.IOException;
 import java.util.HashMap;
 import java.util.Map;
 
-import com.google.common.base.Optional;
+import org.apache.ozone.thirdparty.com.google.common.base.Optional;
 import org.apache.commons.codec.digest.DigestUtils;
 import org.apache.hadoop.ozone.om.request.util.OmResponseUtil;
 import org.slf4j.Logger;

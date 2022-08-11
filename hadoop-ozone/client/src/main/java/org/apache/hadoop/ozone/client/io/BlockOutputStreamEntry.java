@@ -34,7 +34,7 @@ import org.apache.hadoop.hdds.scm.storage.RatisBlockOutputStream;
 import org.apache.hadoop.hdds.security.token.OzoneBlockTokenIdentifier;
 import org.apache.hadoop.security.token.Token;
 
-import com.google.common.annotations.VisibleForTesting;
+import org.apache.ozone.thirdparty.com.google.common.annotations.VisibleForTesting;
 
 /**
  * A BlockOutputStreamEntry manages the data writes into the DataNodes.

@@ -17,7 +17,7 @@
  */
 package org.apache.hadoop.ozone.container.ozoneimpl;
 
-import com.google.common.annotations.VisibleForTesting;
+import org.apache.ozone.thirdparty.com.google.common.annotations.VisibleForTesting;
 import org.apache.hadoop.ozone.container.common.interfaces.Container;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;

@@ -20,7 +20,7 @@ package org.apache.hadoop.hdds.utils.db;
 
 import java.io.IOException;
 
-import com.google.common.primitives.Ints;
+import org.apache.ozone.thirdparty.com.google.common.primitives.Ints;
 
 /**
  * Codec to convert Integer to/from byte array.

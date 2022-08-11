@@ -18,7 +18,7 @@
 package org.apache.hadoop.hdds.scm.container.placement.metrics;
 
 import com.fasterxml.jackson.annotation.JsonProperty;
-import com.google.common.base.Preconditions;
+import org.apache.ozone.thirdparty.com.google.common.base.Preconditions;
 import org.apache.hadoop.hdds.server.JsonUtils;
 
 import java.io.IOException;

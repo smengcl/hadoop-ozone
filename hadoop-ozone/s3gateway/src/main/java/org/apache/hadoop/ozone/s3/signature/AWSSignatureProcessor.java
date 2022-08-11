@@ -37,7 +37,7 @@ import org.apache.hadoop.ozone.s3.exception.OS3Exception;
 import org.apache.hadoop.ozone.s3.exception.S3ErrorTable;
 import org.apache.hadoop.ozone.s3.signature.SignatureInfo.Version;
 
-import com.google.common.annotations.VisibleForTesting;
+import org.apache.ozone.thirdparty.com.google.common.annotations.VisibleForTesting;
 import org.apache.hadoop.ozone.s3.util.AuditUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;

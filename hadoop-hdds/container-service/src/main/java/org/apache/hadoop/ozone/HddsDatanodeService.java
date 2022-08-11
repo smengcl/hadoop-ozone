@@ -69,8 +69,8 @@ import org.apache.hadoop.security.authentication.client.AuthenticationException;
 import org.apache.hadoop.util.ServicePlugin;
 import org.apache.hadoop.util.Time;
 
-import com.google.common.annotations.VisibleForTesting;
-import com.google.common.base.Preconditions;
+import org.apache.ozone.thirdparty.com.google.common.annotations.VisibleForTesting;
+import org.apache.ozone.thirdparty.com.google.common.base.Preconditions;
 import com.sun.jmx.mbeanserver.Introspector;
 
 import static org.apache.hadoop.hdds.security.x509.certificate.utils.CertificateCodec.getX509Certificate;

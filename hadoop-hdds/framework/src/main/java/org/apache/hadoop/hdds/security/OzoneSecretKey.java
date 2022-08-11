@@ -16,7 +16,7 @@
  */
 package org.apache.hadoop.hdds.security;
 
-import com.google.common.base.Preconditions;
+import org.apache.ozone.thirdparty.com.google.common.base.Preconditions;
 import com.google.protobuf.ByteString;
 import java.io.ByteArrayInputStream;
 import java.io.DataInput;

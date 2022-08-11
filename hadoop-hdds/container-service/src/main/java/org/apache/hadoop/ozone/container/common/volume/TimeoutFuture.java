@@ -20,8 +20,8 @@
  */
 package org.apache.hadoop.ozone.container.common.volume;
 
-import com.google.common.base.Preconditions;
-import com.google.common.util.concurrent.ListenableFuture;
+import org.apache.ozone.thirdparty.com.google.common.base.Preconditions;
+import org.apache.ozone.thirdparty.com.google.common.util.concurrent.ListenableFuture;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 

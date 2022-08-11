@@ -21,7 +21,7 @@ package org.apache.hadoop.ozone.om.response;
 import java.io.IOException;
 import java.util.concurrent.CompletableFuture;
 
-import com.google.common.base.Preconditions;
+import org.apache.ozone.thirdparty.com.google.common.base.Preconditions;
 import org.apache.hadoop.ozone.om.OMMetadataManager;
 import org.apache.hadoop.ozone.om.helpers.BucketLayout;
 import org.apache.hadoop.ozone.protocol.proto.OzoneManagerProtocolProtos;

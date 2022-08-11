@@ -17,7 +17,7 @@
  */
 package org.apache.hadoop.hdds.utils.db;
 
-import com.google.common.primitives.Longs;
+import org.apache.ozone.thirdparty.com.google.common.primitives.Longs;
 import org.junit.Test;
 
 import static org.junit.Assert.assertEquals;

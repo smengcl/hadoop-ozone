@@ -45,7 +45,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.function.Function;
 import java.util.stream.Collectors;
 
-import com.google.common.util.concurrent.ThreadFactoryBuilder;
+import org.apache.ozone.thirdparty.com.google.common.util.concurrent.ThreadFactoryBuilder;
 import org.apache.hadoop.crypto.CryptoInputStream;
 import org.apache.hadoop.crypto.CryptoOutputStream;
 import org.apache.hadoop.crypto.key.KeyProvider;
@@ -150,12 +150,12 @@ import org.apache.hadoop.ozone.security.acl.OzoneObj;
 import org.apache.hadoop.security.UserGroupInformation;
 import org.apache.hadoop.security.token.Token;
 
-import com.google.common.annotations.VisibleForTesting;
-import com.google.common.base.Preconditions;
-import com.google.common.cache.Cache;
-import com.google.common.cache.CacheBuilder;
-import com.google.common.cache.RemovalListener;
-import com.google.common.cache.RemovalNotification;
+import org.apache.ozone.thirdparty.com.google.common.annotations.VisibleForTesting;
+import org.apache.ozone.thirdparty.com.google.common.base.Preconditions;
+import org.apache.ozone.thirdparty.com.google.common.cache.Cache;
+import org.apache.ozone.thirdparty.com.google.common.cache.CacheBuilder;
+import org.apache.ozone.thirdparty.com.google.common.cache.RemovalListener;
+import org.apache.ozone.thirdparty.com.google.common.cache.RemovalNotification;
 
 import static org.apache.hadoop.ozone.OzoneAcl.AclScope.ACCESS;
 import static org.apache.hadoop.ozone.OzoneConfigKeys.OZONE_CLIENT_KEY_PROVIDER_CACHE_EXPIRY;

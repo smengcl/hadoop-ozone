@@ -18,7 +18,7 @@
 
 package org.apache.hadoop.ozone.om.request.volume;
 
-import com.google.common.base.Optional;
+import org.apache.ozone.thirdparty.com.google.common.base.Optional;
 import org.apache.hadoop.ozone.om.OMMetadataManager;
 import org.apache.hadoop.ozone.om.exceptions.OMException;
 import org.apache.hadoop.ozone.om.helpers.OmVolumeArgs;

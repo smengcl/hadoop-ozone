@@ -18,7 +18,7 @@
 
 package org.apache.hadoop.ozone.common.utils;
 
-import com.google.common.base.Preconditions;
+import org.apache.ozone.thirdparty.com.google.common.base.Preconditions;
 import java.nio.ByteBuffer;
 import java.util.ArrayList;
 import java.util.List;

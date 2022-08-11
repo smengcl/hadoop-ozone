@@ -17,7 +17,7 @@
  */
 package org.apache.hadoop.ozone.om.request.key.acl;
 
-import com.google.common.collect.Lists;
+import org.apache.ozone.thirdparty.com.google.common.collect.Lists;
 import org.apache.hadoop.ozone.OzoneAcl;
 import org.apache.hadoop.ozone.OzoneConsts;
 import org.apache.hadoop.ozone.audit.AuditLogger;

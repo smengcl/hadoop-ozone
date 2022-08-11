@@ -17,7 +17,7 @@
  */
 package org.apache.hadoop.fs.ozone;
 
-import com.google.common.collect.ImmutableList;
+import org.apache.ozone.thirdparty.com.google.common.collect.ImmutableList;
 import org.apache.commons.lang3.RandomUtils;
 import org.apache.hadoop.fs.FileSystem;
 import org.junit.Test;

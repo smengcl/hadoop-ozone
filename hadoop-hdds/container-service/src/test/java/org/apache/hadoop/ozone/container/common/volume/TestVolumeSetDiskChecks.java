@@ -36,8 +36,8 @@ import org.apache.ozone.test.GenericTestUtils;
 import org.apache.hadoop.util.DiskChecker.DiskErrorException;
 import org.apache.hadoop.util.Timer;
 
-import com.google.common.collect.ImmutableSet;
-import com.google.common.collect.Iterables;
+import org.apache.ozone.thirdparty.com.google.common.collect.ImmutableSet;
+import org.apache.ozone.thirdparty.com.google.common.collect.Iterables;
 import org.apache.commons.io.FileUtils;
 import static org.hamcrest.CoreMatchers.is;
 import org.junit.After;

@@ -18,10 +18,10 @@
 
 package org.apache.hadoop.ozone.common.statemachine;
 
-import com.google.common.base.Supplier;
-import com.google.common.cache.CacheBuilder;
-import com.google.common.cache.CacheLoader;
-import com.google.common.cache.LoadingCache;
+import org.apache.ozone.thirdparty.com.google.common.base.Supplier;
+import org.apache.ozone.thirdparty.com.google.common.cache.CacheBuilder;
+import org.apache.ozone.thirdparty.com.google.common.cache.CacheLoader;
+import org.apache.ozone.thirdparty.com.google.common.cache.LoadingCache;
 
 import java.util.HashMap;
 import java.util.Map;

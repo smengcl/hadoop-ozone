@@ -18,7 +18,7 @@
 
 package org.apache.hadoop.ozone.container.common.volume;
 
-import com.google.common.util.concurrent.ListenableFuture;
+import org.apache.ozone.thirdparty.com.google.common.util.concurrent.ListenableFuture;
 import org.apache.hadoop.hdds.annotation.InterfaceAudience;
 import org.apache.hadoop.hdds.annotation.InterfaceStability;
 import org.apache.hadoop.hdfs.server.datanode.checker.Checkable;

@@ -17,7 +17,7 @@
  */
 package org.apache.hadoop.hdds.scm.node;
 
-import com.google.common.base.Preconditions;
+import org.apache.ozone.thirdparty.com.google.common.base.Preconditions;
 import org.apache.hadoop.hdds.protocol.DatanodeDetails;
 import org.apache.hadoop.hdds.scm.server.SCMDatanodeHeartbeatDispatcher.CommandQueueReportFromDatanode;
 import org.apache.hadoop.hdds.server.events.EventHandler;

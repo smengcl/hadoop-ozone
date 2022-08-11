@@ -18,7 +18,7 @@
 
 package org.apache.hadoop.ozone.shell.volume;
 
-import com.google.common.base.Strings;
+import org.apache.ozone.thirdparty.com.google.common.base.Strings;
 import org.apache.hadoop.hdds.client.OzoneQuota;
 import org.apache.hadoop.ozone.client.OzoneClient;
 import org.apache.hadoop.ozone.client.OzoneVolume;

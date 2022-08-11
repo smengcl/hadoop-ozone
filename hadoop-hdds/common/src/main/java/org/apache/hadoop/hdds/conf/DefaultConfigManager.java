@@ -18,7 +18,7 @@
 
 package org.apache.hadoop.hdds.conf;
 
-import com.google.common.annotations.VisibleForTesting;
+import org.apache.ozone.thirdparty.com.google.common.annotations.VisibleForTesting;
 
 import java.util.HashMap;
 import java.util.Map;

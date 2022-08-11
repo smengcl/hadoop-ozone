@@ -17,7 +17,7 @@
  */
 package org.apache.hadoop.ozone.om.helpers;
 
-import com.google.common.base.Preconditions;
+import org.apache.ozone.thirdparty.com.google.common.base.Preconditions;
 
 import java.util.HashMap;
 import java.util.Map;

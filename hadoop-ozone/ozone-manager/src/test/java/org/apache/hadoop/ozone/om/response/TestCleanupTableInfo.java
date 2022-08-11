@@ -17,8 +17,8 @@
 
 package org.apache.hadoop.ozone.om.response;
 
-import com.google.common.base.Optional;
-import com.google.common.collect.Iterators;
+import org.apache.ozone.thirdparty.com.google.common.base.Optional;
+import org.apache.ozone.thirdparty.com.google.common.collect.Iterators;
 import org.apache.commons.lang3.tuple.Pair;
 import org.apache.hadoop.hdds.client.BlockID;
 import org.apache.hadoop.hdds.client.ReplicationConfig;

@@ -28,7 +28,7 @@ import org.apache.hadoop.ozone.om.multitenant.BucketNameSpace;
 import org.apache.hadoop.ozone.security.acl.OzoneObj;
 import org.apache.hadoop.ozone.security.acl.OzoneObjInfo;
 
-import com.google.common.collect.ImmutableList;
+import org.apache.ozone.thirdparty.com.google.common.collect.ImmutableList;
 
 /**
  * Implements BucketNameSpace which allows exactly ONE VOLUME.

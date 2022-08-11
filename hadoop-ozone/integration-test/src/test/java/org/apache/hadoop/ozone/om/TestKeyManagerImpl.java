@@ -96,8 +96,8 @@ import org.apache.ozone.test.GenericTestUtils;
 import org.apache.ozone.test.LambdaTestUtils;
 import org.apache.hadoop.util.Time;
 
-import com.google.common.base.Optional;
-import com.google.common.collect.Sets;
+import org.apache.ozone.thirdparty.com.google.common.base.Optional;
+import org.apache.ozone.thirdparty.com.google.common.collect.Sets;
 import org.apache.commons.io.FileUtils;
 import org.apache.commons.lang3.RandomStringUtils;
 

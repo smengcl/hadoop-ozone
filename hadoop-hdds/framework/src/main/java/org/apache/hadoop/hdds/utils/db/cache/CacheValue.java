@@ -18,7 +18,7 @@
 
 package org.apache.hadoop.hdds.utils.db.cache;
 
-import com.google.common.base.Optional;
+import org.apache.ozone.thirdparty.com.google.common.base.Optional;
 
 /**
  * CacheValue for the RocksDB Table.

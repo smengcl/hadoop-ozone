@@ -17,8 +17,8 @@
  */
 package org.apache.hadoop.ozone.container.ec.reconstruction;
 
-import com.google.common.base.Preconditions;
-import com.google.common.util.concurrent.ThreadFactoryBuilder;
+import org.apache.ozone.thirdparty.com.google.common.base.Preconditions;
+import org.apache.ozone.thirdparty.com.google.common.util.concurrent.ThreadFactoryBuilder;
 import org.apache.hadoop.hdds.client.BlockID;
 import org.apache.hadoop.hdds.client.ECReplicationConfig;
 import org.apache.hadoop.hdds.conf.ConfigurationSource;

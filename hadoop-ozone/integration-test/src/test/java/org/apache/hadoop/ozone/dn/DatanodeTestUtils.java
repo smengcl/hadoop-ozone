@@ -19,7 +19,7 @@
  */
 package org.apache.hadoop.ozone.dn;
 
-import com.google.common.base.Supplier;
+import org.apache.ozone.thirdparty.com.google.common.base.Supplier;
 import org.apache.hadoop.ozone.container.common.volume.HddsVolume;
 import org.apache.hadoop.ozone.container.common.volume.StorageVolume;
 import org.apache.hadoop.ozone.container.common.volume.MutableVolumeSet;

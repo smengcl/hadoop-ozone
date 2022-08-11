@@ -16,7 +16,7 @@
  */
 package org.apache.hadoop.ozone.om;
 
-import com.google.common.base.Strings;
+import org.apache.ozone.thirdparty.com.google.common.base.Strings;
 import org.apache.hadoop.ozone.OmUtils;
 import org.apache.hadoop.ozone.OzoneAcl;
 import org.apache.hadoop.ozone.om.exceptions.OMException;

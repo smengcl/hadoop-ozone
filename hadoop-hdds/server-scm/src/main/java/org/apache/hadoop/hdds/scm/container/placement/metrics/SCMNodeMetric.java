@@ -17,8 +17,8 @@
 
 package org.apache.hadoop.hdds.scm.container.placement.metrics;
 
-import com.google.common.annotations.VisibleForTesting;
-import com.google.common.base.Preconditions;
+import org.apache.ozone.thirdparty.com.google.common.annotations.VisibleForTesting;
+import org.apache.ozone.thirdparty.com.google.common.base.Preconditions;
 
 /**
  * SCM Node Metric that is used in the placement classes.

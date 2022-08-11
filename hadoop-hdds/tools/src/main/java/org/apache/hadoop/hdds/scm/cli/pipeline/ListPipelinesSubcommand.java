@@ -18,7 +18,7 @@
 
 package org.apache.hadoop.hdds.scm.cli.pipeline;
 
-import com.google.common.base.Strings;
+import org.apache.ozone.thirdparty.com.google.common.base.Strings;
 import org.apache.hadoop.hdds.cli.HddsVersionProvider;
 import org.apache.hadoop.hdds.client.RatisReplicationConfig;
 import org.apache.hadoop.hdds.client.ReplicationConfig;

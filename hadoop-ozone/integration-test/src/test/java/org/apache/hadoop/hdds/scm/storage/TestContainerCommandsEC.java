@@ -18,7 +18,7 @@
 
 package org.apache.hadoop.hdds.scm.storage;
 
-import com.google.common.collect.ImmutableList;
+import org.apache.ozone.thirdparty.com.google.common.collect.ImmutableList;
 import org.apache.commons.lang3.RandomUtils;
 import org.apache.hadoop.hdds.client.BlockID;
 import org.apache.hadoop.hdds.client.ECReplicationConfig;

@@ -275,7 +275,7 @@ Apache License
    com.google.api.grpc:proto-google-common-protos
    com.google.code.gson:gson
    com.google.errorprone:error_prone_annotations
-   com.google.guava:guava
+   com.google.guava:guava   <-- Remove this?
    com.google.inject.extensions:guice-assistedinject
    com.google.inject.extensions:guice-multibindings
    com.google.inject.extensions:guice-servlet

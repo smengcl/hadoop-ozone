@@ -18,7 +18,7 @@
 
 package org.apache.hadoop.ozone.om;
 
-import com.google.common.collect.Lists;
+import org.apache.ozone.thirdparty.com.google.common.collect.Lists;
 import java.io.File;
 import java.io.FileFilter;
 import java.io.IOException;

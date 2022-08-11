@@ -17,7 +17,7 @@
  */
 package org.apache.hadoop.hdds.scm.pipeline;
 
-import com.google.common.util.concurrent.ThreadFactoryBuilder;
+import org.apache.ozone.thirdparty.com.google.common.util.concurrent.ThreadFactoryBuilder;
 import org.apache.commons.collections.iterators.LoopingIterator;
 import org.apache.hadoop.hdds.HddsConfigKeys;
 import org.apache.hadoop.hdds.client.RatisReplicationConfig;

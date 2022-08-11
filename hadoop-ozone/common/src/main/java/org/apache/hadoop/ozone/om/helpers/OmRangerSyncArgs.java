@@ -18,7 +18,7 @@
  */
 package org.apache.hadoop.ozone.om.helpers;
 
-import com.google.common.base.Preconditions;
+import org.apache.ozone.thirdparty.com.google.common.base.Preconditions;
 
 /**
  * This class is used for storing Ranger Sync request args.

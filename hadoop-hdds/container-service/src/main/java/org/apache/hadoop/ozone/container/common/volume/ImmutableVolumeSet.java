@@ -17,7 +17,7 @@
  */
 package org.apache.hadoop.ozone.container.common.volume;
 
-import com.google.common.collect.ImmutableList;
+import org.apache.ozone.thirdparty.com.google.common.collect.ImmutableList;
 
 import java.io.IOException;
 import java.util.Collection;

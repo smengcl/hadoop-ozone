@@ -16,7 +16,7 @@
  */
 package org.apache.hadoop.ozone.container.common.helpers;
 
-import com.google.common.collect.Maps;
+import org.apache.ozone.thirdparty.com.google.common.collect.Maps;
 import org.apache.hadoop.hdds.protocol.proto
     .StorageContainerDatanodeProtocolProtos.DeletedBlocksTransaction;
 import org.apache.hadoop.util.StringUtils;

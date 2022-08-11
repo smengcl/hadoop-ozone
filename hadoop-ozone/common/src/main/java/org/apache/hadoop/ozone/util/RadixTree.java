@@ -17,7 +17,7 @@
  */
 package org.apache.hadoop.ozone.util;
 
-import com.google.common.annotations.VisibleForTesting;
+import org.apache.ozone.thirdparty.com.google.common.annotations.VisibleForTesting;
 import org.apache.hadoop.ozone.OzoneConsts;
 
 import java.util.ArrayList;

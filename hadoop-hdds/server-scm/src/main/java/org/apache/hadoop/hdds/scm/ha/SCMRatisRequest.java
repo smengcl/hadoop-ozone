@@ -20,7 +20,7 @@ package org.apache.hadoop.hdds.scm.ha;
 import java.util.ArrayList;
 import java.util.List;
 
-import com.google.common.base.Preconditions;
+import org.apache.ozone.thirdparty.com.google.common.base.Preconditions;
 import com.google.protobuf.InvalidProtocolBufferException;
 
 import com.google.protobuf.TextFormat;

@@ -25,7 +25,7 @@ import org.apache.hadoop.ozone.client.protocol.ClientProtocol;
 import java.io.Closeable;
 import java.io.IOException;
 
-import com.google.common.annotations.VisibleForTesting;
+import org.apache.ozone.thirdparty.com.google.common.annotations.VisibleForTesting;
 
 /**
  * OzoneClient connects to Ozone Cluster and

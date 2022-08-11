@@ -17,7 +17,7 @@
  */
 package org.apache.hadoop.ozone.om.multitenant;
 
-import com.google.common.base.Preconditions;
+import org.apache.ozone.thirdparty.com.google.common.base.Preconditions;
 import org.apache.hadoop.ozone.om.exceptions.OMException;
 import org.apache.hadoop.ozone.om.exceptions.OMException.ResultCodes;
 import org.slf4j.Logger;

@@ -17,7 +17,7 @@
 
 package org.apache.hadoop.ozone.om.lock;
 
-import com.google.common.base.Preconditions;
+import org.apache.ozone.thirdparty.com.google.common.base.Preconditions;
 import org.apache.hadoop.ozone.om.OMMetadataManager;
 import org.apache.hadoop.ozone.om.hashcodegenerator.StringOMHashCodeGeneratorImpl;
 import org.apache.hadoop.ozone.om.hashcodegenerator.OMHashCodeGenerator;

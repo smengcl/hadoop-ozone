@@ -21,7 +21,7 @@ import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.conf.Configuration.DeprecationDelta;
 import org.apache.hadoop.hdds.conf.OzoneConfiguration;
 
-import com.google.common.annotations.VisibleForTesting;
+import org.apache.ozone.thirdparty.com.google.common.annotations.VisibleForTesting;
 import com.google.inject.Provider;
 
 /**

@@ -17,7 +17,7 @@
  */
 package org.apache.hadoop.hdds.server.events;
 
-import com.google.common.util.concurrent.ThreadFactoryBuilder;
+import org.apache.ozone.thirdparty.com.google.common.util.concurrent.ThreadFactoryBuilder;
 import org.apache.hadoop.hdds.conf.OzoneConfiguration;
 import org.apache.hadoop.util.StringUtils;
 import org.slf4j.Logger;

@@ -59,7 +59,7 @@ import org.apache.hadoop.util.ToolRunner;
 import org.apache.hadoop.fs.TrashPolicy;
 import org.apache.hadoop.ozone.om.TrashPolicyOzone;
 
-import com.google.common.base.Strings;
+import org.apache.ozone.thirdparty.com.google.common.base.Strings;
 import com.google.gson.Gson;
 import com.google.gson.internal.LinkedTreeMap;
 

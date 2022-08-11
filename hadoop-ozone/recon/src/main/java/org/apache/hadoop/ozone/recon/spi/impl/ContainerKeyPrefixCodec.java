@@ -28,8 +28,8 @@ import org.apache.commons.lang3.StringUtils;
 import org.apache.hadoop.ozone.recon.api.types.ContainerKeyPrefix;
 import org.apache.hadoop.hdds.utils.db.Codec;
 
-import com.google.common.base.Preconditions;
-import com.google.common.primitives.Longs;
+import org.apache.ozone.thirdparty.com.google.common.base.Preconditions;
+import org.apache.ozone.thirdparty.com.google.common.primitives.Longs;
 
 /**
  * Codec to encode ContainerKeyPrefix as byte array.

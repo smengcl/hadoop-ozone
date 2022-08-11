@@ -44,7 +44,7 @@ import org.apache.hadoop.ozone.s3.signature.AWSSignatureProcessor.LowerCaseKeySt
 import org.apache.hadoop.ozone.s3.util.S3Utils;
 import org.apache.hadoop.util.StringUtils;
 
-import com.google.common.annotations.VisibleForTesting;
+import org.apache.ozone.thirdparty.com.google.common.annotations.VisibleForTesting;
 import static java.time.temporal.ChronoUnit.SECONDS;
 import static org.apache.hadoop.ozone.s3.exception.S3ErrorTable.S3_AUTHINFO_CREATION_ERROR;
 import org.apache.kerby.util.Hex;

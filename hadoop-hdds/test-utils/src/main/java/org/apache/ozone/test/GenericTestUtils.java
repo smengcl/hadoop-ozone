@@ -27,8 +27,8 @@ import java.io.StringWriter;
 import java.io.UnsupportedEncodingException;
 import java.util.concurrent.TimeoutException;
 
-import com.google.common.base.Preconditions;
-import com.google.common.base.Supplier;
+import org.apache.ozone.thirdparty.com.google.common.base.Preconditions;
+import org.apache.ozone.thirdparty.com.google.common.base.Supplier;
 import org.apache.commons.io.IOUtils;
 import org.apache.commons.lang3.RandomStringUtils;
 import org.apache.commons.lang3.StringUtils;

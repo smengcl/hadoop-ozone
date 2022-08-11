@@ -23,8 +23,8 @@ import java.util.List;
 import org.apache.hadoop.hdds.StringUtils;
 import org.apache.hadoop.ozone.OzoneConsts;
 
-import com.google.common.base.Preconditions;
-import com.google.common.base.Strings;
+import org.apache.ozone.thirdparty.com.google.common.base.Preconditions;
+import org.apache.ozone.thirdparty.com.google.common.base.Strings;
 
 /**
  * An utility class to filter levelDB keys.

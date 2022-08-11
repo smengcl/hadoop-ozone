@@ -18,7 +18,7 @@
 
 package org.apache.hadoop.ozone.om.request.volume.acl;
 
-import com.google.common.collect.Lists;
+import org.apache.ozone.thirdparty.com.google.common.collect.Lists;
 import org.apache.hadoop.ozone.OzoneAcl;
 import org.apache.hadoop.ozone.om.helpers.OmVolumeArgs;
 import org.apache.hadoop.ozone.om.request.OMRequestTestUtils;

@@ -17,7 +17,7 @@
  */
 package org.apache.hadoop.hdds.scm.protocolPB;
 
-import com.google.common.base.Preconditions;
+import org.apache.ozone.thirdparty.com.google.common.base.Preconditions;
 import java.nio.ByteBuffer;
 import java.util.List;
 import java.util.function.Function;

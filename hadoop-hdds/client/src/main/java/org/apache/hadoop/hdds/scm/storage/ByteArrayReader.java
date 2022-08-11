@@ -18,7 +18,7 @@
 
 package org.apache.hadoop.hdds.scm.storage;
 
-import com.google.common.base.Preconditions;
+import org.apache.ozone.thirdparty.com.google.common.base.Preconditions;
 import java.io.IOException;
 import java.io.InputStream;
 

@@ -43,7 +43,7 @@ import org.slf4j.LoggerFactory;
 
 import java.io.IOException;
 
-import com.google.common.base.Optional;
+import org.apache.ozone.thirdparty.com.google.common.base.Optional;
 
 /**
  * Handles finalizeUpgrade request.

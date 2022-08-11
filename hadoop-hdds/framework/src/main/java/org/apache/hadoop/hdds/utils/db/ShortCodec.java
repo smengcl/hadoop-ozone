@@ -19,7 +19,7 @@
 package org.apache.hadoop.hdds.utils.db;
 
 import java.io.IOException;
-import com.google.common.primitives.Shorts;
+import org.apache.ozone.thirdparty.com.google.common.primitives.Shorts;
 
 /**
  * Codec to convert Short to/from byte array.

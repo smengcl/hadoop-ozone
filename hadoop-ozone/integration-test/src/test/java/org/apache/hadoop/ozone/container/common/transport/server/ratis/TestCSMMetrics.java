@@ -27,7 +27,7 @@ import java.io.IOException;
 import java.util.List;
 import java.util.ArrayList;
 
-import com.google.common.collect.Maps;
+import org.apache.ozone.thirdparty.com.google.common.collect.Maps;
 import org.apache.hadoop.hdds.client.BlockID;
 import org.apache.hadoop.hdds.protocol.DatanodeDetails;
 import org.apache.hadoop.hdds.protocol.datanode.proto.ContainerProtos;

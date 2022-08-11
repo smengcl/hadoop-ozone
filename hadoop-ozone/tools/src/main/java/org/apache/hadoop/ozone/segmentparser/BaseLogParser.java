@@ -17,7 +17,7 @@
  */
 package org.apache.hadoop.ozone.segmentparser;
 
-import com.google.common.annotations.VisibleForTesting;
+import org.apache.ozone.thirdparty.com.google.common.annotations.VisibleForTesting;
 import org.apache.ratis.proto.RaftProtos;
 import org.apache.ratis.tools.ParseRatisLog;
 import picocli.CommandLine;

@@ -21,7 +21,7 @@ package org.apache.hadoop.ozone.om.request.key.acl;
 import java.io.IOException;
 import java.util.Map;
 
-import com.google.common.base.Optional;
+import org.apache.ozone.thirdparty.com.google.common.base.Optional;
 import org.apache.hadoop.ozone.audit.AuditLogger;
 import org.apache.hadoop.ozone.om.OMMetadataManager;
 import org.apache.hadoop.ozone.om.OzoneManager;

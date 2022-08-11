@@ -18,7 +18,7 @@
 
 package org.apache.hadoop.ozone.recon;
 
-import com.google.common.annotations.VisibleForTesting;
+import org.apache.ozone.thirdparty.com.google.common.annotations.VisibleForTesting;
 import com.google.inject.Guice;
 import com.google.inject.Injector;
 import org.apache.hadoop.hdds.HddsUtils;

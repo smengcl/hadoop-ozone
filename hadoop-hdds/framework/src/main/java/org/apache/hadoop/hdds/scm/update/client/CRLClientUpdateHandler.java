@@ -18,7 +18,7 @@
 
 package org.apache.hadoop.hdds.scm.update.client;
 
-import com.google.common.util.concurrent.ThreadFactoryBuilder;
+import org.apache.ozone.thirdparty.com.google.common.util.concurrent.ThreadFactoryBuilder;
 import org.apache.hadoop.hdds.protocol.scm.proto.SCMUpdateServiceGrpc.SCMUpdateServiceStub;
 import org.apache.hadoop.hdds.protocol.scm.proto.SCMUpdateServiceProtos;
 import org.apache.hadoop.hdds.protocol.scm.proto.SCMUpdateServiceProtos.CRLUpdateRequest;

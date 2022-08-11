@@ -18,7 +18,7 @@
 
 package org.apache.hadoop.hdds.client;
 
-import com.google.common.base.Strings;
+import org.apache.ozone.thirdparty.com.google.common.base.Strings;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 

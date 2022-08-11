@@ -22,7 +22,7 @@ package org.apache.hadoop.hdds.scm.node.states;
 import java.util.Collections;
 import java.util.Set;
 
-import com.google.common.base.Preconditions;
+import org.apache.ozone.thirdparty.com.google.common.base.Preconditions;
 
 /**
  * A Container/Pipeline Report gets processed by the

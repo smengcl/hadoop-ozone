@@ -18,7 +18,7 @@
 
 package org.apache.hadoop.ozone.om.ha;
 
-import com.google.common.annotations.VisibleForTesting;
+import org.apache.ozone.thirdparty.com.google.common.annotations.VisibleForTesting;
 
 import java.io.IOException;
 import java.net.InetSocketAddress;

@@ -17,7 +17,7 @@
  */
 package org.apache.hadoop.hdds.scm.container.replication;
 
-import com.google.common.util.concurrent.Striped;
+import org.apache.ozone.thirdparty.com.google.common.util.concurrent.Striped;
 import org.apache.hadoop.hdds.conf.ConfigurationSource;
 import org.apache.hadoop.hdds.protocol.DatanodeDetails;
 import org.apache.hadoop.hdds.scm.container.ContainerID;

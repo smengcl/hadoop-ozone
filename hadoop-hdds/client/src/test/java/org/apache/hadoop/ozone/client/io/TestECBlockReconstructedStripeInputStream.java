@@ -17,7 +17,7 @@
  */
 package org.apache.hadoop.ozone.client.io;
 
-import com.google.common.collect.ImmutableSet;
+import org.apache.ozone.thirdparty.com.google.common.collect.ImmutableSet;
 import org.apache.hadoop.hdds.client.ECReplicationConfig;
 import org.apache.hadoop.hdds.protocol.DatanodeDetails;
 import org.apache.hadoop.hdds.scm.storage.BlockLocationInfo;

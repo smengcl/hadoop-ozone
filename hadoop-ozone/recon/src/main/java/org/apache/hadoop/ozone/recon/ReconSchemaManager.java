@@ -26,7 +26,7 @@ import org.hadoop.ozone.recon.schema.ReconSchemaDefinition;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import com.google.common.annotations.VisibleForTesting;
+import org.apache.ozone.thirdparty.com.google.common.annotations.VisibleForTesting;
 import com.google.inject.Inject;
 
 /**

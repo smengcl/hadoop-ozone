@@ -20,7 +20,7 @@ package org.apache.hadoop.ozone.container.metadata;
 
 import java.io.IOException;
 
-import com.google.common.primitives.Longs;
+import org.apache.ozone.thirdparty.com.google.common.primitives.Longs;
 import org.apache.hadoop.hdds.StringUtils;
 import org.apache.hadoop.hdds.utils.db.Codec;
 import org.slf4j.Logger;

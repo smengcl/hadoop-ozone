@@ -20,15 +20,15 @@
  */
 package org.apache.hadoop.ozone.container.common.volume;
 
-import com.google.common.annotations.Beta;
-import com.google.common.annotations.GwtCompatible;
-import com.google.common.base.Preconditions;
+import org.apache.ozone.thirdparty.com.google.common.annotations.Beta;
+import org.apache.ozone.thirdparty.com.google.common.annotations.GwtCompatible;
+import org.apache.ozone.thirdparty.com.google.common.base.Preconditions;
 import static com.google.common.base.Preconditions.checkNotNull;
-import com.google.common.util.concurrent.Futures;
-import com.google.common.util.concurrent.ListeningExecutorService;
-import com.google.common.util.concurrent.ListenableFuture;
-import com.google.common.util.concurrent.SettableFuture;
-import com.google.common.util.concurrent.Uninterruptibles;
+import org.apache.ozone.thirdparty.com.google.common.util.concurrent.Futures;
+import org.apache.ozone.thirdparty.com.google.common.util.concurrent.ListeningExecutorService;
+import org.apache.ozone.thirdparty.com.google.common.util.concurrent.ListenableFuture;
+import org.apache.ozone.thirdparty.com.google.common.util.concurrent.SettableFuture;
+import org.apache.ozone.thirdparty.com.google.common.util.concurrent.Uninterruptibles;
 import edu.umd.cs.findbugs.annotations.SuppressFBWarnings;
 import static java.util.concurrent.atomic.AtomicReferenceFieldUpdater
     .newUpdater;

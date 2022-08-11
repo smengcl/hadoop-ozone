@@ -20,7 +20,7 @@ package org.apache.hadoop.ozone.om.request.security;
 
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
-import com.google.common.base.Optional;
+import org.apache.ozone.thirdparty.com.google.common.base.Optional;
 import java.util.UUID;
 
 import org.apache.hadoop.ozone.audit.AuditLogger;

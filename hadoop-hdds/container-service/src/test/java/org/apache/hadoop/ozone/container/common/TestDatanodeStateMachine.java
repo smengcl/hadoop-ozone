@@ -46,8 +46,8 @@ import org.apache.hadoop.ozone.container.common.states.datanode.RunningDatanodeS
 import org.apache.ozone.test.GenericTestUtils;
 import org.apache.hadoop.util.concurrent.HadoopExecutors;
 
-import com.google.common.collect.Maps;
-import com.google.common.util.concurrent.ThreadFactoryBuilder;
+import org.apache.ozone.thirdparty.com.google.common.collect.Maps;
+import org.apache.ozone.thirdparty.com.google.common.util.concurrent.ThreadFactoryBuilder;
 import static org.apache.hadoop.hdds.scm.ScmConfigKeys.HDDS_DATANODE_DIR_KEY;
 import static org.apache.hadoop.hdds.scm.ScmConfigKeys.OZONE_SCM_HEARTBEAT_RPC_TIMEOUT;
 import org.junit.After;

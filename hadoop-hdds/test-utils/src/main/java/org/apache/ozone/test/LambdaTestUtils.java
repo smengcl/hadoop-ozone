@@ -24,7 +24,7 @@ import java.util.concurrent.TimeoutException;
 
 import edu.umd.cs.findbugs.annotations.SuppressFBWarnings;
 
-import com.google.common.base.Preconditions;
+import org.apache.ozone.thirdparty.com.google.common.base.Preconditions;
 import org.junit.Assert;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;

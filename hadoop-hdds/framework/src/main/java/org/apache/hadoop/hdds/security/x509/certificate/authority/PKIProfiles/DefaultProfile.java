@@ -19,7 +19,7 @@
 
 package org.apache.hadoop.hdds.security.x509.certificate.authority.PKIProfiles;
 
-import com.google.common.base.Preconditions;
+import org.apache.ozone.thirdparty.com.google.common.base.Preconditions;
 import org.apache.commons.codec.DecoderException;
 import org.apache.commons.codec.binary.Hex;
 import org.apache.commons.validator.routines.DomainValidator;

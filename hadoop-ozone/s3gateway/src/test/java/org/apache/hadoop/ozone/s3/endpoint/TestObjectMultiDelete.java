@@ -32,7 +32,7 @@ import org.apache.hadoop.ozone.client.OzoneKey;
 import org.apache.hadoop.ozone.s3.endpoint.MultiDeleteRequest.DeleteObject;
 import org.apache.hadoop.ozone.s3.exception.OS3Exception;
 
-import com.google.common.collect.Sets;
+import org.apache.ozone.thirdparty.com.google.common.collect.Sets;
 import org.junit.Assert;
 import org.junit.Test;
 

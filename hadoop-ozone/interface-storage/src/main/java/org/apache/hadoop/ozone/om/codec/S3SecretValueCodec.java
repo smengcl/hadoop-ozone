@@ -21,7 +21,7 @@ package org.apache.hadoop.ozone.om.codec;
 
 import java.io.IOException;
 
-import com.google.common.base.Preconditions;
+import org.apache.ozone.thirdparty.com.google.common.base.Preconditions;
 import com.google.protobuf.InvalidProtocolBufferException;
 
 import org.apache.hadoop.ozone.om.helpers.S3SecretValue;

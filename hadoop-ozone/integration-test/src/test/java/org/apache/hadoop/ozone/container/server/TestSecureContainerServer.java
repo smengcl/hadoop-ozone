@@ -86,7 +86,7 @@ import static org.apache.hadoop.ozone.container.ContainerTestHelper.newPutBlockR
 import static org.apache.hadoop.ozone.container.ContainerTestHelper.newReadChunkRequestBuilder;
 import static org.apache.hadoop.ozone.container.ContainerTestHelper.newWriteChunkRequestBuilder;
 
-import com.google.common.collect.Maps;
+import org.apache.ozone.thirdparty.com.google.common.collect.Maps;
 import org.apache.commons.io.FileUtils;
 import org.apache.commons.lang3.RandomStringUtils;
 import org.apache.commons.lang3.RandomUtils;

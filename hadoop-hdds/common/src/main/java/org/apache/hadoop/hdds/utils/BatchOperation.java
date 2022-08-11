@@ -18,7 +18,7 @@
 
 package org.apache.hadoop.hdds.utils;
 
-import com.google.common.collect.Lists;
+import org.apache.ozone.thirdparty.com.google.common.collect.Lists;
 
 import java.util.List;
 import java.util.Objects;

@@ -18,8 +18,8 @@
 
 package org.apache.hadoop.hdds.scm.container;
 
-import com.google.common.base.Preconditions;
-import com.google.common.primitives.Longs;
+import org.apache.ozone.thirdparty.com.google.common.base.Preconditions;
+import org.apache.ozone.thirdparty.com.google.common.primitives.Longs;
 import org.apache.commons.lang3.builder.CompareToBuilder;
 import org.apache.commons.lang3.builder.EqualsBuilder;
 import org.apache.commons.lang3.builder.HashCodeBuilder;

@@ -18,10 +18,10 @@
 
 package org.apache.hadoop.ozone;
 
-import com.google.common.base.Preconditions;
-import com.google.common.base.Supplier;
-import com.google.common.collect.Lists;
-import com.google.common.collect.Maps;
+import org.apache.ozone.thirdparty.com.google.common.base.Preconditions;
+import org.apache.ozone.thirdparty.com.google.common.base.Supplier;
+import org.apache.ozone.thirdparty.com.google.common.collect.Lists;
+import org.apache.ozone.thirdparty.com.google.common.collect.Maps;
 import org.apache.hadoop.hdds.ExitManager;
 import org.apache.hadoop.hdds.conf.ConfigurationTarget;
 import org.apache.hadoop.hdds.conf.OzoneConfiguration;

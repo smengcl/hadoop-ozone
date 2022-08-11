@@ -19,8 +19,8 @@
 package org.apache.hadoop.ozone.container.keyvalue;
 
 import com.fasterxml.jackson.annotation.JsonIgnore;
-import com.google.common.base.Preconditions;
-import com.google.common.collect.Lists;
+import org.apache.ozone.thirdparty.com.google.common.base.Preconditions;
+import org.apache.ozone.thirdparty.com.google.common.collect.Lists;
 
 import java.io.IOException;
 import java.util.Collections;

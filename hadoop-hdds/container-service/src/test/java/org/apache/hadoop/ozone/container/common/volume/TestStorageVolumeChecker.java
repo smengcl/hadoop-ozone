@@ -18,8 +18,8 @@
 
 package org.apache.hadoop.ozone.container.common.volume;
 
-import com.google.common.util.concurrent.Futures;
-import com.google.common.util.concurrent.ListenableFuture;
+import org.apache.ozone.thirdparty.com.google.common.util.concurrent.Futures;
+import org.apache.ozone.thirdparty.com.google.common.util.concurrent.ListenableFuture;
 
 import org.apache.commons.io.FileUtils;
 import org.apache.hadoop.hdds.HddsConfigKeys;

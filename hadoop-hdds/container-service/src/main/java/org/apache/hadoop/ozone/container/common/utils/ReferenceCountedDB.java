@@ -18,7 +18,7 @@
 
 package org.apache.hadoop.ozone.container.common.utils;
 
-import com.google.common.base.Preconditions;
+import org.apache.ozone.thirdparty.com.google.common.base.Preconditions;
 
 import org.apache.commons.lang3.exception.ExceptionUtils;
 import org.apache.hadoop.ozone.container.common.interfaces.DBHandle;

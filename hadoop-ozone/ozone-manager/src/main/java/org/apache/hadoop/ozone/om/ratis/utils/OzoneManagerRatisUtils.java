@@ -17,8 +17,8 @@
 
 package org.apache.hadoop.ozone.om.ratis.utils;
 
-import com.google.common.base.Preconditions;
-import com.google.common.base.Strings;
+import org.apache.ozone.thirdparty.com.google.common.base.Preconditions;
+import org.apache.ozone.thirdparty.com.google.common.base.Strings;
 import com.google.protobuf.ServiceException;
 import java.io.File;
 import java.nio.file.Paths;

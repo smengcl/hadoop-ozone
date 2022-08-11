@@ -20,7 +20,7 @@ package org.apache.hadoop.ozone.client;
 
 import java.util.List;
 
-import com.google.common.base.Preconditions;
+import org.apache.ozone.thirdparty.com.google.common.base.Preconditions;
 
 /**
  * List of in-flight MPU upoads.

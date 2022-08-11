@@ -17,7 +17,7 @@
 
 package org.apache.hadoop.ozone.container.common.report;
 
-import com.google.common.util.concurrent.ThreadFactoryBuilder;
+import org.apache.ozone.thirdparty.com.google.common.util.concurrent.ThreadFactoryBuilder;
 import com.google.protobuf.Descriptors;
 import com.google.protobuf.GeneratedMessage;
 

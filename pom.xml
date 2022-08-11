@@ -75,6 +75,9 @@ xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xs
     <!-- Apache Ratis version -->
     <ratis.version>2.3.0</ratis.version>
 
+    <!-- Apache Ozone thirdparty version -->
+    <ozone.thirdparty.version>1.0.0</ozone.thirdparty.version>
+
     <!-- Apache Ratis thirdparty version -->
     <ratis.thirdparty.version>1.0.0</ratis.thirdparty.version>
 
@@ -175,7 +178,7 @@ xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xs
     <spotbugs.version>3.1.12</spotbugs.version>
     <dnsjava.version>2.1.7</dnsjava.version>
 
-    <guava.version>31.1-jre</guava.version>
+    <!-- <guava.version>31.1-jre</guava.version> -->
     <guice.version>4.0</guice.version>
     <gson.version>2.9.0</gson.version>
 
@@ -699,11 +702,11 @@ xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xs
         <type>test-jar</type>
       </dependency>
 
-      <dependency>
+      <!-- <dependency>
         <groupId>com.google.guava</groupId>
         <artifactId>guava</artifactId>
         <version>${guava.version}</version>
-      </dependency>
+      </dependency> -->
       <dependency>
         <groupId>com.google.code.gson</groupId>
         <artifactId>gson</artifactId>
@@ -1341,6 +1344,11 @@ xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xs
         <groupId>com.google.protobuf</groupId>
         <artifactId>protobuf-java</artifactId>
         <version>${proto2.hadooprpc.protobuf.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>org.apache.ozone</groupId>
+        <artifactId>ozone-thirdparty-misc</artifactId>
+        <version>${ozone.thirdparty.version}</version>
       </dependency>
       <dependency>
         <groupId>org.apache.hadoop.thirdparty</groupId>

@@ -17,7 +17,7 @@
  */
 package org.apache.hadoop.hdds.scm.container.replication;
 
-import com.google.common.annotations.VisibleForTesting;
+import org.apache.ozone.thirdparty.com.google.common.annotations.VisibleForTesting;
 import org.apache.hadoop.hdds.protocol.DatanodeDetails;
 
 /**

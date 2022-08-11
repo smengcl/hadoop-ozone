@@ -21,11 +21,11 @@
  */
 package org.apache.hadoop.hdds.scm.server;
 
-import com.google.common.annotations.VisibleForTesting;
-import com.google.common.base.Preconditions;
-import com.google.common.cache.Cache;
-import com.google.common.cache.CacheBuilder;
-import com.google.common.cache.RemovalListener;
+import org.apache.ozone.thirdparty.com.google.common.annotations.VisibleForTesting;
+import org.apache.ozone.thirdparty.com.google.common.base.Preconditions;
+import org.apache.ozone.thirdparty.com.google.common.cache.Cache;
+import org.apache.ozone.thirdparty.com.google.common.cache.CacheBuilder;
+import org.apache.ozone.thirdparty.com.google.common.cache.RemovalListener;
 import com.google.protobuf.BlockingService;
 
 import org.apache.commons.lang3.tuple.Pair;

@@ -17,7 +17,7 @@
  */
 package org.apache.hadoop.ozone.recon.api.filters;
 
-import com.google.common.collect.Sets;
+import org.apache.ozone.thirdparty.com.google.common.collect.Sets;
 import org.apache.hadoop.hdds.conf.OzoneConfiguration;
 import org.apache.hadoop.hdds.recon.ReconConfigKeys;
 import org.apache.hadoop.ozone.OzoneConfigKeys;

@@ -32,7 +32,7 @@ import java.net.URI;
 import java.util.Arrays;
 
 
-import com.google.common.annotations.VisibleForTesting;
+import org.apache.ozone.thirdparty.com.google.common.annotations.VisibleForTesting;
 import org.apache.hadoop.fs.InvalidRequestException;
 import org.apache.hadoop.hdds.conf.OzoneConfiguration;
 import org.slf4j.Logger;

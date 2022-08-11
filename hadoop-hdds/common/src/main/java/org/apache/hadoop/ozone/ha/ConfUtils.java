@@ -16,7 +16,7 @@
  */
 package org.apache.hadoop.ozone.ha;
 
-import com.google.common.base.Joiner;
+import org.apache.ozone.thirdparty.com.google.common.base.Joiner;
 import org.apache.commons.lang3.StringUtils;
 import org.apache.hadoop.hdds.conf.ConfigurationSource;
 import org.apache.hadoop.hdds.conf.OzoneConfiguration;

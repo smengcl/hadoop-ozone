@@ -17,7 +17,7 @@
  */
 package org.apache.hadoop.hdds.fs;
 
-import com.google.common.base.Preconditions;
+import org.apache.ozone.thirdparty.com.google.common.base.Preconditions;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 

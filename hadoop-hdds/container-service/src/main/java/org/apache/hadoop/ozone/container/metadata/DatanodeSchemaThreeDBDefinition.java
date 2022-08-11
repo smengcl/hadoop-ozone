@@ -17,7 +17,7 @@
  */
 package org.apache.hadoop.ozone.container.metadata;
 
-import com.google.common.primitives.Longs;
+import org.apache.ozone.thirdparty.com.google.common.primitives.Longs;
 import org.apache.hadoop.hdds.conf.ConfigurationSource;
 import org.apache.hadoop.hdds.protocol.proto.StorageContainerDatanodeProtocolProtos.DeletedBlocksTransaction;
 import org.apache.hadoop.hdds.utils.db.DBColumnFamilyDefinition;

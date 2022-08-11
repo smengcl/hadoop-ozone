@@ -33,7 +33,7 @@ import java.util.TreeMap;
 import java.util.UUID;
 import java.util.Collection;
 
-import com.google.common.cache.Cache;
+import org.apache.ozone.thirdparty.com.google.common.cache.Cache;
 import org.apache.hadoop.conf.StorageUnit;
 import org.apache.hadoop.crypto.key.KeyProvider;
 import org.apache.hadoop.crypto.key.kms.KMSClientProvider;

@@ -17,7 +17,7 @@
  */
 package org.apache.hadoop.ozone.shell.acl;
 
-import com.google.common.collect.ImmutableList;
+import org.apache.ozone.thirdparty.com.google.common.collect.ImmutableList;
 import org.apache.hadoop.ozone.OzoneAcl;
 import org.apache.hadoop.ozone.client.ObjectStore;
 import org.apache.hadoop.ozone.security.acl.OzoneObj;
