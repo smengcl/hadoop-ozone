@@ -49,6 +49,7 @@ import org.apache.hadoop.hdds.utils.db.managed.ManagedRocksDB;
 import org.apache.hadoop.hdds.utils.db.managed.ManagedStatistics;
 import org.apache.hadoop.hdds.utils.db.managed.ManagedWriteOptions;
 import org.eclipse.jetty.util.StringUtil;
+import org.rocksdb.AbstractEventListener;
 import org.rocksdb.ColumnFamilyDescriptor;
 import org.rocksdb.InfoLogLevel;
 import org.rocksdb.StatsLevel;
@@ -90,6 +91,8 @@ public final class DBStoreBuilder {
   private RocksDBConfiguration rocksDBConfiguration;
   // Flag to indicate if the RocksDB should be opened readonly.
   private boolean openReadOnly = false;
+  // A list of DB event listeners to be set in RDB Options
+  private List<AbstractEventListener> eventListeners;
 
   /**
    * Create DBStoreBuilder from a generic DBDefinition.
@@ -136,6 +139,8 @@ public final class DBStoreBuilder {
 
     defaultDBOptions = dbProfile.getDBOptions();
     setDefaultCFOptions(dbProfile.getColumnFamilyOptions());
+
+    eventListeners = new ArrayList<>();
   }
 
   private void applyDBDefinition(DBDefinition definition) {
@@ -189,8 +194,19 @@ public final class DBStoreBuilder {
       throw new IOException("The DB destination directory should exist.");
     }
 
+    // Set listeners in RDB options when the event listener list is not empty.
+    // Required for RDB checkpoint SST DAG generation in Ozone snapshots.
+    if (!eventListeners.isEmpty()) {
+      rocksDBOption.setListeners(eventListeners);
+    }
+
     return new RDBStore(dbFile, rocksDBOption, writeOptions, tableConfigs,
         registry, openReadOnly);
+  }
+
+  public DBStoreBuilder addEventListener(AbstractEventListener eventListener) {
+    eventListeners.add(eventListener);
+    return this;
   }
 
   public DBStoreBuilder setName(String name) {

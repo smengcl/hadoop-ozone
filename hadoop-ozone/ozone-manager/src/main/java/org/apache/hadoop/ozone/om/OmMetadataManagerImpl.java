@@ -81,6 +81,7 @@ import org.apache.hadoop.ozone.om.helpers.SnapshotInfo;
 import org.apache.hadoop.ozone.om.helpers.BucketLayout;
 import org.apache.hadoop.ozone.om.lock.OzoneManagerLock;
 import org.apache.hadoop.hdds.utils.TransactionInfo;
+import org.apache.hadoop.ozone.om.snapshot.RDBCheckpointHelper;
 import org.apache.hadoop.ozone.protocol.proto.OzoneManagerProtocolProtos.OpenKey;
 import org.apache.hadoop.ozone.protocol.proto.OzoneManagerProtocolProtos.OpenKeyBucket;
 import org.apache.hadoop.ozone.storage.proto
@@ -93,7 +94,9 @@ import com.google.common.collect.Lists;
 import org.apache.commons.lang3.StringUtils;
 import static org.apache.hadoop.ozone.OzoneConsts.DB_TRANSIENT_MARKER;
 import static org.apache.hadoop.ozone.OzoneConsts.OM_DB_NAME;
+import static org.apache.hadoop.ozone.OzoneConsts.OM_DB_RETAINED_SST_DIR_NAME;
 import static org.apache.hadoop.ozone.OzoneConsts.OM_KEY_PREFIX;
+import static org.apache.hadoop.ozone.OzoneConsts.RDB_CHECKPOINT_DIR_PREFIX;
 import static org.apache.hadoop.ozone.om.exceptions.OMException.ResultCodes.BUCKET_NOT_FOUND;
 import static org.apache.hadoop.ozone.om.exceptions.OMException.ResultCodes.VOLUME_NOT_FOUND;
 
@@ -262,6 +265,8 @@ public class OmMetadataManagerImpl implements OMMetadataManager {
 
   private Map<String, Table> tableMap = new HashMap<>();
 
+  private RDBCheckpointHelper rdbCheckpointHelper;
+
   public OmMetadataManagerImpl(OzoneConfiguration conf) throws IOException {
     this.lock = new OzoneManagerLock(conf);
     // TODO: This is a temporary check. Once fully implemented, all OM state
@@ -405,7 +410,23 @@ public class OmMetadataManagerImpl implements OMMetadataManager {
         rocksDBConfiguration.setSyncOption(true);
       }
 
-      this.store = loadDB(configuration, metaDir);
+      // Concat meta.dir and dbName to get the full DB path
+      final File dbPath = new File(metaDir, OM_DB_NAME);
+      final File cpPathPrefix = new File(metaDir, RDB_CHECKPOINT_DIR_PREFIX);
+      final File retainedSSTPath = new File(metaDir, OM_DB_RETAINED_SST_DIR_NAME);
+
+      // Initialize Ozone snapshot related DB checkpoint helper
+      rdbCheckpointHelper = new RDBCheckpointHelper(
+          dbPath.getPath(),
+          512,  // Allow 512 maximum snapshots for dev.
+          cpPathPrefix.getPath(),  // TODO: might be missing the "om.db" prefix here
+          retainedSSTPath.getPath(),
+          "./dummy_cfdbPath",  // Unused for now. TODO: Remove if not used in prod
+          0,  // Initial snapshot counter. For dev testing. TODO: Remove for prod
+          "snap_id_"
+      );
+
+      this.store = loadDB(configuration, metaDir, OM_DB_NAME, rdbCheckpointHelper);
 
       initializeOmTables();
     }
@@ -418,13 +439,28 @@ public class OmMetadataManagerImpl implements OMMetadataManager {
 
   public static DBStore loadDB(OzoneConfiguration configuration, File metaDir,
       String dbName) throws IOException {
+    return loadDB(configuration, metaDir, dbName, null);
+  }
+
+  public static DBStore loadDB(OzoneConfiguration configuration, File metaDir,
+      String dbName, RDBCheckpointHelper rdbCheckpointHelper)
+      throws IOException {
     RocksDBConfiguration rocksDBConfiguration =
         configuration.getObject(RocksDBConfiguration.class);
     DBStoreBuilder dbStoreBuilder = DBStoreBuilder.newBuilder(configuration,
         rocksDBConfiguration).setName(dbName)
         .setPath(Paths.get(metaDir.getPath()));
-    DBStore dbStore = addOMTablesAndCodecs(dbStoreBuilder).build();
-    return dbStore;
+
+    dbStoreBuilder = addOMTablesAndCodecs(dbStoreBuilder);
+
+    if (rdbCheckpointHelper != null) {
+      // Inject onCompactionCompletedListener for DAG generation,
+      // which should be triggered right after each compaction
+      // and is blocking in rocksdbjni
+      dbStoreBuilder.addEventListener(
+          rdbCheckpointHelper.newCompactionCompletedListener());
+    }
+    return dbStoreBuilder.build();
   }
 
   public static DBStoreBuilder addOMTablesAndCodecs(DBStoreBuilder builder) {
@@ -577,6 +613,7 @@ public class OmMetadataManagerImpl implements OMMetadataManager {
     }
     // OzoneManagerLock cleanup
     lock.cleanup();
+    // TODO: does rocksdb event listener need to be cleaned up as well?
   }
 
   /**

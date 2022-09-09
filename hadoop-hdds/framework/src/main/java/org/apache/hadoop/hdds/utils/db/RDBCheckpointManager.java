@@ -31,13 +31,14 @@ import org.apache.hadoop.hdds.utils.db.RocksDatabase.RocksCheckpoint;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import static org.apache.hadoop.ozone.OzoneConsts.RDB_CHECKPOINT_DIR_PREFIX;
+
 /**
  * RocksDB Checkpoint Manager, used to create and cleanup checkpoints.
  */
 public class RDBCheckpointManager {
 
   private final RocksCheckpoint checkpoint;
-  public static final String RDB_CHECKPOINT_DIR_PREFIX = "checkpoint_";
   private static final Logger LOG =
       LoggerFactory.getLogger(RDBCheckpointManager.class);
   private final String checkpointNamePrefix;

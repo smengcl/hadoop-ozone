@@ -136,6 +136,12 @@ public final class OzoneConsts {
   public static final String OM_DB_BACKUP_PREFIX = "om.db.backup.";
   public static final String SCM_DB_BACKUP_PREFIX = "scm.db.backup.";
   public static final String CONTAINER_DB_NAME = "container.db";
+  // Ozone snapshot consts
+  public static final String RDB_CHECKPOINT_DIR_PREFIX = "checkpoint_";
+//  public static final String OM_RDB_CHECKPOINT_DIR_PREFIX =
+//      OM_DB_NAME + RDB_CHECKPOINT_DIR_PREFIX;
+  public static final String OM_DB_RETAINED_SST_DIR_NAME =
+    OM_DB_NAME + "_retained_ssts"; // TODO: or call this "kept_ssts"?
 
   public static final String STORAGE_DIR_CHUNKS = "chunks";
   public static final String OZONE_DB_CHECKPOINT_REQUEST_FLUSH =

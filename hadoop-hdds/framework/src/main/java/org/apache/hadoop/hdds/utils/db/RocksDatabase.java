@@ -124,12 +124,15 @@ public final class RocksDatabase {
       // open RocksDB
       final List<ColumnFamilyHandle> handles = new ArrayList<>();
       if (readOnly) {
+        // Compaction shouldn't really happen in read-only mode,
+        // but the listener can be injected in dbOptions anyway
+        // (it shouldn't trigger when there is no compaction going on)
         db = ManagedRocksDB.openReadOnly(dbOptions, dbFile.getAbsolutePath(),
             descriptors, handles);
       } else {
         db = ManagedRocksDB.open(dbOptions, dbFile.getAbsolutePath(),
             descriptors, handles);
-      }
+      }  // Siyao note: use db.get().getDBOptions() to check effective options applied. but that only seems to have dumped MutableDBOptions, not ImmutableDBOptions which contains listeners according to DBImpl::NotifyOnCompactionCompleted
       // init a column family map.
       for (ColumnFamilyHandle h : handles) {
         final ColumnFamily f = new ColumnFamily(h);

@@ -65,7 +65,7 @@ public class ManagedRocksDB extends ManagedObject<RocksDB> {
     return new ManagedRocksDB(
         RocksDB.open(options, path,
             columnFamilyDescriptors, columnFamilyHandles)
-    );
+    );  // Java_org_rocksdb_RocksDB_open__JLjava_lang_String_2_3_3B_3J
   }
 
   public static ManagedRocksDB open(
