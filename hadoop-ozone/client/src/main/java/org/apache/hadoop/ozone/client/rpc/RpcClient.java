@@ -931,6 +931,19 @@ public class RpcClient implements ClientProtocol {
         bucketName, snapshotName);
   }
 
+  @Override
+  public String snapshotDiff(String volumeName, String bucketName,
+                             String fromSnapshot, String toSnapshot)
+      throws IOException {
+    Preconditions.checkArgument(Strings.isNotBlank(volumeName),
+        "volume can't be null or empty.");
+    Preconditions.checkArgument(Strings.isNotBlank(bucketName),
+        "bucket can't be null or empty.");
+    ozoneManagerClient.snapshotDiff(volumeName, bucketName,
+        fromSnapshot, toSnapshot);
+    return null;
+  }
+
   /**
    * Assign admin role to an accessId in a tenant.
    * @param accessId access ID.
