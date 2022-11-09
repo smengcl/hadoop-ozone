@@ -29,6 +29,8 @@ import org.apache.hadoop.ozone.om.snapshot.SnapshotDiffReport.DiffReportEntry;
 import org.apache.ozone.rocksdb.util.ManagedSstFileReader;
 import org.apache.ozone.rocksdb.util.RdbUtil;
 import org.rocksdb.RocksDBException;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.io.IOException;
 import java.util.ArrayList;
@@ -44,11 +46,16 @@ import java.util.stream.Stream;
  */
 public class SnapshotDiffManager {
 
+  private static final Logger LOG =
+      LoggerFactory.getLogger(SnapshotDiffManager.class);
+
   public SnapshotDiffReport getSnapshotDiffReport(final String volume,
                                                   final String bucket,
                                                   final OmSnapshot fromSnapshot,
                                                   final OmSnapshot toSnapshot)
       throws IOException, RocksDBException {
+
+    final long startTime = System.nanoTime();
 
     // TODO: Once RocksDBCheckpointDiffer exposes method to get list
     //  of delta SST files, plug it in here.
@@ -110,9 +117,14 @@ public class SnapshotDiffManager {
     });
     keysToCheck.close();
 
-    return new SnapshotDiffReport(volume, bucket, fromSnapshot.getName(),
-        toSnapshot.getName(), generateDiffReport(objectIDsToCheck,
+    SnapshotDiffReport report =  new SnapshotDiffReport(volume, bucket,
+        fromSnapshot.getName(), toSnapshot.getName(),
+        generateDiffReport(objectIDsToCheck,
         oldObjIdToKeyMap, newObjIdToKeyMap));
+    final double elapsedTime = (double) (System.nanoTime() - startTime)
+        / 1_000_000_000;
+    LOG.info("SnapshotDiff generation took : " + elapsedTime + " seconds.");
+    return report;
   }
 
   private List<DiffReportEntry> generateDiffReport(

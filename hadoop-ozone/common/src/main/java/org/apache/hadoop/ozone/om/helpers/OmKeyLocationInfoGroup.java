@@ -24,6 +24,7 @@ import java.util.Collection;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.stream.Collectors;
 
 /**
@@ -186,4 +187,19 @@ public class OmKeyLocationInfoGroup {
     }
     return sb.toString();
   }
+
+  @Override
+  public boolean equals(Object obj) {
+    if (this == obj) {
+      return true;
+    }
+    if (obj == null || getClass() != obj.getClass()) {
+      return false;
+    }
+    OmKeyLocationInfoGroup that = (OmKeyLocationInfoGroup) obj;
+    return version == that.version &&
+        isMultipartKey == that.isMultipartKey &&
+        Objects.equals(locationVersionMap, that.locationVersionMap);
+  }
+
 }
