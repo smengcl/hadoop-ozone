@@ -939,9 +939,8 @@ public class RpcClient implements ClientProtocol {
         "volume can't be null or empty.");
     Preconditions.checkArgument(Strings.isNotBlank(bucketName),
         "bucket can't be null or empty.");
-    ozoneManagerClient.snapshotDiff(volumeName, bucketName,
+    return ozoneManagerClient.snapshotDiff(volumeName, bucketName,
         fromSnapshot, toSnapshot);
-    return null;
   }
 
   /**

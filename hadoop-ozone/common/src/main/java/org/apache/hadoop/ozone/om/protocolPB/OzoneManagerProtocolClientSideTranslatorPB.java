@@ -1136,9 +1136,8 @@ public final class OzoneManagerProtocolClientSideTranslatorPB
         .build();
     final OMResponse omResponse = submitRequest(omRequest);
     handleError(omResponse);
-    String snapshotDiff = omResponse.getSnapshotDiffResponse()
+    return omResponse.getSnapshotDiffResponse()
         .getSnapshotDiff();
-    return snapshotDiff;
   }
 
   /**
