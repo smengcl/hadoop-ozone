@@ -37,6 +37,7 @@ import org.apache.hadoop.ozone.client.OzoneKey;
 import org.apache.hadoop.ozone.client.OzoneKeyDetails;
 import org.apache.hadoop.ozone.client.OzoneMultipartUploadList;
 import org.apache.hadoop.ozone.client.OzoneMultipartUploadPartListParts;
+import org.apache.hadoop.ozone.client.OzoneSnapshot;
 import org.apache.hadoop.ozone.client.OzoneVolume;
 import org.apache.hadoop.ozone.client.TenantArgs;
 import org.apache.hadoop.ozone.client.VolumeArgs;
@@ -980,5 +981,15 @@ public interface ClientProtocol {
    */
   String snapshotDiff(String volumeName, String bucketName,
                       String fromSnapshot, String toSnapshot)
+      throws IOException;
+
+  /**
+   * List snapshots in a volume/bucket.
+   * @param volumeName volume name
+   * @param bucketName bucket name
+   * @return list of snapshot name
+   * @throws IOException
+   */
+  List<OzoneSnapshot> listSnapshot(String volumeName, String bucketName)
       throws IOException;
 }

@@ -39,7 +39,8 @@ import picocli.CommandLine.ParentCommand;
     description = "Snapshot specific operations",
     subcommands = {
         CreateSnapshotHandler.class,
-        SnapshotDiffHandler.class
+        SnapshotDiffHandler.class,
+        ListSnapshotHandler.class
     },
     mixinStandardHelpOptions = true,
     versionProvider = HddsVersionProvider.class)

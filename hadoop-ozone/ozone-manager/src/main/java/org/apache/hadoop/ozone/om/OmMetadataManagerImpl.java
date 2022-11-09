@@ -1166,6 +1166,69 @@ public class OmMetadataManagerImpl implements OMMetadataManager {
   }
 
   @Override
+  public List<SnapshotInfo> listSnapshot(String volumeName, String bucketName)
+      throws IOException {
+    if (Strings.isNullOrEmpty(volumeName)) {
+      throw new OMException("Volume name is required.",
+          ResultCodes.VOLUME_NOT_FOUND);
+    }
+
+    if (Strings.isNullOrEmpty(bucketName)) {
+      throw new OMException("Bucket name is required.",
+          ResultCodes.BUCKET_NOT_FOUND);
+    }
+
+    List<SnapshotInfo> snapshotInfos = new ArrayList<>();
+    TreeMap<String, SnapshotInfo> snapshotInfoMap = new TreeMap<>();
+
+    appendSnapshotFromCacheToMap(snapshotInfoMap);
+    appendSnapshotFromDBToMap(snapshotInfoMap);
+
+    for (Map.Entry<String, SnapshotInfo> cacheKey : snapshotInfoMap
+        .entrySet()) {
+      snapshotInfos.add(cacheKey.getValue());
+    }
+
+    return snapshotInfos;
+  }
+
+  private void appendSnapshotFromCacheToMap(TreeMap snapshotInfoMap) {
+    Iterator<Map.Entry<CacheKey<String>, CacheValue<SnapshotInfo>>> iterator =
+        snapshotInfoTable.cacheIterator();
+    while (iterator.hasNext()) {
+      Map.Entry<CacheKey<String>, CacheValue<SnapshotInfo>> entry =
+          iterator.next();
+      String snapshotKey = entry.getKey().getCacheKey();
+      SnapshotInfo snapshotInfo = entry.getValue().getCacheValue();
+      if (snapshotInfo != null) {
+        snapshotInfoMap.put(snapshotKey, snapshotInfo);
+      }
+    }
+  }
+
+  private void appendSnapshotFromDBToMap(TreeMap snapshotInfoMap)
+      throws IOException {
+    try (TableIterator<String, ? extends KeyValue<String, SnapshotInfo>>
+             snapshotIter = snapshotInfoTable.iterator()) {
+      KeyValue< String, SnapshotInfo> snapshotinfo;
+      while (snapshotIter.hasNext()) {
+        snapshotinfo = snapshotIter.next();
+        if (snapshotinfo != null) {
+          CacheValue<SnapshotInfo> cacheValue =
+              snapshotInfoTable.getCacheValue(
+                  new CacheKey<>(snapshotinfo.getKey()));
+          // There is always the latest data in the cache, so don't need to add
+          // earlier data from DB. We only add data from DB if there is no data
+          // in cache.
+          if (cacheValue == null) {
+            snapshotInfoMap.put(snapshotinfo.getKey(), snapshotinfo.getValue());
+          }
+        }
+      }
+    }
+  }
+
+  @Override
   public boolean recoverTrash(String volumeName, String bucketName,
       String keyName, String destinationBucket) throws IOException {
 

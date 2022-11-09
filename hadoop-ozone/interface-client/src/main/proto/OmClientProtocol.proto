@@ -127,6 +127,7 @@ enum Type {
 
   CreateSnapshot = 111;
   SnapshotDiff = 112;
+  ListSnapshot = 113;
 }
 
 message OMRequest {
@@ -236,6 +237,7 @@ message OMRequest {
 
   optional CreateSnapshotRequest            CreateSnapshotRequest          = 111;
   optional SnapshotDiffRequest              snapshotDiffRequest            = 112;
+  optional ListSnapshotRequest              ListSnapshotRequest            = 113;
 
 }
 
@@ -339,7 +341,7 @@ message OMResponse {
 
   optional CreateSnapshotResponse            CreateSnapshotResponse        = 111;
   optional SnapshotDiffResponse              snapshotDiffResponse          = 112;
-
+  optional ListSnapshotResponse              ListSnapshotResponse          = 113;
 }
 
 enum Status {
@@ -1652,6 +1654,12 @@ message SnapshotDiffRequest {
   required string fromSnapshot = 3;
   required string toSnapshot = 4;
 }
+
+message ListSnapshotRequest {
+  required string volumeName = 1;
+  required string bucketName = 2;
+}
+
 message DeleteTenantRequest {
     optional string tenantId = 1;
 }
@@ -1695,6 +1703,10 @@ message CreateSnapshotResponse {
 
 message SnapshotDiffResponse {
   required string snapshotDiff = 1;
+}
+
+message ListSnapshotResponse {
+  repeated SnapshotInfo snapshotInfo = 1;
 }
 
 message DeleteTenantResponse {
