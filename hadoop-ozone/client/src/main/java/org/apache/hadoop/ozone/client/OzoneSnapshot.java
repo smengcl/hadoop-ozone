@@ -31,6 +31,8 @@ public class OzoneSnapshot extends WithMetadata {
   private final SnapshotInfo.SnapshotStatus snapshotStatus;
   private final String snapshotID;  // UUID
   private final String snapshotPath; // snapshot mask
+  private final String checkpointDir;
+  private final String checkpointDirName;
 
   /**
    * Constructs OzoneSnapshot from SnapshotInfo.
@@ -45,7 +47,8 @@ public class OzoneSnapshot extends WithMetadata {
   public OzoneSnapshot(String volumeName, String bucketName,
                        String name, long creationTime,
                        SnapshotInfo.SnapshotStatus snapshotStatus,
-                       String snapshotID, String snapshotPath) {
+                       String snapshotID, String snapshotPath,
+                       String checkpointDir, String checkpointDirName) {
     this.volumeName = volumeName;
     this.bucketName = bucketName;
     this.name = name;
@@ -53,6 +56,8 @@ public class OzoneSnapshot extends WithMetadata {
     this.snapshotStatus = snapshotStatus;
     this.snapshotID = snapshotID;
     this.snapshotPath = snapshotPath;
+    this.checkpointDir = checkpointDir;
+    this.checkpointDirName = checkpointDirName;
   }
 
   /**
@@ -116,5 +121,13 @@ public class OzoneSnapshot extends WithMetadata {
    */
   public String getSnapshotPath() {
     return snapshotPath;
+  }
+
+  public String getCheckpointDir() {
+    return checkpointDir;
+  }
+
+  public String getCheckpointDirName() {
+    return checkpointDirName;
   }
 }

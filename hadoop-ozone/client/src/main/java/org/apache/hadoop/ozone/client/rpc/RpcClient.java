@@ -960,13 +960,17 @@ public class RpcClient implements ClientProtocol {
         "bucket can't be null or empty.");
     return ozoneManagerClient.listSnapshot(volumeName, bucketName).stream()
         .map(snapshotInfo -> new OzoneSnapshot(
-        snapshotInfo.getVolumeName(),
-        snapshotInfo.getBucketName(),
-        snapshotInfo.getName(),
-        snapshotInfo.getCreationTime(),
-        snapshotInfo.getSnapshotStatus(),
-        snapshotInfo.getSnapshotID(),
-        snapshotInfo.getSnapshotID())).collect(Collectors.toList());
+            snapshotInfo.getVolumeName(),
+            snapshotInfo.getBucketName(),
+            snapshotInfo.getName(),
+            snapshotInfo.getCreationTime(),
+            snapshotInfo.getSnapshotStatus(),
+            snapshotInfo.getSnapshotID(),
+            snapshotInfo.getSnapshotPath(),
+            snapshotInfo.getCheckpointDir(),
+            snapshotInfo.getCheckpointDirName()
+            )
+        ).collect(Collectors.toList());
   }
 
   /**
