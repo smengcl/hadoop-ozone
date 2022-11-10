@@ -95,6 +95,11 @@ public class SnapshotDiffManager {
 
     keysToCheck.forEach(key -> {
       try {
+        // HACK
+        if (!key.startsWith("/" + volume + "/" + bucket + "/")) {
+          return;
+        }
+
         final OmKeyInfo oldKey = fsKeyTable.get(key);
         final OmKeyInfo newKey = tsKeyTable.get(key);
         if (areKeysEqual(oldKey, newKey)) {
