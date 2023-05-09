@@ -126,9 +126,9 @@ public class TestOmSnapshot {
   @Parameterized.Parameters
   public static Collection<Object[]> data() {
     return Arrays.asList(
-                         new Object[]{OBJECT_STORE, false, false},
-                         new Object[]{FILE_SYSTEM_OPTIMIZED, false, false},
-                         new Object[]{BucketLayout.LEGACY, true, true});
+        new Object[]{OBJECT_STORE, false, false},
+        new Object[]{FILE_SYSTEM_OPTIMIZED, false, false},
+        new Object[]{BucketLayout.LEGACY, true, true});
   }
 
   public TestOmSnapshot(BucketLayout newBucketLayout,
@@ -908,15 +908,30 @@ public class TestOmSnapshot {
     // job finishes.
     cluster.restartOzoneManager();
     await().atMost(Duration.ofSeconds(120)).
-        until(() -> cluster.getOzoneManager().isLeaderReady());
+        until(() -> cluster.getOzoneManager().isRunning());
     Thread.sleep(1000L);
 
     response = store.snapshotDiff(volumeName, bucketName,
         snapshot1, snapshot2, null, 0, false);
 
-    assertEquals(DONE, response.getJobStatus());
-    assertEquals(100,
-        response.getSnapshotDiffReport().getDiffList().size());
+    // If job was IN_PROGRESS or DONE state when OM restarted, it should be
+    // DONE by this time.
+    // If job FAILED during crash (which mostly happens in the test because
+    // of active snapshot checks), it would be removed by clean up service on
+    // startup, and request after clean up will be considered a new request
+    // and would return IN_PROGRESS. No other state is expected other than
+    // IN_PROGRESS and DONE.
+    if (response.getJobStatus() == DONE) {
+      assertEquals(100, response.getSnapshotDiffReport().getDiffList().size());
+    } else if (response.getJobStatus() == IN_PROGRESS) {
+      Thread.sleep(response.getWaitTimeInMs());
+      response = store.snapshotDiff(volumeName, bucketName,
+          snapshot1, snapshot2, null, 0, false);
+      assertEquals(DONE, response.getJobStatus());
+      assertEquals(100, response.getSnapshotDiffReport().getDiffList().size());
+    } else {
+      fail("Unexpected job status for the test.");
+    }
   }
 
   // Test snapshot diff when OM restarts in non-HA OM env and report is
@@ -947,7 +962,7 @@ public class TestOmSnapshot {
     // the restart.
     cluster.restartOzoneManager();
     await().atMost(Duration.ofSeconds(120)).
-        until(() -> cluster.getOzoneManager().isLeaderReady());
+        until(() -> cluster.getOzoneManager().isRunning());
 
     response = store.snapshotDiff(volumeName, bucketName, snapshot1, snapshot2,
         nextToken, pageSize, false);
