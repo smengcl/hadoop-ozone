@@ -736,6 +736,13 @@ public final class OmSnapshotManager implements AutoCloseable {
     if (snapshotCache != null) {
       snapshotCache.invalidateAll();
       snapshotCache.cleanUp();
+      snapshotCache.asMap().forEach((k, v) -> {
+        try {
+          v.close();
+        } catch (IOException e) {
+          throw new IllegalStateException(e);
+        }
+      });
     }
     if (snapshotDiffCleanupService != null) {
       snapshotDiffCleanupService.shutdown();
