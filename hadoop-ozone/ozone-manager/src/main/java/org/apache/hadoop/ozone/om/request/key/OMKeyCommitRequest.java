@@ -143,6 +143,9 @@ public class OMKeyCommitRequest extends OMKeyRequest {
 
     boolean isHSync = commitKeyRequest.hasHsync() &&
             commitKeyRequest.getHsync();
+    LOG.info("CDPD-59463. DEBUG: isHSync = {}, volumeName = {}, " +
+            "bucketName = {}, keyName = {}",
+        isHSync, volumeName, bucketName, keyName);
     try {
       commitKeyArgs = resolveBucketLink(ozoneManager, commitKeyArgs, auditMap);
       volumeName = commitKeyArgs.getVolumeName();
