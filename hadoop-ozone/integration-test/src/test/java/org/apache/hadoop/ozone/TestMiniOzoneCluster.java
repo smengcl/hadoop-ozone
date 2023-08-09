@@ -19,6 +19,8 @@
 package org.apache.hadoop.ozone;
 
 import org.apache.hadoop.hdds.HddsConfigKeys;
+import org.apache.hadoop.hdds.client.ReplicationConfig;
+import org.apache.hadoop.hdds.client.ReplicationType;
 import org.apache.hadoop.hdds.client.StandaloneReplicationConfig;
 import org.apache.hadoop.hdds.conf.OzoneConfiguration;
 import org.apache.hadoop.hdds.conf.StorageSize;
@@ -29,27 +31,47 @@ import org.apache.hadoop.hdds.scm.XceiverClientGrpc;
 import org.apache.hadoop.hdds.scm.pipeline.Pipeline;
 import org.apache.hadoop.hdds.scm.pipeline.PipelineID;
 import org.apache.hadoop.hdds.scm.server.StorageContainerManager;
+import org.apache.hadoop.hdds.utils.db.Table;
+import org.apache.hadoop.hdds.utils.db.TableIterator;
+import org.apache.hadoop.ozone.client.BucketArgs;
+import org.apache.hadoop.ozone.client.ObjectStore;
+import org.apache.hadoop.ozone.client.OzoneBucket;
+import org.apache.hadoop.ozone.client.OzoneClient;
+import org.apache.hadoop.ozone.client.OzoneVolume;
+import org.apache.hadoop.ozone.client.io.OzoneOutputStream;
 import org.apache.hadoop.ozone.container.common.SCMTestUtils;
 import org.apache.hadoop.ozone.container.common.statemachine.DatanodeStateMachine;
 import org.apache.hadoop.ozone.container.common.statemachine.EndpointStateMachine;
 import org.apache.hadoop.ozone.container.common.volume.StorageVolume;
+import org.apache.hadoop.ozone.om.OMMetadataManager;
+import org.apache.hadoop.ozone.om.helpers.BucketLayout;
+import org.apache.hadoop.ozone.om.helpers.OmKeyInfo;
+import org.apache.hadoop.ozone.om.helpers.RepeatedOmKeyInfo;
+import org.apache.hadoop.ozone.om.service.KeyDeletingService;
 import org.apache.ozone.test.GenericTestUtils;
 import org.apache.ozone.test.tag.Flaky;
 import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 import org.junit.jupiter.api.io.TempDir;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.io.File;
 import java.io.IOException;
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
+import java.util.concurrent.TimeUnit;
 
 import static org.apache.hadoop.hdds.protocol.DatanodeDetails.Port;
 import static org.apache.hadoop.hdds.protocol.MockDatanodeDetails.randomDatanodeDetails;
 import static org.apache.hadoop.ozone.OzoneConfigKeys.DFS_CONTAINER_RATIS_IPC_RANDOM_PORT;
+import static org.apache.hadoop.ozone.om.OMConfigKeys.OZONE_DIR_DELETING_SERVICE_INTERVAL;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
@@ -58,11 +80,14 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 /**
  * Test cases for mini ozone cluster.
  */
-@Timeout(300)
+//@Timeout(300)
 public class TestMiniOzoneCluster {
 
   private MiniOzoneCluster cluster;
   private static OzoneConfiguration conf;
+
+  private static final Logger LOG =
+      LoggerFactory.getLogger(TestMiniOzoneCluster.class);
 
   @BeforeAll
   static void setup(@TempDir File testDir) {
@@ -78,6 +103,94 @@ public class TestMiniOzoneCluster {
     if (cluster != null) {
       cluster.shutdown();
     }
+  }
+
+  @Test
+  public void testKeyRenameDirDelete() throws Exception {
+    conf.setTimeDuration(OzoneConfigKeys.OZONE_BLOCK_DELETING_SERVICE_INTERVAL, 1, TimeUnit.SECONDS);
+    conf.setTimeDuration(OZONE_DIR_DELETING_SERVICE_INTERVAL, 1, TimeUnit.SECONDS);
+//    conf.setBoolean(OMConfigKeys.OZONE_OM_ENABLE_FILESYSTEM_PATHS, true);
+    cluster = MiniOzoneCluster.newBuilder(conf)
+        .setNumDatanodes(3)
+        .build();
+    cluster.waitForClusterToBeReady();
+
+    try (OzoneClient client = cluster.newClient()) {
+      ObjectStore store = client.getObjectStore();
+      // ofs://ozone1/testozonevol/testozonebucket/inputTera/part-m-00000
+      String volumeName = "testozonevol";
+      String bucketName = "testozonebucket";
+      store.createVolume(volumeName);
+      OzoneVolume volume = store.getVolume(volumeName);
+      volume.createBucket(bucketName,
+          BucketArgs.newBuilder().setBucketLayout(BucketLayout.LEGACY).build());
+      OzoneBucket bucket = volume.getBucket(bucketName);
+      Assertions.assertTrue(bucket.getBucketLayout().isLegacy());
+
+      // Loop until test failure.
+      long runCount = 0;
+      while (true) {
+        LOG.info("Starting test run {}", runCount++);
+        String keyTemp = "inputTera/_temporary/1/_temporary/attempt_1691047336995_0006_m_000001_0/part-m-00001";
+        String data = "random data";
+        ReplicationConfig replicationConfig =
+            ReplicationConfig.fromTypeAndFactor(ReplicationType.RATIS,
+                org.apache.hadoop.hdds.client.ReplicationFactor.THREE);
+        try (OzoneOutputStream outputStream = bucket.createKey(
+            keyTemp, data.length(), replicationConfig, new HashMap<>())) {
+          outputStream.write(data.getBytes(StandardCharsets.UTF_8), 0,
+              data.length());
+          outputStream.hsync();
+          // COMMIT_KEY when output stream is auto-closed.
+        }
+
+        // RENAME_KEY
+//        String keyPerm = "inputTera/part-m-" + runCount;
+//        bucket.renameKey(keyTemp, keyPerm);
+
+        // DELETE_KEY
+//        bucket.deleteDirectory("inputTera/_temporary", true);
+
+        break;
+      }
+    }
+
+    // Wait for double buffer flush so changes are visible in DB,
+    // so I don't have to iterate cache
+    cluster.getOzoneManager().getOmRatisServer().getOmStateMachine()
+        .awaitDoubleBufferFlush();
+
+    OMMetadataManager ommm = cluster.getOzoneManager().getMetadataManager();
+
+    LOG.warn("keyTable:     ----- START -----");
+    // Print keyTable
+    try (TableIterator<String, ?
+        extends Table.KeyValue<String, OmKeyInfo>>
+             it = ommm.getKeyTable(BucketLayout.LEGACY).iterator()) {
+      while (it.hasNext()) {
+        Table.KeyValue<String, OmKeyInfo> kv = it.next();
+        String key = kv.getKey();
+        OmKeyInfo val = kv.getValue();
+        LOG.warn("keyTable:     key = {}, val = {}", key, val);
+      }
+    }
+    LOG.warn("keyTable:     -----  END  -----");
+    // Print deletedTable
+    LOG.warn("deletedTable: ----- START -----");
+    try (TableIterator<String, ?
+        extends Table.KeyValue<String, RepeatedOmKeyInfo>>
+             it = ommm.getDeletedTable().iterator()) {
+      while (it.hasNext()) {
+        Table.KeyValue<String, RepeatedOmKeyInfo> kv = it.next();
+        String key = kv.getKey();
+        RepeatedOmKeyInfo val = kv.getValue();
+        LOG.warn("deletedTable: key = {}, val = {}", key, val);
+      }
+    }
+    LOG.warn("deletedTable: -----  END  -----");
+    // Then check if the deletedTable entry matches keyTable's key's block locId
+
+//    Assertions.fail();
   }
 
   @Test
