@@ -162,7 +162,9 @@ public class OMKeyCommitRequest extends OMKeyRequest {
       omMetrics.incNumKeyCommits();
     }
 
-    LOG.debug("isHSync = {}, volumeName = {}, bucketName = {}, keyName = {}",
+    LOG.debug("clientID = {}, isHSync = {}, "
+            + "volumeName = {}, bucketName = {}, keyName = {}",
+        commitKeyRequest.getClientID(),
         isHSync, volumeName, bucketName, keyName);
 
     try {
@@ -272,6 +274,7 @@ public class OMKeyCommitRequest extends OMKeyRequest {
         filterOutBlocksStillInUse(omKeyInfo, oldVerKeyInfo);
 
         if (!oldVerKeyInfo.getOmKeyInfoList().isEmpty()) {
+          LOG.debug("oldVerKeyInfo put into deletedTable: = {}", oldVerKeyInfo);
           oldKeyVersionsToDeleteMap.put(delKeyName, oldVerKeyInfo);
         }
       } else {

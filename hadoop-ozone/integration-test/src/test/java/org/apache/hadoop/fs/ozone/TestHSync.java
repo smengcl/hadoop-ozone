@@ -111,7 +111,8 @@ public class TestHSync {
     final int flushSize = 2 * chunkSize;
     final int maxFlushSize = 2 * flushSize;
     final int blockSize = 2 * maxFlushSize;
-    final BucketLayout layout = BucketLayout.FILE_SYSTEM_OPTIMIZED;
+//    final BucketLayout layout = BucketLayout.FILE_SYSTEM_OPTIMIZED;
+     final BucketLayout layout = BucketLayout.LEGACY;
 
     CONF.setBoolean(OZONE_OM_RATIS_ENABLE_KEY, false);
     CONF.set(OZONE_DEFAULT_BUCKET_LAYOUT, layout.name());
@@ -191,6 +192,56 @@ public class TestHSync {
               key);
         }
       }
+    }
+  }
+
+  @Test
+  public void testTwoClientsHSyncTheSameKey() throws Exception {
+    // Two clients trying to HSync on the same key
+
+    // Set the fs.defaultFS
+    final String rootPath = String.format("%s://%s/",
+        OZONE_OFS_URI_SCHEME, CONF.get(OZONE_OM_ADDRESS_KEY));
+    CONF.set(CommonConfigurationKeysPublic.FS_DEFAULT_NAME_KEY, rootPath);
+
+    final String dir = OZONE_ROOT + bucket.getVolumeName()
+        + OZONE_URI_DELIMITER + bucket.getName();
+
+    String data = "Client 1 wins";
+    String data2 = "Client 2 wins";
+    final Path file = new Path(dir, "file-hsync-two-clients");
+
+    try (FileSystem fs = FileSystem.get(CONF)) {
+      try (FSDataOutputStream outputStream = fs.create(file, true)) {
+        outputStream.write(data.getBytes(UTF_8), 0, data.length());
+        outputStream.hsync();
+        readKey("1st (client 1 hsync)", fs, file);
+
+        try (FileSystem fs2 = FileSystem.get(CONF)) {
+          readKey("2nd (client 2 open)", fs2, file);
+
+          try (FSDataOutputStream outputStream2 = fs2.create(file, true)) {
+            outputStream2.write(data2.getBytes(UTF_8), 0, data2.length());
+            readKey("3rd (stream 2 write)", fs2, file);
+            outputStream2.hsync();
+            readKey("4th (stream 2 hsync)", fs2, file);
+          }
+          readKey("5th (stream 2 close)", fs2, file);
+        }
+        readKey("6th (client 2 close)", fs, file);
+      }
+      readKey("7th (stream 1 close)", fs, file);
+    }
+
+    try (FileSystem fs3 = FileSystem.get(CONF)) {
+      readKey("8th (client 3 read)", fs3, file);
+    }
+  }
+
+  private void readKey(String msg, FileSystem fs, Path file) throws Exception {
+    try (FSDataInputStream inputStream3 = fs.open(file)) {
+      byte[] barr = org.apache.commons.io.IOUtils.toByteArray(inputStream3);
+      LOG.warn("--- key data {} read: {}", msg, new String(barr));
     }
   }
 
