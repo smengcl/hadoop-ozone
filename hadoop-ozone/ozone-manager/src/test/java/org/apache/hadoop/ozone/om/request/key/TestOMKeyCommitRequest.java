@@ -351,7 +351,8 @@ public class TestOMKeyCommitRequest extends TestOMKeyRequest {
     Assert.assertEquals(600, secondCommitUsedBytes - usedBytes);
 
     // 3rd and final commit of all 10 blocks, HSync = false
-    keyToDeleteMap = doKeyCommit(false, allocatedKeyLocationList);
+//    keyToDeleteMap = doKeyCommit(false, allocatedKeyLocationList);
+    keyToDeleteMap = doKeyCommit(false, allocatedKeyLocationList.subList(1, 10));
     // keyToDeleteMap should be empty because none of the previous blocks
     // should be deleted.
     Assert.assertNotNull(keyToDeleteMap);
@@ -388,6 +389,8 @@ public class TestOMKeyCommitRequest extends TestOMKeyRequest {
             omKeyCommitRequest.getBucketLayout()).get(openKey);
     if (isHSync) {
       Assert.assertNotNull(omKeyInfo);
+//      Assert.assertNotNull(
+//          omKeyInfo.getMetadata().get(OzoneConsts.HSYNC_CLIENT_ID));
     } else {
       // Key should not exist in OpenKeyTable anymore with non-HSync commit
       Assert.assertNull(omKeyInfo);
