@@ -2249,6 +2249,14 @@
     <description>The OzoneManager service principal. Ex om/_HOST@REALM.COM</description>
   </property>
   <property>
+    <name>ozone.om.kerberos.principal.pattern</name>
+    <value>*</value>
+    <description>
+      A client-side RegEx that can be configured to control
+      allowed realms to authenticate with (useful in cross-realm env.)
+    </description>
+  </property>
+  <property>
     <name>ozone.om.http.auth.kerberos.principal</name>
     <value>HTTP/_HOST@REALM</value>
     <tag>OZONE, SECURITY, KERBEROS</tag>
@@ -4296,29 +4304,11 @@
   </property>
 
   <property>
-    <name>ozone.om.snapshot.sst_dumptool.pool.size</name>
-    <value>1</value>
-    <tag>OZONE, OM</tag>
-    <description>
-      Threadpool size for SST Dumptool which would be used for computing snapdiff when native library is enabled.
-    </description>
-  </property>
-
-  <property>
     <name>ozone.om.snapshot.load.native.lib</name>
     <value>true</value>
     <tag>OZONE, OM</tag>
     <description>
       Load native library for performing optimized snapshot diff.
-    </description>
-  </property>
-
-  <property>
-    <name>ozone.om.snapshot.sst_dumptool.buffer.size</name>
-    <value>8KB</value>
-    <tag>OZONE, OM</tag>
-    <description>
-      Buffer size for SST Dumptool Pipe which would be used for computing snapdiff when native library is enabled.
     </description>
   </property>
 
