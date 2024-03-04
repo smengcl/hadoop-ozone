@@ -242,15 +242,15 @@ jobs:
     steps:
       - name: Checkout project
         uses: actions/checkout@v4
-      - name: Cache for maven dependencies
-        uses: actions/cache/restore@v4
-        with:
-          path: |
-            ~/.m2/repository
-            !~/.m2/repository/org/apache/ozone
-          key: maven-repo-${{ hashFiles('**/pom.xml') }}
-          restore-keys: |
-            maven-repo-
+#      - name: Cache for maven dependencies
+#        uses: actions/cache/restore@v4
+#        with:
+#          path: |
+#            ~/.m2/repository
+#            !~/.m2/repository/org/apache/ozone
+#          key: maven-repo-${{ hashFiles('**/pom.xml') }}
+#          restore-keys: |
+#            maven-repo-
       - name: Setup java
         uses: actions/setup-java@v4
         with:
