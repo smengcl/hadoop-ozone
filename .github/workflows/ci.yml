@@ -256,6 +256,10 @@ jobs:
         with:
           distribution: 'zulu'
           java-version: 8
+      - name: Run a full build
+        run: hadoop-ozone/dev-support/checks/build.sh -Pdist -Psrc
+        env:
+          GRADLE_ENTERPRISE_ACCESS_KEY: ${{ secrets.GE_ACCESS_TOKEN }}
       - name: Execute tests
         run: hadoop-ozone/dev-support/checks/${{ matrix.check }}.sh
         continue-on-error: true
