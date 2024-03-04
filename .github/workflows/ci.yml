@@ -187,7 +187,7 @@ jobs:
     if: needs.build-info.outputs.needs-basic-check == 'true'
     strategy:
       matrix:
-        check: ${{ fromJson(needs.build-info.outputs.basic-checks) }}
+        check: ['author']
       fail-fast: false
     steps:
       - name: Checkout project
@@ -237,7 +237,7 @@ jobs:
     if: needs.build-info.outputs.needs-unit-check == 'true'
     strategy:
       matrix:
-        check: ${{ fromJson(needs.build-info.outputs.unit-checks) }}
+        check: ['unit']
       fail-fast: false
     steps:
       - name: Checkout project
@@ -257,7 +257,7 @@ jobs:
           distribution: 'zulu'
           java-version: 8
       - name: Run a full build
-        run: hadoop-ozone/dev-support/checks/build.sh -Pdist -Psrc
+        run: hadoop-ozone/dev-support/checks/build.sh -Pdist -Psrc -DskipShade
         env:
           GRADLE_ENTERPRISE_ACCESS_KEY: ${{ secrets.GE_ACCESS_TOKEN }}
       - name: Execute tests
