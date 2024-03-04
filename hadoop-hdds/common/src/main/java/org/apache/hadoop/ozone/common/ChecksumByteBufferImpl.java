@@ -101,6 +101,7 @@ public class ChecksumByteBufferImpl implements ChecksumByteBuffer {
     } else {
       byte[] b = new byte[buffer.remaining()];
       LOG.warn("buffer.remaining() = {}", buffer.remaining());
+      System.out.println("(out) buffer.remaining() = " + buffer.remaining());
       buffer.get(b);
       checksum.update(b, 0, b.length);
     }
