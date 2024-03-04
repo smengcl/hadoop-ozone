@@ -111,7 +111,6 @@ public class BufferPool {
   }
 
   public void clearBufferPool() {
-    bufferList.forEach(ChunkBuffer::close);
     bufferList.clear();
     currentBufferIndex = -1;
   }
