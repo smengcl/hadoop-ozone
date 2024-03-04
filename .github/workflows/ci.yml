@@ -28,9 +28,9 @@ jobs:
       acceptance-suites: ${{ steps.acceptance-suites.outputs.suites }}
       needs-basic-check: ${{ steps.categorize-basic-checks.outputs.needs-basic-check }}
       needs-unit-check: ${{ steps.categorize-basic-checks.outputs.needs-unit-check }}
-      basic-checks: 'unit'
+      basic-checks: ${{ steps.categorize-basic-checks.outputs.basic-checks }}
       unit-checks: ${{ steps.categorize-basic-checks.outputs.unit-checks }}
-      needs-build: 'false'
+      needs-build: ${{ steps.selective-checks.outputs.needs-build }}
       needs-compile: ${{ steps.selective-checks.outputs.needs-compile }}
       needs-compose-tests: ${{ steps.selective-checks.outputs.needs-compose-tests }}
       needs-dependency-check: ${{ steps.selective-checks.outputs.needs-dependency-check }}
