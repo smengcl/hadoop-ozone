@@ -74,7 +74,7 @@ jobs:
       - build-info
     runs-on: ubuntu-20.04
     timeout-minutes: 60
-    if: needs.build-info.outputs.needs-build == 'true'
+    if: needs.build-info.outputs.needs-build == 'false'
     strategy:
       matrix:
         java: [ 8 ]
