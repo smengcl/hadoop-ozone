@@ -39,8 +39,11 @@ import org.apache.hadoop.hdds.scm.XceiverClientReply;
 import org.apache.hadoop.hdds.scm.XceiverClientSpi;
 import org.apache.hadoop.hdds.scm.container.common.helpers.ContainerNotOpenException;
 import org.apache.hadoop.hdds.scm.pipeline.Pipeline;
+import org.apache.ratis.thirdparty.com.google.protobuf.ByteString;
 
 import java.io.IOException;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
 import java.util.function.Function;
@@ -108,9 +111,26 @@ public class MockXceiverClientSpi extends XceiverClientSpi {
     }
   }
 
+  private ChunkInfo returnChunkDataDeepCopy(ChunkInfo chunkInfo) {
+    List<ByteString> checksumsList = new ArrayList<>();
+    for (ByteString byteString : chunkInfo.getChecksumData().getChecksumsList()) {
+      checksumsList.add(ByteString.copyFrom(byteString.asReadOnlyByteBuffer()));
+    }
+    ContainerProtos.ChecksumData chunkData =
+        ContainerProtos.ChecksumData.newBuilder()
+            .setType(chunkInfo.getChecksumData().getType())
+            .setBytesPerChecksum(chunkInfo.getChecksumData().getBytesPerChecksum())
+            .clearChecksums()
+            .addAllChecksums(checksumsList)
+            .build();
+    return ChunkInfo.newBuilder(chunkInfo)
+        .setChecksumData(chunkData)
+        .build();
+  }
+
   private ReadChunkResponseProto readChunk(ReadChunkRequestProto readChunk) {
     return ReadChunkResponseProto.newBuilder()
-        .setChunkData(readChunk.getChunkData())
+        .setChunkData(returnChunkDataDeepCopy(readChunk.getChunkData()))
         .setData(datanodeStorage
             .readChunkData(readChunk.getBlockID(), readChunk.getChunkData()))
         .setBlockID(readChunk.getBlockID())
