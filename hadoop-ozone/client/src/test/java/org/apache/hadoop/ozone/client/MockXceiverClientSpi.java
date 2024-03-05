@@ -47,6 +47,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
 import java.util.function.Function;
+import java.util.stream.Collectors;
 
 /**
  * Mocked version of the datanode client.
@@ -112,10 +113,10 @@ public class MockXceiverClientSpi extends XceiverClientSpi {
   }
 
   private ChunkInfo returnChunkDataDeepCopy(ChunkInfo chunkInfo) {
-    List<ByteString> checksumsList = new ArrayList<>();
-    for (ByteString byteString : chunkInfo.getChecksumData().getChecksumsList()) {
-      checksumsList.add(ByteString.copyFrom(byteString.asReadOnlyByteBuffer()));
-    }
+    List<ByteString> checksumsList =
+        chunkInfo.getChecksumData().getChecksumsList().stream().map(
+                byteString -> ByteString.copyFrom(byteString.asReadOnlyByteBuffer()))
+            .collect(Collectors.toList());
     ContainerProtos.ChecksumData chunkData =
         ContainerProtos.ChecksumData.newBuilder()
             .setType(chunkInfo.getChecksumData().getType())
@@ -129,10 +130,11 @@ public class MockXceiverClientSpi extends XceiverClientSpi {
   }
 
   private ReadChunkResponseProto readChunk(ReadChunkRequestProto readChunk) {
+    ChunkInfo chunkInfoCopy = returnChunkDataDeepCopy(readChunk.getChunkData());
     return ReadChunkResponseProto.newBuilder()
-        .setChunkData(returnChunkDataDeepCopy(readChunk.getChunkData()))
+        .setChunkData(chunkInfoCopy)
         .setData(datanodeStorage
-            .readChunkData(readChunk.getBlockID(), readChunk.getChunkData()))
+            .readChunkData(readChunk.getBlockID(), chunkInfoCopy))
         .setBlockID(readChunk.getBlockID())
         .build();
   }

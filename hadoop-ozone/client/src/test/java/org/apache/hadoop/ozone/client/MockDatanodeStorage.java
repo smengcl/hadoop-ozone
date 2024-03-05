@@ -182,9 +182,9 @@ public class MockDatanodeStorage {
           "readChunkData: blockID={}, offset={}, len={}",
           createKey(blockID), chunkInfo.getOffset(), chunkInfo.getLen());
     }
-    ByteString str = data.get(createKey(blockID)).substring(
+    ByteString str = ByteString.copyFrom(data.get(createKey(blockID)).substring(
         (int)chunkInfo.getOffset(),
-        (int)chunkInfo.getOffset() + (int)chunkInfo.getLen());
+        (int)chunkInfo.getOffset() + (int)chunkInfo.getLen()).asReadOnlyByteBuffer());
     return str;
   }
 
