@@ -78,7 +78,7 @@ public class MockDatanodeStorage {
       throw exception;
     }
     data.put(createKey(blockID, chunkInfo),
-        ByteString.copyFrom(bytes.toByteArray()));
+        bytes);
     chunks.put(createKey(blockID, chunkInfo), chunkInfo);
     fullBlockData
         .put(new BlockID(blockID.getContainerID(), blockID.getLocalID()),
