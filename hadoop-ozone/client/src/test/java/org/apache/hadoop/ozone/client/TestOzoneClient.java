@@ -47,6 +47,7 @@ import java.util.UUID;
 
 import static java.nio.charset.StandardCharsets.UTF_8;
 import static org.apache.hadoop.hdds.client.ReplicationFactor.ONE;
+import static org.apache.hadoop.ozone.OzoneConfigKeys.OZONE_UNSAFEBYTEOPERATIONS_ENABLED;
 import static org.apache.ozone.test.GenericTestUtils.getTestStartTime;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -74,6 +75,7 @@ public class TestOzoneClient {
   @BeforeEach
   public void init() throws IOException {
     OzoneConfiguration config = new OzoneConfiguration();
+    config.setBoolean(OZONE_UNSAFEBYTEOPERATIONS_ENABLED, false);
     createNewClient(config, new SinglePipelineBlockAllocator(config));
   }
 
