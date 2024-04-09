@@ -135,9 +135,9 @@ public class RatisBlockOutputStream extends BlockOutputStream
     CompletableFuture<Void> future = null;
     if (!isClosed()) {
       if (getBufferPool() != null && getBufferPool().getSize() > 0) {
-        future = handleFlush(false);
+        handleFlush(false);
       }
-      future = waitForFlushAndCommit(false, future);
+      future = waitForFlushAndCommit(false);
     }
     return future;
   }
