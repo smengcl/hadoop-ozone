@@ -53,8 +53,9 @@ public class DatanodeRatisServerConfig {
     this.requestTimeOut = duration.toMillis();
   }
 
+  // hdds.ratis.raft.server.watch.timeout
   @Config(key = "watch.timeout",
-      defaultValue = "180s",
+      defaultValue = "10s",
       type = ConfigType.TIME,
       tags = {OZONE, DATANODE, RATIS},
       description = "The timeout duration for watch request on Ratis Server. " +
@@ -71,6 +72,7 @@ public class DatanodeRatisServerConfig {
     this.watchTimeOut = duration.toMillis();
   }
 
+  // hdds.ratis.raft.server.notification.no-leader.timeout
   @Config(key = "notification.no-leader.timeout",
       defaultValue = "300s",
       type = ConfigType.TIME,
@@ -89,6 +91,7 @@ public class DatanodeRatisServerConfig {
     this.noLeaderTimeout = duration.toMillis();
   }
 
+  // hdds.ratis.raft.server.rpc.slowness.timeout
   @Config(key = "rpc.slowness.timeout",
       defaultValue = "300s",
       type = ConfigType.TIME,
@@ -107,6 +110,7 @@ public class DatanodeRatisServerConfig {
     this.followerSlownessTimeout = duration.toMillis();
   }
 
+  // hdds.ratis.raft.server.write.element-limit
   @Config(key = "write.element-limit",
       defaultValue = "1024",
       type = ConfigType.INT,
@@ -124,6 +128,7 @@ public class DatanodeRatisServerConfig {
     this.leaderNumPendingRequests = leaderNumPendingRequests;
   }
 
+  // hdds.ratis.raft.server.datastream.request.threads
   @Config(key = "datastream.request.threads",
       defaultValue = "20",
       type = ConfigType.INT,
