@@ -88,7 +88,9 @@ public enum DBProfile {
       config.setBlockCache(new ManagedLRUCache(blockCacheSize))
             .setBlockSize(blockSize)
             .setPinL0FilterAndIndexBlocksInCache(true)
-            .setFilterPolicy(new ManagedBloomFilter());
+            .setFilterPolicy(new ManagedBloomFilter())
+            .setFormatVersion(5);
+      // TODO: Can bump format_version when necessary features are added to HDDSLayoutFeature and OMLayoutFeature
       return config;
     }
 
