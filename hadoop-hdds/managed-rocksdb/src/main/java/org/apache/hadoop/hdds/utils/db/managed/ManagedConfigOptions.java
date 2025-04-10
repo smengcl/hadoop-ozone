@@ -33,10 +33,12 @@ public class ManagedConfigOptions extends ConfigOptions {
     super();
   }
 
+  @Override
   public ManagedConfigOptions setIgnoreUnknownOptions(final boolean ignore) {
     return (ManagedConfigOptions) super.setIgnoreUnknownOptions(ignore);
   }
 
+  @Override
   public ManagedConfigOptions setEnv(final Env env) {
     return (ManagedConfigOptions) super.setEnv(env);
   }
