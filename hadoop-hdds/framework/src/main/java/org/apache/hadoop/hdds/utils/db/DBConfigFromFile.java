@@ -25,6 +25,7 @@ import java.io.IOException;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.List;
+import org.apache.hadoop.hdds.utils.db.managed.ManagedConfigOptions;
 import org.apache.hadoop.hdds.utils.db.managed.ManagedDBOptions;
 import org.eclipse.jetty.util.StringUtil;
 import org.rocksdb.ColumnFamilyDescriptor;
@@ -128,10 +129,9 @@ public final class DBConfigFromFile {
 
       if (optionsFile.toFile().exists()) {
         options = new ManagedDBOptions();
-        try {
-          OptionsUtil.loadOptionsFromFile(optionsFile.toString(),
-              env, options, cfDescs, true);
-
+        try (ManagedConfigOptions configOptions =
+                 new ManagedConfigOptions().setIgnoreUnknownOptions(true).setEnv(env)) {
+          OptionsUtil.loadOptionsFromFile(configOptions, optionsFile.toString(), options, cfDescs);
         } catch (RocksDBException rdEx) {
           throw toIOException("Unable to find/open Options file.", rdEx);
         }

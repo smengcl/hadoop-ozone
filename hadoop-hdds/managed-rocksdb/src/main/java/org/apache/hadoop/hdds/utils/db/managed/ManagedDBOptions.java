@@ -25,6 +25,7 @@ import org.apache.hadoop.hdds.utils.IOUtils;
 import org.apache.ratis.util.UncheckedAutoCloseable;
 import org.rocksdb.DBOptions;
 import org.rocksdb.Logger;
+import org.rocksdb.LoggerInterface;
 
 /**
  * Managed DBOptions.
@@ -34,9 +35,12 @@ public class ManagedDBOptions extends DBOptions {
   private final UncheckedAutoCloseable leakTracker = track(this);
   private final AtomicReference<Logger> loggerRef = new AtomicReference<>();
 
-  @Override
-  public DBOptions setLogger(Logger logger) {
-    IOUtils.close(LOG, loggerRef.getAndSet(logger));
+  public DBOptions setLogger(LoggerInterface logger) {
+    if (logger instanceof Logger) {
+      IOUtils.close(LOG, loggerRef.getAndSet((Logger) logger));
+    } else {
+      throw new IllegalArgumentException("Unsupported logger type: " + logger);
+    }
     return super.setLogger(logger);
   }
 
