@@ -97,7 +97,7 @@ public class OmConfig extends ReconfigurableConfig {
   private Set<ACLType> userDefaultRightSet;
 
   @Config(key = "group.rights",
-      defaultValue = "READ, LIST",
+      defaultValue = "READ",
       type = ConfigType.STRING,
       tags = {ConfigTag.OM, ConfigTag.SECURITY},
       description = "Default group permissions set for an object in " +
