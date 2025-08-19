@@ -609,11 +609,21 @@ public class HddsDispatcher implements ContainerDispatcher, Auditor {
           .setContainerID(containerData.getContainerID())
           .setAction(ContainerAction.Action.CLOSE).setReason(reason).build();
       context.addContainerActionIfAbsent(action);
+      
+      // HDDS-13589: Check volume fullness excluding committed space for triggering immediate heartbeat
+      boolean shouldTriggerImmediate = isContainerFull(container) || isContainerUnhealthy(container);
+      if (!shouldTriggerImmediate && container != null) {
+        // For volume fullness, use the correct check that excludes committed space
+        shouldTriggerImmediate = ContainerUtils.isVolumeFullExcludingCommittedSpace(
+            container.getContainerData().getVolume());
+      }
+      
       AtomicBoolean immediateCloseActionSent = containerData.getImmediateCloseActionSent();
       // if an immediate heartbeat has not been triggered already, trigger it now
-      if (immediateCloseActionSent.compareAndSet(false, true)) {
+      if (shouldTriggerImmediate && immediateCloseActionSent.compareAndSet(false, true)) {
         context.getParent().triggerHeartbeat();
-        if (isVolumeFull) {
+        if (isVolumeFull || ContainerUtils.isVolumeFullExcludingCommittedSpace(
+            container.getContainerData().getVolume())) {
           // log only if volume is full
           // don't want to log if only container is full because that is expected to happen frequently
           LOG.warn("Triggered immediate heartbeat because of full volume.");

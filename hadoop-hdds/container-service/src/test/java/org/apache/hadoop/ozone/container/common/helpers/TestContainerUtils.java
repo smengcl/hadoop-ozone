@@ -24,7 +24,9 @@ import static org.apache.hadoop.hdds.protocol.datanode.proto.ContainerProtos.Typ
 import static org.apache.hadoop.hdds.scm.protocolPB.ContainerCommandResponseBuilders.getReadChunkResponse;
 import static org.apache.hadoop.ozone.container.ContainerTestHelper.getDummyCommandRequestProto;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.mockStatic;
 import static org.mockito.Mockito.when;
@@ -39,6 +41,7 @@ import java.nio.file.Files;
 import org.apache.commons.lang3.RandomUtils;
 import org.apache.hadoop.hdds.HddsConfigKeys;
 import org.apache.hadoop.hdds.conf.OzoneConfiguration;
+import org.apache.hadoop.hdds.fs.SpaceUsageSource;
 import org.apache.hadoop.hdds.protocol.DatanodeDetails;
 import org.apache.hadoop.hdds.protocol.datanode.proto.ContainerProtos;
 import org.apache.hadoop.hdds.protocol.datanode.proto.ContainerProtos.ContainerCommandRequestProto;
@@ -46,6 +49,7 @@ import org.apache.hadoop.hdds.protocol.datanode.proto.ContainerProtos.ContainerC
 import org.apache.hadoop.hdds.protocol.proto.HddsProtos;
 import org.apache.hadoop.hdds.scm.ByteStringConversion;
 import org.apache.hadoop.ozone.common.ChunkBuffer;
+import org.apache.hadoop.ozone.container.common.volume.HddsVolume;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -182,5 +186,31 @@ public class TestContainerUtils {
     assertEquals(expected.getProtoBufMessage(), actual.getProtoBufMessage());
     assertEquals(expected.getInitialVersion(), actual.getInitialVersion());
     assertEquals(expected.getIpAddress(), actual.getIpAddress());
+  }
+
+  @Test
+  public void testIsVolumeFullExcludingCommittedSpace() {
+    // Test for HDDS-13589: volume fullness check excluding committed space
+    HddsVolume mockVolume = mock(HddsVolume.class);
+    SpaceUsageSource mockUsage = mock(SpaceUsageSource.class);
+    
+    when(mockVolume.getCurrentUsage()).thenReturn(mockUsage);
+    when(mockVolume.getFreeSpaceToSpare(1000L)).thenReturn(100L); // 10% min free space
+    
+    // Test case 1: Volume has enough space (available > minFreeSpace)
+    when(mockUsage.getCapacity()).thenReturn(1000L);
+    when(mockUsage.getAvailable()).thenReturn(200L); // 200 - 100 = 100 > 0
+    assertFalse(ContainerUtils.isVolumeFullExcludingCommittedSpace(mockVolume),
+        "Volume should not be full when available space exceeds min free space");
+    
+    // Test case 2: Volume is exactly at the threshold (available == minFreeSpace)
+    when(mockUsage.getAvailable()).thenReturn(100L); // 100 - 100 = 0
+    assertTrue(ContainerUtils.isVolumeFullExcludingCommittedSpace(mockVolume),
+        "Volume should be full when available space equals min free space");
+    
+    // Test case 3: Volume is full (available < minFreeSpace)
+    when(mockUsage.getAvailable()).thenReturn(50L); // 50 - 100 = -50 < 0
+    assertTrue(ContainerUtils.isVolumeFullExcludingCommittedSpace(mockVolume),
+        "Volume should be full when available space is less than min free space");
   }
 }

@@ -329,4 +329,21 @@ public final class ContainerUtils {
           + currentUsage + ", minimum free space spared="  + spared, DISK_OUT_OF_SPACE);
     }
   }
+
+  /**
+   * Check if volume is full excluding committed space.
+   * This method is used to determine if immediate heartbeat should be triggered
+   * for close container actions.
+   * According to HDDS-13589, volume fullness for triggering immediate heartbeat
+   * should be calculated as: available - minFreeSpace <= 0
+   * (excluding committed space, unlike the write failure check above)
+   *
+   * @param volume the volume to check
+   * @return true if volume is full excluding committed space
+   */
+  public static boolean isVolumeFullExcludingCommittedSpace(HddsVolume volume) {
+    final SpaceUsageSource currentUsage = volume.getCurrentUsage();
+    final long spared = volume.getFreeSpaceToSpare(currentUsage.getCapacity());
+    return currentUsage.getAvailable() - spared <= 0;
+  }
 }
