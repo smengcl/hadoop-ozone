@@ -84,6 +84,12 @@ public final class AutoCompletion extends GenericCli {
 
   private String getBashCompletion() {
     final CommandLine ozone = new CommandLine(new Ozone());
+    
+    // Add first-level subcommands that are defined in the ozone shell script
+    // but not implemented as GenericCli classes
+    addShellScriptSubcommands(ozone);
+    
+    // Add second-level subcommands discovered via reflection
     for (String pkg : PACKAGES_TO_SCAN) {
       new Reflections(pkg).getSubTypesOf(GenericCli.class).stream()
           .map(AutoCompletion::getCommand)
@@ -92,6 +98,29 @@ public final class AutoCompletion extends GenericCli {
           .forEach(command -> ozone.addSubcommand(getCommandName(command), command));
     }
     return AutoComplete.bash("ozone", ozone);
+  }
+
+  /**
+   * Add first-level subcommands that are defined in the ozone shell script
+   * but not implemented as GenericCli classes.
+   */
+  private void addShellScriptSubcommands(CommandLine ozone) {
+    // Add shell script commands that don't have GenericCli implementations
+    ozone.addSubcommand("classpath", new CommandLine(new ClasspathCommand()));
+    ozone.addSubcommand("datanode", new CommandLine(new DatanodeCommand()));
+    ozone.addSubcommand("envvars", new CommandLine(new EnvvarsCommand()));
+    ozone.addSubcommand("daemonlog", new CommandLine(new DaemonlogCommand()));
+    ozone.addSubcommand("freon", new CommandLine(new FreonCommand()));
+    ozone.addSubcommand("fs", new CommandLine(new FsCommand()));
+    ozone.addSubcommand("om", new CommandLine(new OmCommand()));
+    ozone.addSubcommand("scm", new CommandLine(new ScmCommand()));
+    ozone.addSubcommand("s3g", new CommandLine(new S3gCommand()));
+    ozone.addSubcommand("httpfs", new CommandLine(new HttpfsCommand()));
+    ozone.addSubcommand("csi", new CommandLine(new CsiCommand()));
+    ozone.addSubcommand("recon", new CommandLine(new ReconCommand()));
+    ozone.addSubcommand("insight", new CommandLine(new InsightCommand()));
+    ozone.addSubcommand("version", new CommandLine(new VersionCommand()));
+    ozone.addSubcommand("dtutil", new CommandLine(new DtutilCommand()));
   }
 
   private static CommandLine getCommand(Class<? extends GenericCli> clazz) {
@@ -171,5 +200,67 @@ public final class AutoCompletion extends GenericCli {
         description = "validates if all jars as indicated in the corresponding OZONE_RUN_ARTIFACT_NAME classpath " +
             "file are present, command execution shall continue post validation failure if 'continue' is passed")
     private String validate;
+  }
+
+  // Simple command classes for shell script subcommands that don't have GenericCli implementations
+
+  @Command(name = "classpath", description = "prints the class path needed for running ozone commands")
+  private static final class ClasspathCommand {
+  }
+
+  @Command(name = "datanode", description = "run a HDDS datanode")
+  private static final class DatanodeCommand {
+  }
+
+  @Command(name = "envvars", description = "display computed Hadoop environment variables")
+  private static final class EnvvarsCommand {
+  }
+
+  @Command(name = "daemonlog", description = "get/set the log level for each daemon")
+  private static final class DaemonlogCommand {
+  }
+
+  @Command(name = "freon", description = "runs an ozone data generator")
+  private static final class FreonCommand {
+  }
+
+  @Command(name = "fs", description = "run a filesystem command on Ozone file system. Equivalent to 'hadoop fs'")
+  private static final class FsCommand {
+  }
+
+  @Command(name = "om", description = "Ozone Manager")
+  private static final class OmCommand {
+  }
+
+  @Command(name = "scm", description = "run the Storage Container Manager service")
+  private static final class ScmCommand {
+  }
+
+  @Command(name = "s3g", description = "run the S3 compatible REST gateway")
+  private static final class S3gCommand {
+  }
+
+  @Command(name = "httpfs", description = "run the HTTPFS compatible REST gateway")
+  private static final class HttpfsCommand {
+  }
+
+  @Command(name = "csi", description = "run the standalone CSI daemon")
+  private static final class CsiCommand {
+  }
+
+  @Command(name = "recon", description = "run the Recon service")
+  private static final class ReconCommand {
+  }
+
+  @Command(name = "insight", description = "tool to get runtime operation information")
+  private static final class InsightCommand {
+  }
+
+  @Command(name = "version", description = "print the version")
+  private static final class VersionCommand {
+  }
+
+  @Command(name = "dtutil", description = "operations related to delegation tokens")
+  private static final class DtutilCommand {
   }
 }
