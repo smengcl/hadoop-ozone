@@ -373,7 +373,8 @@ public final class XceiverClientRatis extends XceiverClientSpi {
             // Log error details at ERROR level for better debugging
             LOG.error("Failed to send request: cmdType={}, containerID={}, pipelineID={}, traceID={}, error={}",
                 request.getCmdType(), request.getContainerID(),
-                request.getPipelineID(), request.getTraceID(), e.getMessage(), e);
+                request.getPipelineID(), request.getTraceID(), 
+                e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName(), e);
           }
           if (LOG.isDebugEnabled()) {
             LOG.debug("received reply {} for request: cmdType={}, containerID={}, pipelineID={}, traceID={}", reply,
