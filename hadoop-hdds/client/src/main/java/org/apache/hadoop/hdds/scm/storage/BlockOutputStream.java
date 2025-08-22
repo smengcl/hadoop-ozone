@@ -824,8 +824,13 @@ public class BlockOutputStream extends OutputStream {
     if (ioe == null) {
       IOException exception =  new IOException(EXCEPTION_MSG + e.toString(), e);
       ioException.compareAndSet(null, exception);
+      // Log error details at ERROR level for better debugging
+      LOG.error("Storage Container Exception for block ID: {}, error: {}", blockID, e.getMessage(), e);
       LOG.debug("Exception: for block ID: " + blockID,  e);
     } else {
+      // Log subsequent errors at ERROR level as well
+      LOG.error("Previous request had already failed, subsequent Storage Container Exception for block ID: {}, error: {}",
+              blockID, e.getMessage(), e);
       LOG.debug("Previous request had already failed with {} " +
               "so subsequent request also encounters " +
               "Storage Container Exception {}", ioe, e);

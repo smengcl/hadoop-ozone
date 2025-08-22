@@ -369,6 +369,12 @@ public final class XceiverClientRatis extends XceiverClientSpi {
     metrics.incrPendingContainerOpsMetrics(request.getCmdType());
     CompletableFuture<ContainerCommandResponseProto> containerCommandResponse =
         raftClientReply.whenComplete((reply, e) -> {
+          if (e != null) {
+            // Log error details at ERROR level for better debugging
+            LOG.error("Failed to send request: cmdType={}, containerID={}, pipelineID={}, traceID={}, error={}",
+                request.getCmdType(), request.getContainerID(),
+                request.getPipelineID(), request.getTraceID(), e.getMessage(), e);
+          }
           if (LOG.isDebugEnabled()) {
             LOG.debug("received reply {} for request: cmdType={}, containerID={}, pipelineID={}, traceID={}", reply,
                 request.getCmdType(), request.getContainerID(),
