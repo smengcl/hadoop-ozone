@@ -298,10 +298,12 @@ public abstract class BaseHttpServer {
   }
 
   /**
-   * Retrieve the socket address that should be used by clients to connect
-   * to the  HTTPS web interface.
+   * Retrieve the configured socket address for the HTTPS web interface.
+   * This returns the bind address from configuration, which may differ from
+   * the actual listening address if port 0 is used. Use {@link #getHttpsAddress()}
+   * to get the actual address after the server starts.
    *
-   * @return Target InetSocketAddress for the Ozone HTTPS endpoint.
+   * @return Configured InetSocketAddress for the Ozone HTTPS bind address.
    */
   public InetSocketAddress getHttpsBindAddress() {
     return getBindAddress(getHttpsBindHostKey(), getHttpsAddressKey(),
@@ -309,10 +311,12 @@ public abstract class BaseHttpServer {
   }
 
   /**
-   * Retrieve the socket address that should be used by clients to connect
-   * to the  HTTP web interface.
+   * Retrieve the configured socket address for the HTTP web interface.
+   * This returns the bind address from configuration, which may differ from
+   * the actual listening address if port 0 is used. Use {@link #getHttpAddress()}
+   * to get the actual address after the server starts.
    * <p>
-   * * @return Target InetSocketAddress for the Ozone HTTP endpoint.
+   * @return Configured InetSocketAddress for the Ozone HTTP bind address.
    */
   public InetSocketAddress getHttpBindAddress() {
     return getBindAddress(getHttpBindHostKey(), getHttpAddressKey(),
@@ -443,10 +447,28 @@ public abstract class BaseHttpServer {
     return new LegacyHadoopConfigurationSource(sslConf);
   }
 
+  /**
+   * Retrieve the actual socket address that clients should use to connect
+   * to the HTTP web interface. This returns the address after the server
+   * has started and {@link #updateConnectorAddress()} has been called.
+   * The port will reflect the actual listening port, which may differ from
+   * the configured port if port 0 was specified.
+   *
+   * @return Actual InetSocketAddress for the HTTP endpoint, or null if not started.
+   */
   public InetSocketAddress getHttpAddress() {
     return httpAddress;
   }
 
+  /**
+   * Retrieve the actual socket address that clients should use to connect
+   * to the HTTPS web interface. This returns the address after the server
+   * has started and {@link #updateConnectorAddress()} has been called.
+   * The port will reflect the actual listening port, which may differ from
+   * the configured port if port 0 was specified.
+   *
+   * @return Actual InetSocketAddress for the HTTPS endpoint, or null if not started.
+   */
   public InetSocketAddress getHttpsAddress() {
     return httpsAddress;
   }
