@@ -25,6 +25,7 @@ import org.apache.hadoop.ozone.shell.snapshot.SnapshotCommands;
 import org.apache.hadoop.ozone.shell.tenant.TenantUserCommands;
 import org.apache.hadoop.ozone.shell.token.TokenCommands;
 import org.apache.hadoop.ozone.shell.volume.VolumeCommands;
+import org.apache.hadoop.ozone.shell.watch.WatchHandler;
 import picocli.CommandLine.Command;
 
 /**
@@ -40,6 +41,7 @@ import picocli.CommandLine.Command;
         TenantUserCommands.class,
         TokenCommands.class,
         VolumeCommands.class,
+        WatchHandler.class,
     },
     versionProvider = HddsVersionProvider.class,
     mixinStandardHelpOptions = true)

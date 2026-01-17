@@ -32,6 +32,7 @@ import org.apache.hadoop.ozone.om.exceptions.OMException;
 import org.apache.hadoop.ozone.om.helpers.DBUpdates;
 import org.apache.hadoop.ozone.om.helpers.DeleteTenantState;
 import org.apache.hadoop.ozone.om.helpers.ErrorInfo;
+import org.apache.hadoop.ozone.om.helpers.InotifyResponse;
 import org.apache.hadoop.ozone.om.helpers.KeyInfoWithVolumeContext;
 import org.apache.hadoop.ozone.om.helpers.LeaseKeyInfo;
 import org.apache.hadoop.ozone.om.helpers.ListOpenFilesResult;
@@ -1042,6 +1043,16 @@ public interface OzoneManagerProtocol
    */
   DBUpdates getDBUpdates(
       OzoneManagerProtocolProtos.DBUpdatesRequest dbUpdatesRequest)
+      throws IOException;
+
+  /**
+   * Get inotify events since the given sequence numbers.
+   *
+   * @param inotifyRequest request with sequence numbers and filters.
+   * @return inotify response with events and updated cursors.
+   */
+  InotifyResponse getInotifyEvents(
+      OzoneManagerProtocolProtos.InotifyRequest inotifyRequest)
       throws IOException;
 
   /**

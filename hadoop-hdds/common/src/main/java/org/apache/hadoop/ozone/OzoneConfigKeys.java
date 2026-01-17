@@ -664,6 +664,10 @@ public final class OzoneConfigKeys {
   public static final String
       OZONE_OM_DELTA_UPDATE_DATA_SIZE_MAX_LIMIT_DEFAULT = "1024MB";
 
+  public static final String OZONE_OM_INOTIFY_ACCESS_BUFFER_SIZE =
+      "ozone.om.inotify.access.buffer.size";
+  public static final int OZONE_OM_INOTIFY_ACCESS_BUFFER_SIZE_DEFAULT = 10000;
+
   public static final TimeDuration
       OZONE_SCM_CLOSE_CONTAINER_WAIT_DURATION_DEFAULT =
       TimeDuration.valueOf(150, TimeUnit.SECONDS);

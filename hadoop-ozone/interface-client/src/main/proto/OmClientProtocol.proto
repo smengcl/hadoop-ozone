@@ -156,6 +156,7 @@ enum Type {
   PutObjectTagging = 140;
   GetObjectTagging = 141;
   DeleteObjectTagging = 142;
+  Inotify = 144;
 }
 
 enum SafeMode {
@@ -304,6 +305,7 @@ message OMRequest {
   optional PutObjectTaggingRequest          putObjectTaggingRequest        = 141;
   optional DeleteObjectTaggingRequest       deleteObjectTaggingRequest     = 142;
   repeated SetSnapshotPropertyRequest       SetSnapshotPropertyRequests    = 143;
+  optional InotifyRequest                   inotifyRequest                 = 144;
 }
 
 message OMResponse {
@@ -437,6 +439,7 @@ message OMResponse {
   optional GetObjectTaggingResponse          getObjectTaggingResponse      = 140;
   optional PutObjectTaggingResponse          putObjectTaggingResponse      = 141;
   optional DeleteObjectTaggingResponse       deleteObjectTaggingResponse   = 142;
+  optional InotifyResponse                   inotifyResponse               = 144;
 }
 
 enum Status {
@@ -1588,6 +1591,53 @@ message DBUpdatesResponse {
     repeated bytes data = 2;
     optional uint64 latestSequenceNumber = 3;
     optional bool dbUpdateSuccess = 4;
+}
+
+enum InotifyOpType {
+    READ = 1;
+    WRITE = 2;
+    READ_AND_WRITE = 3;
+}
+
+enum InotifyEventType {
+    CREATE = 1;
+    DELETE = 2;
+    MODIFY = 3;
+    MOVED_FROM = 4;
+    MOVED_TO = 5;
+    ATTRIB = 6;
+    CLOSE_WRITE = 7;
+    ACCESS = 8;
+}
+
+message InotifyEvent {
+    required InotifyEventType eventType = 1;
+    required string path = 2;
+    optional string srcPath = 3;
+    optional bool isDir = 4;
+    optional uint64 timestamp = 5;
+    optional uint64 sequenceNumber = 6;
+}
+
+message InotifyRequest {
+    required uint64 writeSequenceNumber = 1;
+    optional uint64 accessSequenceNumber = 2;
+    optional uint64 limitCount = 3;
+    optional string pathPrefix = 4;
+    optional bool recursive = 5 [default = true];
+    optional InotifyOpType opType = 6 [default = READ_AND_WRITE];
+}
+
+message InotifyResponse {
+    optional uint64 writeSequenceNumber = 1;
+    optional uint64 latestWriteSequenceNumber = 2;
+    optional uint64 accessSequenceNumber = 3;
+    optional uint64 latestAccessSequenceNumber = 4;
+    repeated InotifyEvent events = 5;
+    repeated InotifyEvent accessEvents = 6;
+    optional bool overflow = 7;
+    optional bool accessOverflow = 8;
+    optional bool dbUpdateSuccess = 9;
 }
 
 message RangerBGSyncRequest {

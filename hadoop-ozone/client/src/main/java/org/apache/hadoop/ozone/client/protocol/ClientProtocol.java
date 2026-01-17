@@ -48,6 +48,7 @@ import org.apache.hadoop.ozone.om.OMConfigKeys;
 import org.apache.hadoop.ozone.om.exceptions.OMException;
 import org.apache.hadoop.ozone.om.helpers.DeleteTenantState;
 import org.apache.hadoop.ozone.om.helpers.ErrorInfo;
+import org.apache.hadoop.ozone.om.helpers.InotifyResponse;
 import org.apache.hadoop.ozone.om.helpers.LeaseKeyInfo;
 import org.apache.hadoop.ozone.om.helpers.OmKeyArgs;
 import org.apache.hadoop.ozone.om.helpers.OmKeyInfo;
@@ -1199,6 +1200,14 @@ public interface ClientProtocol {
    */
   void deleteSnapshot(String volumeName,
       String bucketName, String snapshotName) throws IOException;
+
+  /**
+   * Get inotify events from OM.
+   * @param inotifyRequest request with sequence numbers and filters.
+   */
+  InotifyResponse getInotifyEvents(
+      org.apache.hadoop.ozone.protocol.proto.OzoneManagerProtocolProtos.InotifyRequest inotifyRequest)
+      throws IOException;
 
   /**
    * Returns snapshot info for volume/bucket snapshot path.

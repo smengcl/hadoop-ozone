@@ -254,6 +254,7 @@ public final class OmUtils {
     case ListStatusLight:
     case GetAcl:
     case DBUpdates:
+    case Inotify:
     case ListMultipartUploads:
     case FinalizeUpgradeProgress:
     case PrepareStatus:

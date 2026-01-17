@@ -68,6 +68,8 @@ import org.apache.hadoop.ozone.om.execution.flowcontrol.ExecutionContext;
 import org.apache.hadoop.ozone.om.helpers.BasicOmKeyInfo;
 import org.apache.hadoop.ozone.om.helpers.BucketLayout;
 import org.apache.hadoop.ozone.om.helpers.DBUpdates;
+import org.apache.hadoop.ozone.om.helpers.InotifyEvent;
+import org.apache.hadoop.ozone.om.helpers.InotifyResponse;
 import org.apache.hadoop.ozone.om.helpers.KeyInfoWithVolumeContext;
 import org.apache.hadoop.ozone.om.helpers.KeyValueUtil;
 import org.apache.hadoop.ozone.om.helpers.ListKeysLightResult;
@@ -264,6 +266,11 @@ public class OzoneManagerRequestHandler implements RequestHandler {
         DBUpdatesResponse dbUpdatesResponse = getOMDBUpdates(
             request.getDbUpdatesRequest());
         responseBuilder.setDbUpdatesResponse(dbUpdatesResponse);
+        break;
+      case Inotify:
+        OzoneManagerProtocolProtos.InotifyResponse inotifyResponse =
+            getOMInotify(request.getInotifyRequest());
+        responseBuilder.setInotifyResponse(inotifyResponse);
         break;
       case GetFileStatus:
         GetFileStatusResponse getFileStatusResponse = getOzoneFileStatus(
@@ -462,6 +469,45 @@ public class OzoneManagerRequestHandler implements RequestHandler {
     builder.setSequenceNumber(dbUpdatesWrapper.getCurrentSequenceNumber());
     builder.setLatestSequenceNumber(dbUpdatesWrapper.getLatestSequenceNumber());
     builder.setDbUpdateSuccess(dbUpdatesWrapper.isDBUpdateSuccess());
+    return builder.build();
+  }
+
+  private OzoneManagerProtocolProtos.InotifyResponse getOMInotify(
+      OzoneManagerProtocolProtos.InotifyRequest inotifyRequest)
+      throws IOException {
+    InotifyResponse response = impl.getInotifyEvents(inotifyRequest);
+    OzoneManagerProtocolProtos.InotifyResponse.Builder builder =
+        OzoneManagerProtocolProtos.InotifyResponse.newBuilder();
+    builder.setWriteSequenceNumber(response.getWriteSequenceNumber());
+    builder.setLatestWriteSequenceNumber(response.getLatestWriteSequenceNumber());
+    builder.setAccessSequenceNumber(response.getAccessSequenceNumber());
+    builder.setLatestAccessSequenceNumber(
+        response.getLatestAccessSequenceNumber());
+    builder.setOverflow(response.isOverflow());
+    builder.setAccessOverflow(response.isAccessOverflow());
+    builder.setDbUpdateSuccess(response.isDbUpdateSuccess());
+    for (InotifyEvent event : response.getEvents()) {
+      builder.addEvents(toProto(event));
+    }
+    for (InotifyEvent event : response.getAccessEvents()) {
+      builder.addAccessEvents(toProto(event));
+    }
+    return builder.build();
+  }
+
+  private static OzoneManagerProtocolProtos.InotifyEvent toProto(
+      InotifyEvent event) {
+    OzoneManagerProtocolProtos.InotifyEvent.Builder builder =
+        OzoneManagerProtocolProtos.InotifyEvent.newBuilder()
+            .setEventType(OzoneManagerProtocolProtos.InotifyEventType.valueOf(
+                event.getEventType().name()))
+            .setPath(event.getPath())
+            .setIsDir(event.isDir())
+            .setTimestamp(event.getTimestamp())
+            .setSequenceNumber(event.getSequenceNumber());
+    if (event.getSrcPath() != null) {
+      builder.setSrcPath(event.getSrcPath());
+    }
     return builder.build();
   }
 

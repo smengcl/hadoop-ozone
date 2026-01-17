@@ -211,6 +211,7 @@ import org.apache.hadoop.hdds.utils.db.Table.KeyValue;
 import org.apache.hadoop.hdds.utils.db.TableIterator;
 import org.apache.hadoop.hdds.utils.db.cache.CacheKey;
 import org.apache.hadoop.hdds.utils.db.cache.CacheValue;
+import org.apache.hadoop.hdds.utils.db.managed.ManagedWriteBatch;
 import org.apache.hadoop.io.Text;
 import org.apache.hadoop.ipc_.ProtobufRpcEngine;
 import org.apache.hadoop.ipc_.RPC;
@@ -238,9 +239,14 @@ import org.apache.hadoop.ozone.om.exceptions.OMNotLeaderException;
 import org.apache.hadoop.ozone.om.execution.OMExecutionFlow;
 import org.apache.hadoop.ozone.om.ha.OMHAMetrics;
 import org.apache.hadoop.ozone.om.ha.OMHANodeDetails;
+import org.apache.hadoop.ozone.om.inotify.InotifyAccessEventBuffer;
+import org.apache.hadoop.ozone.om.inotify.InotifyWriteEventHandler;
 import org.apache.hadoop.ozone.om.helpers.BasicOmKeyInfo;
 import org.apache.hadoop.ozone.om.helpers.BucketLayout;
 import org.apache.hadoop.ozone.om.helpers.DBUpdates;
+import org.apache.hadoop.ozone.om.helpers.InotifyEvent;
+import org.apache.hadoop.ozone.om.helpers.InotifyOpType;
+import org.apache.hadoop.ozone.om.helpers.InotifyResponse;
 import org.apache.hadoop.ozone.om.helpers.KeyInfoWithVolumeContext;
 import org.apache.hadoop.ozone.om.helpers.LeaseKeyInfo;
 import org.apache.hadoop.ozone.om.helpers.ListKeysLightResult;
@@ -342,6 +348,7 @@ import org.apache.ratis.util.ExitUtils;
 import org.apache.ratis.util.FileUtils;
 import org.apache.ratis.util.LifeCycle;
 import org.apache.ratis.util.function.UncheckedAutoCloseableSupplier;
+import org.rocksdb.RocksDBException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -399,6 +406,7 @@ public final class OzoneManager extends ServiceRuntimeInfoImpl
   private BucketManager bucketManager;
   private KeyManager keyManager;
   private PrefixManagerImpl prefixManager;
+  private final InotifyAccessEventBuffer inotifyAccessEventBuffer;
   private final UpgradeFinalizer<OzoneManager> upgradeFinalizer;
   private ExecutorService edekCacheLoader = null;
 
@@ -550,6 +558,11 @@ public final class OzoneManager extends ServiceRuntimeInfoImpl
     this.threadPrefix = omNodeDetails.threadNamePrefix();
     loginOMUserIfSecurityEnabled(conf);
     setInstanceVariablesFromConf();
+    int inotifyAccessBufferSize = conf.getInt(
+        OzoneConfigKeys.OZONE_OM_INOTIFY_ACCESS_BUFFER_SIZE,
+        OzoneConfigKeys.OZONE_OM_INOTIFY_ACCESS_BUFFER_SIZE_DEFAULT);
+    this.inotifyAccessEventBuffer =
+        new InotifyAccessEventBuffer(inotifyAccessBufferSize);
 
     if (omStorage.getState() != StorageState.INITIALIZED) {
       throw new OMException("OM not initialized, current OM storage state: "
@@ -3031,7 +3044,9 @@ public final class OzoneManager extends ServiceRuntimeInfoImpl
   @Override
   public OmKeyInfo lookupKey(OmKeyArgs args) throws IOException {
     try (UncheckedAutoCloseableSupplier<IOmMetadataReader> rcReader = getReader(args)) {
-      return rcReader.get().lookupKey(args);
+      OmKeyInfo keyInfo = rcReader.get().lookupKey(args);
+      recordAccessEvent(keyInfo);
+      return keyInfo;
     }
   }
 
@@ -3043,7 +3058,12 @@ public final class OzoneManager extends ServiceRuntimeInfoImpl
                                              boolean assumeS3Context)
       throws IOException {
     try (UncheckedAutoCloseableSupplier<IOmMetadataReader> rcReader = getReader(args)) {
-      return rcReader.get().getKeyInfo(args, assumeS3Context);
+      KeyInfoWithVolumeContext keyInfo =
+          rcReader.get().getKeyInfo(args, assumeS3Context);
+      if (keyInfo != null) {
+        recordAccessEvent(keyInfo.getKeyInfo());
+      }
+      return keyInfo;
     }
   }
 
@@ -3957,7 +3977,9 @@ public final class OzoneManager extends ServiceRuntimeInfoImpl
   public OmKeyInfo lookupFile(OmKeyArgs args) throws IOException {
     try (UncheckedAutoCloseableSupplier<IOmMetadataReader> rcReader =
         getReader(args)) {
-      return rcReader.get().lookupFile(args);
+      OmKeyInfo keyInfo = rcReader.get().lookupFile(args);
+      recordAccessEvent(keyInfo);
+      return keyInfo;
     }
   }
 
@@ -4552,6 +4574,135 @@ public final class OzoneManager extends ServiceRuntimeInfoImpl
     dbUpdates.setLatestSequenceNumber(updatesSince.getLatestSequenceNumber());
     dbUpdates.setDBUpdateSuccess(updatesSince.isDBUpdateSuccess());
     return dbUpdates;
+  }
+
+  @Override
+  public InotifyResponse getInotifyEvents(
+      OzoneManagerProtocolProtos.InotifyRequest inotifyRequest)
+      throws IOException {
+    InotifyResponse response = new InotifyResponse();
+    long limitCount = inotifyRequest.hasLimitCount()
+        ? inotifyRequest.getLimitCount()
+        : Long.MAX_VALUE;
+    String pathPrefix = normalizePrefix(inotifyRequest.getPathPrefix());
+    boolean recursive = !inotifyRequest.hasRecursive() ||
+        inotifyRequest.getRecursive();
+    InotifyOpType opType = toOpType(inotifyRequest);
+    boolean includeWrite = opType != InotifyOpType.READ;
+    boolean includeRead = opType != InotifyOpType.WRITE;
+
+    if (includeWrite) {
+      try {
+        DBUpdatesWrapper updatesSince = metadataManager.getStore()
+            .getUpdatesSince(inotifyRequest.getWriteSequenceNumber(),
+                limitCount);
+        response.setWriteSequenceNumber(updatesSince.getCurrentSequenceNumber());
+        response.setLatestWriteSequenceNumber(
+            updatesSince.getLatestSequenceNumber());
+        response.setDbUpdateSuccess(updatesSince.isDBUpdateSuccess());
+
+        InotifyWriteEventHandler handler =
+            new InotifyWriteEventHandler(metadataManager);
+        handler.setSequenceNumber(updatesSince.getCurrentSequenceNumber());
+        for (byte[] data : updatesSince.getData()) {
+          try (ManagedWriteBatch writeBatch = new ManagedWriteBatch(data)) {
+            writeBatch.iterate(handler);
+          }
+        }
+        for (InotifyEvent event : handler.getEvents()) {
+          if (matchesPrefix(event.getPath(), pathPrefix, recursive)) {
+            response.getEvents().add(event);
+          }
+        }
+      } catch (SequenceNumberNotFoundException e) {
+        response.setOverflow(true);
+        response.setDbUpdateSuccess(false);
+      } catch (RocksDBException e) {
+        response.setDbUpdateSuccess(false);
+      }
+    }
+
+    if (includeRead) {
+      InotifyAccessEventBuffer.AccessBatch batch =
+          inotifyAccessEventBuffer.readSince(
+              inotifyRequest.getAccessSequenceNumber(), limitCount);
+      response.setAccessSequenceNumber(batch.getLatestSequence());
+      response.setLatestAccessSequenceNumber(batch.getLatestSequence());
+      response.setAccessOverflow(batch.isOverflow());
+      for (InotifyEvent event : batch.getEvents()) {
+        if (matchesPrefix(event.getPath(), pathPrefix, recursive)) {
+          response.getAccessEvents().add(event);
+        }
+      }
+    }
+    return response;
+  }
+
+  private void recordAccessEvent(OmKeyInfo keyInfo) {
+    if (keyInfo == null) {
+      return;
+    }
+    String path = normalizeKeyPath(keyInfo);
+    if (path == null) {
+      return;
+    }
+    inotifyAccessEventBuffer.recordAccess(path, !keyInfo.isFile(),
+        System.currentTimeMillis());
+  }
+
+  private static String normalizeKeyPath(OmKeyInfo keyInfo) {
+    String keyName = trimLeadingSlash(keyInfo.getKeyName());
+    if (keyName.isEmpty()) {
+      return keyInfo.getVolumeName() + "/" + keyInfo.getBucketName();
+    }
+    return keyInfo.getVolumeName() + "/" + keyInfo.getBucketName() + "/" +
+        keyName;
+  }
+
+  private static String normalizePrefix(String prefix) {
+    if (prefix == null || prefix.isEmpty()) {
+      return "";
+    }
+    return trimLeadingSlash(prefix);
+  }
+
+  private static String trimLeadingSlash(String value) {
+    if (value == null) {
+      return "";
+    }
+    return value.startsWith("/") ? value.substring(1) : value;
+  }
+
+  private static boolean matchesPrefix(String path, String prefix,
+      boolean recursive) {
+    if (prefix == null || prefix.isEmpty()) {
+      return true;
+    }
+    String normalizedPath = trimLeadingSlash(path);
+    String normalizedPrefix = trimLeadingSlash(prefix);
+    if (!normalizedPath.startsWith(normalizedPrefix)) {
+      return false;
+    }
+    if (recursive) {
+      return true;
+    }
+    if (normalizedPath.length() == normalizedPrefix.length()) {
+      return true;
+    }
+    if (normalizedPath.charAt(normalizedPrefix.length()) != '/') {
+      return false;
+    }
+    String remainder = normalizedPath.substring(
+        normalizedPrefix.length() + 1);
+    return !remainder.contains("/");
+  }
+
+  private static InotifyOpType toOpType(
+      OzoneManagerProtocolProtos.InotifyRequest inotifyRequest) {
+    if (!inotifyRequest.hasOpType()) {
+      return InotifyOpType.READ_AND_WRITE;
+    }
+    return InotifyOpType.valueOf(inotifyRequest.getOpType().name());
   }
 
   public OzoneDelegationTokenSecretManager getDelegationTokenMgr() {

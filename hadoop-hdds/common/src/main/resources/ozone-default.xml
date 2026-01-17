@@ -3486,6 +3486,16 @@
     </description>
   </property>
   <property>
+    <name>ozone.om.inotify.access.buffer.size</name>
+    <value>10000</value>
+    <tag>OM, MANAGEMENT</tag>
+    <description>
+      Size of the in-memory ring buffer used for IN_ACCESS events emitted on read
+      opens and key lookups. When the buffer wraps, clients receive an overflow
+      signal and must resume from the latest access sequence.
+    </description>
+  </property>
+  <property>
     <name>recon.om.delta.update.lag.threshold</name>
     <value>0</value>
     <tag>OZONE, RECON</tag>
