@@ -1626,6 +1626,7 @@ message InotifyRequest {
     optional string pathPrefix = 4;
     optional bool recursive = 5 [default = true];
     optional InotifyOpType opType = 6 [default = READ_AND_WRITE];
+    optional bool resolveFsoPaths = 7 [default = false];
 }
 
 message InotifyResponse {

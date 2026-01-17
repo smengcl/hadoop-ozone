@@ -80,6 +80,38 @@ omitted the default port from ozone-site.xml will be used.
 Please see volume commands, bucket commands, and key commands section for more
 detail.
 
+## Watch inotify events
+
+The `ozone sh watch` command tails inotify events from a prefix. The path is
+optional and defaults to `/`. It accepts `o3://` URIs or plain paths such as
+`/vol1/bucket1/prefix` or `vol1/bucket1/prefix`.
+This requires `ozone.om.inotify.enabled=true` on the OM.
+
+Examples:
+
+```shell
+$ ozone sh watch
+```
+
+```shell
+$ ozone sh watch /vol1/bucket1/prefix
+```
+
+```shell
+$ ozone sh watch --op-type=read vol1/bucket1
+```
+
+```shell
+$ ozone sh watch --resolve-fso-paths /vol1/bucket1
+```
+
+Output notes:
+
+- `wseq` is the write-event sequence cursor sourced from OM DBUpdates (the
+  RocksDB WAL sequence). Use it to resume write events after reconnect.
+- `rseq` is the read-access sequence cursor sourced from the OM access ring
+  buffer. It is best-effort and can overflow independently from write events.
+
 ## Volume operations
 
 Volume is the top level element of the hierarchy, managed only by administrators. Optionally, quota and the owner user can be specified.

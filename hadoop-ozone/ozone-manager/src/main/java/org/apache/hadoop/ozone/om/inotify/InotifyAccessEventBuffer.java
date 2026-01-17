@@ -83,7 +83,7 @@ public class InotifyAccessEventBuffer {
       return new AccessBatch(new ArrayList<>(), 0L, false);
     }
     long oldestSeq = Math.max(1L, latestSeq - capacity + 1);
-    boolean overflow = sinceSeq < oldestSeq;
+    boolean overflow = sinceSeq > 0 && sinceSeq < oldestSeq;
     long start = Math.max(sinceSeq + 1, oldestSeq);
     long end = limitCount <= 0 ? latestSeq
         : Math.min(latestSeq, start + limitCount - 1);

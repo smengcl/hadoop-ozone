@@ -668,6 +668,10 @@ public final class OzoneConfigKeys {
       "ozone.om.inotify.access.buffer.size";
   public static final int OZONE_OM_INOTIFY_ACCESS_BUFFER_SIZE_DEFAULT = 10000;
 
+  public static final String OZONE_OM_INOTIFY_ENABLED =
+      "ozone.om.inotify.enabled";
+  public static final boolean OZONE_OM_INOTIFY_ENABLED_DEFAULT = true;
+
   public static final TimeDuration
       OZONE_SCM_CLOSE_CONTAINER_WAIT_DURATION_DEFAULT =
       TimeDuration.valueOf(150, TimeUnit.SECONDS);

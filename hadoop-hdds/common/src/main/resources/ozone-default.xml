@@ -3496,6 +3496,15 @@
     </description>
   </property>
   <property>
+    <name>ozone.om.inotify.enabled</name>
+    <value>true</value>
+    <tag>OM, MANAGEMENT</tag>
+    <description>
+      Enable the OM inotify API. When disabled, inotify calls are rejected and
+      clients should display a user-friendly error message.
+    </description>
+  </property>
+  <property>
     <name>recon.om.delta.update.lag.threshold</name>
     <value>0</value>
     <tag>OZONE, RECON</tag>

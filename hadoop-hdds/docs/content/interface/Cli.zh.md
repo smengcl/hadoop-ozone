@@ -75,6 +75,38 @@ _\[schema\]\[server:port\]/volume/bucket/key_
 
 请查看卷命令、桶命令和键命令部分了解更多详情。
 
+## 监听 inotify 事件
+
+`ozone sh watch` 命令用于持续输出前缀下的 inotify 事件。路径参数可选，默认
+为 `/`。它支持 `o3://` URI，也支持普通路径，如 `/vol1/bucket1/prefix`
+或 `vol1/bucket1/prefix`。
+此功能要求 OM 端设置 `ozone.om.inotify.enabled=true`。
+
+示例：
+
+```shell
+$ ozone sh watch
+```
+
+```shell
+$ ozone sh watch /vol1/bucket1/prefix
+```
+
+```shell
+$ ozone sh watch --op-type=read vol1/bucket1
+```
+
+```shell
+$ ozone sh watch --resolve-fso-paths /vol1/bucket1
+```
+
+输出说明：
+
+- `wseq` 表示写事件的序列号，来源于 OM 的 DBUpdates（RocksDB WAL 序列），
+  可用于断线后继续获取写事件。
+- `rseq` 表示读访问事件的序列号，来源于 OM 的访问环形缓冲区；它是尽力而为
+  的，可能会发生溢出并与写事件序列独立。
+
 ## 卷操作
 
 卷位于层次结构的顶层，仅由管理员管理。也可以指定所有者用户和配额。

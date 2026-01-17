@@ -407,6 +407,7 @@ public final class OzoneManager extends ServiceRuntimeInfoImpl
   private KeyManager keyManager;
   private PrefixManagerImpl prefixManager;
   private final InotifyAccessEventBuffer inotifyAccessEventBuffer;
+  private final boolean inotifyEnabled;
   private final UpgradeFinalizer<OzoneManager> upgradeFinalizer;
   private ExecutorService edekCacheLoader = null;
 
@@ -563,6 +564,9 @@ public final class OzoneManager extends ServiceRuntimeInfoImpl
         OzoneConfigKeys.OZONE_OM_INOTIFY_ACCESS_BUFFER_SIZE_DEFAULT);
     this.inotifyAccessEventBuffer =
         new InotifyAccessEventBuffer(inotifyAccessBufferSize);
+    this.inotifyEnabled = conf.getBoolean(
+        OzoneConfigKeys.OZONE_OM_INOTIFY_ENABLED,
+        OzoneConfigKeys.OZONE_OM_INOTIFY_ENABLED_DEFAULT);
 
     if (omStorage.getState() != StorageState.INITIALIZED) {
       throw new OMException("OM not initialized, current OM storage state: "
@@ -4580,6 +4584,10 @@ public final class OzoneManager extends ServiceRuntimeInfoImpl
   public InotifyResponse getInotifyEvents(
       OzoneManagerProtocolProtos.InotifyRequest inotifyRequest)
       throws IOException {
+    if (!inotifyEnabled) {
+      throw new OMException("Inotify API is disabled.",
+          OMException.ResultCodes.FEATURE_NOT_ENABLED);
+    }
     InotifyResponse response = new InotifyResponse();
     long limitCount = inotifyRequest.hasLimitCount()
         ? inotifyRequest.getLimitCount()
@@ -4602,7 +4610,8 @@ public final class OzoneManager extends ServiceRuntimeInfoImpl
         response.setDbUpdateSuccess(updatesSince.isDBUpdateSuccess());
 
         InotifyWriteEventHandler handler =
-            new InotifyWriteEventHandler(metadataManager);
+            new InotifyWriteEventHandler(metadataManager,
+                inotifyRequest.getResolveFsoPaths());
         handler.setSequenceNumber(updatesSince.getCurrentSequenceNumber());
         for (byte[] data : updatesSince.getData()) {
           try (ManagedWriteBatch writeBatch = new ManagedWriteBatch(data)) {
@@ -4639,6 +4648,9 @@ public final class OzoneManager extends ServiceRuntimeInfoImpl
   }
 
   private void recordAccessEvent(OmKeyInfo keyInfo) {
+    if (!inotifyEnabled) {
+      return;
+    }
     if (keyInfo == null) {
       return;
     }

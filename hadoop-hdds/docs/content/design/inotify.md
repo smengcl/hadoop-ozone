@@ -148,6 +148,14 @@ This design makes IN_ACCESS best-effort. If the buffer wraps, clients receive
 - For rename events, either old or new path may match.
 - `recursive=false` matches exact path or direct children only.
 
+### FSO Path Translation
+
+- FSO keys in OM DB use internal IDs (`/volumeId/bucketId/parentId/name`).
+- Set `resolveFsoPaths=true` to translate these into user paths like
+  `/volume/bucket/dir/name`.
+- Translation is disabled by default because it requires additional metadata
+  lookups.
+
 ### Operation Type Filtering
 
 - READ: only ACCESS events.
@@ -173,6 +181,14 @@ Mitigations:
 - O(1) per event (counter increment + slot write).
 - No per-listener state, so hundreds of listeners are supported.
 - Pull-based, so clients control read frequency.
+
+## Configuration
+
+- `ozone.om.inotify.enabled` (default: `true`) controls whether the OM
+  inotify API can be called. When disabled, OM rejects inotify requests and
+  clients should surface a user-friendly error.
+- `ozone.om.inotify.access.buffer.size` controls the size of the in-memory
+  access event ring buffer.
 
 ## OM HA Impact
 
@@ -233,41 +249,53 @@ Decision:
 
 ## CLI: `ozone sh watch`
 
-The `ozone sh watch` command tails inotify events from a given prefix. It
-supports read/write filters, JSON output, and sequence resumption.
+The `ozone sh watch` command tails inotify events from a given prefix. The path
+argument is optional and defaults to root (`/`). It accepts `o3:///` URIs or
+plain paths such as `/vol1/bucket1/prefix` or `vol1/bucket1/prefix`. It
+supports read/write filters, JSON output, and sequence resumption. FSO path
+translation is optional and disabled by default; enable it when you need human
+readable FSO paths.
 
 Usage mockups:
 
 ```
-ozone sh watch o3://vol1/bucket1/prefix/
+ozone sh watch
+ozone sh watch /
+ozone sh watch vol1/bucket1/prefix/
+ozone sh watch /vol1/bucket1/prefix/
+ozone sh watch o3:///vol1/bucket1/prefix/
 ```
 
 ```
-ozone sh watch --recursive=false o3://vol1/bucket1/dir/
+ozone sh watch --recursive=false o3:///vol1/bucket1/dir/
 ```
 
 ```
-ozone sh watch --types=create,delete,move,access o3://vol1/bucket1/
+ozone sh watch --types=create,delete,move,access o3:///vol1/bucket1/
 ```
 
 ```
-ozone sh watch --op-type=read o3://vol1/bucket1/
+ozone sh watch --op-type=read o3:///vol1/bucket1/
 ```
 
 ```
-ozone sh watch --since-seq 12345 o3://vol1/bucket1/
+ozone sh watch --resolve-fso-paths /vol1/bucket1
 ```
 
 ```
-ozone sh watch --json o3://vol1/bucket1/
+ozone sh watch --since-seq 12345 o3:///vol1/bucket1/
+```
+
+```
+ozone sh watch --json o3:///vol1/bucket1/
 ```
 
 Default output format:
 
 ```
-[seq=12346 ts=2024-07-10T12:01:02Z] ACCESS  o3://vol1/bucket1/a.txt
-[seq=12347 ts=2024-07-10T12:01:03Z] CREATE  o3://vol1/bucket1/new.txt
-[seq=12348 ts=2024-07-10T12:01:04Z] MOVE    o3://vol1/bucket1/old -> o3://vol1/bucket1/new
+[seq=12346 ts=2024-07-10T12:01:02Z] ACCESS  /vol1/bucket1/a.txt
+[seq=12347 ts=2024-07-10T12:01:03Z] CREATE  /vol1/bucket1/new.txt
+[seq=12348 ts=2024-07-10T12:01:04Z] MOVE    /vol1/bucket1/old -> /vol1/bucket1/new
 ```
 
 ## Open Questions

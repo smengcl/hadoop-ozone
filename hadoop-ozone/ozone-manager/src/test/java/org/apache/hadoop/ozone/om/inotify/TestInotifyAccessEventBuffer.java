@@ -32,10 +32,15 @@ class TestInotifyAccessEventBuffer {
     buffer.recordAccess("vol/bucket/c", false, 3L);
 
     InotifyAccessEventBuffer.AccessBatch batch = buffer.readSince(0L, 10L);
-    assertThat(batch.isOverflow()).isTrue();
+    assertThat(batch.isOverflow()).isFalse();
     assertThat(batch.getEvents()).hasSize(2);
     assertThat(batch.getEvents().get(0).getPath()).endsWith("b");
     assertThat(batch.getEvents().get(1).getPath()).endsWith("c");
+
+    InotifyAccessEventBuffer.AccessBatch batchOverflow =
+        buffer.readSince(1L, 10L);
+    assertThat(batchOverflow.isOverflow()).isTrue();
+    assertThat(batchOverflow.getEvents()).hasSize(2);
 
     InotifyAccessEventBuffer.AccessBatch batch2 = buffer.readSince(2L, 10L);
     assertThat(batch2.isOverflow()).isFalse();

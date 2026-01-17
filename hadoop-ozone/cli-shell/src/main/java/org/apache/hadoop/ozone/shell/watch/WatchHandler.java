@@ -23,6 +23,7 @@ import java.util.Locale;
 import java.util.Set;
 import java.util.concurrent.TimeUnit;
 import org.apache.hadoop.ozone.client.OzoneClient;
+import org.apache.hadoop.ozone.om.exceptions.OMException;
 import org.apache.hadoop.ozone.om.helpers.InotifyEvent;
 import org.apache.hadoop.ozone.om.helpers.InotifyOpType;
 import org.apache.hadoop.ozone.om.helpers.InotifyResponse;
@@ -30,7 +31,6 @@ import org.apache.hadoop.ozone.protocol.proto.OzoneManagerProtocolProtos.Inotify
 import org.apache.hadoop.ozone.protocol.proto.OzoneManagerProtocolProtos.InotifyRequest.Builder;
 import org.apache.hadoop.ozone.shell.Handler;
 import org.apache.hadoop.ozone.shell.OzoneAddress;
-import org.apache.hadoop.ozone.shell.prefix.PrefixUri;
 import picocli.CommandLine;
 import picocli.CommandLine.Command;
 
@@ -38,11 +38,11 @@ import picocli.CommandLine.Command;
  * Watch inotify events for a given prefix.
  */
 @Command(name = "watch",
-    description = "Watch inotify events for a prefix")
+    description = "Watch inotify events for a prefix (default: /)")
 public class WatchHandler extends Handler {
 
   @CommandLine.Mixin
-  private PrefixUri uri;
+  private WatchUri uri;
 
   @CommandLine.Option(
       names = {"--recursive"},
@@ -55,6 +55,12 @@ public class WatchHandler extends Handler {
       description = "Filter by op type: READ, WRITE, READ_AND_WRITE",
       defaultValue = "READ_AND_WRITE")
   private String opType;
+
+  @CommandLine.Option(
+      names = {"--resolve-fso-paths"},
+      description = "Resolve FSO paths (may be expensive)",
+      defaultValue = "false")
+  private boolean resolveFsoPaths;
 
   @CommandLine.Option(
       names = {"--since-write-seq"},
@@ -76,7 +82,7 @@ public class WatchHandler extends Handler {
 
   @CommandLine.Option(
       names = {"--interval-ms"},
-      description = "Poll interval in milliseconds",
+      description = "Poll interval in milliseconds (default: 1000)",
       defaultValue = "1000")
   private long intervalMs;
 
@@ -109,8 +115,18 @@ public class WatchHandler extends Handler {
     long writeSeq = sinceWriteSeq;
     long accessSeq = sinceAccessSeq;
     while (true) {
-      InotifyResponse response = fetchOnce(
-          client, prefix, writeSeq, accessSeq, opFilter);
+      InotifyResponse response;
+      try {
+        response = fetchOnce(
+            client, prefix, writeSeq, accessSeq, opFilter);
+      } catch (OMException ex) {
+        if (ex.getResult() == OMException.ResultCodes.FEATURE_NOT_ENABLED) {
+          err().println("Inotify API is disabled on the OM. " +
+              "Set ozone.om.inotify.enabled=true to enable.");
+          return;
+        }
+        throw ex;
+      }
       if (response.isOverflow()) {
         err().println("Write event overflow detected; resetting cursor.");
       }
@@ -125,12 +141,12 @@ public class WatchHandler extends Handler {
       }
       for (InotifyEvent event : response.getEvents()) {
         if (typeFilter.contains(event.getEventType())) {
-          printEvent(event);
+          printEvent(event, "wseq");
         }
       }
       for (InotifyEvent event : response.getAccessEvents()) {
         if (typeFilter.contains(event.getEventType())) {
-          printEvent(event);
+          printEvent(event, "rseq");
         }
       }
       sleepQuietly(intervalMs);
@@ -146,27 +162,30 @@ public class WatchHandler extends Handler {
         .setLimitCount(limit)
         .setPathPrefix(prefix)
         .setRecursive(recursive)
+        .setResolveFsoPaths(resolveFsoPaths)
         .setOpType(org.apache.hadoop.ozone.protocol.proto
             .OzoneManagerProtocolProtos.InotifyOpType.valueOf(opFilter.name()));
     return client.getProxy().getInotifyEvents(request.build());
   }
 
-  private void printEvent(InotifyEvent event)
+  private void printEvent(InotifyEvent event, String seqLabel)
       throws IOException {
     if (json) {
       printObjectAsJson(event);
       return;
     }
-    String path = "o3://" + event.getPath();
+    String path = ensureLeadingSlash(event.getPath());
     if (event.getEventType() == InotifyEvent.EventType.MOVED_FROM &&
         event.getSrcPath() != null) {
-      out().printf("[seq=%d] %s o3://%s -> %s%n",
+      out().printf("[%s=%d] %s o3://%s -> %s%n",
+          seqLabel,
           event.getSequenceNumber(),
           event.getEventType().name(),
-          event.getSrcPath(),
+          ensureLeadingSlash(event.getSrcPath()),
           path);
     } else {
-      out().printf("[seq=%d] %s %s%n",
+      out().printf("[%s=%d] %s %s%n",
+          seqLabel,
           event.getSequenceNumber(),
           event.getEventType().name(),
           path);
@@ -174,12 +193,19 @@ public class WatchHandler extends Handler {
   }
 
   private static String buildPrefix(OzoneAddress address) {
-    String base = address.getVolumeName() + "/" + address.getBucketName();
+    String volume = address.getVolumeName();
+    String bucket = address.getBucketName();
     String key = address.getKeyName();
-    if (key == null || key.isEmpty()) {
-      return base;
+    if (volume == null || volume.isEmpty()) {
+      return "";
     }
-    return base + "/" + key;
+    if (bucket == null || bucket.isEmpty()) {
+      return volume;
+    }
+    if (key == null || key.isEmpty()) {
+      return volume + "/" + bucket;
+    }
+    return volume + "/" + bucket + "/" + key;
   }
 
   private static InotifyOpType parseOpType(String raw) {
@@ -196,5 +222,12 @@ public class WatchHandler extends Handler {
     } catch (InterruptedException ignored) {
       Thread.currentThread().interrupt();
     }
+  }
+
+  private static String ensureLeadingSlash(String path) {
+    if (path == null || path.isEmpty()) {
+      return "/";
+    }
+    return path.startsWith("/") ? path : "/" + path;
   }
 }
