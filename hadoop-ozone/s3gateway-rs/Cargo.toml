@@ -1,0 +1,19 @@
+[package]
+name = "s3gateway-rs"
+version = "0.1.0"
+edition = "2021"
+build = "build.rs"
+
+[dependencies]
+axum = "0.7"
+config = "0.14"
+prost = "0.13"
+serde = { version = "1", features = ["derive"] }
+thiserror = "1.0"
+tokio = { version = "1.37", features = ["macros", "net", "rt-multi-thread"] }
+tonic = { version = "0.12", features = ["tls"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+[build-dependencies]
+tonic-build = "0.12"
