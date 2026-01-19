@@ -13,7 +13,7 @@ fn main() {
 
     tonic_build::configure()
         .build_client(true)
-        .build_server(false)
+        .build_server(true)
         .compile_protos(
             &[proto_file, security_proto, hdds_proto],
             &[proto_dir, hdds_proto_dir],
