@@ -79,6 +79,7 @@ import org.apache.hadoop.ozone.container.common.interfaces.Container;
 import org.apache.hadoop.ozone.container.common.interfaces.ContainerDispatcher;
 import org.apache.hadoop.ozone.container.common.interfaces.Handler;
 import org.apache.hadoop.ozone.container.common.interfaces.VolumeChoosingPolicy;
+import org.apache.hadoop.ozone.container.common.kernel.KernelLogMonitor;
 import org.apache.hadoop.ozone.container.common.report.IncrementalReportSender;
 import org.apache.hadoop.ozone.container.common.statemachine.DatanodeConfiguration;
 import org.apache.hadoop.ozone.container.common.statemachine.StateContext;
@@ -142,6 +143,7 @@ public class OzoneContainer {
   private final ReplicationServer replicationServer;
   private DatanodeDetails datanodeDetails;
   private StateContext context;
+  private KernelLogMonitor kernelLogMonitor;
 
   private final ContainerChecksumTreeManager checksumTreeManager;
   private ScheduledExecutorService dbCompactionExecutorService;
@@ -579,6 +581,21 @@ public class OzoneContainer {
       diskBalancerService.start();
     }
     recoveringContainerScrubbingService.start();
+    if (dnConf.isKernelLogMonitorEnabled()) {
+      try {
+        List<MutableVolumeSet> volumeSets = new ArrayList<>();
+        volumeSets.add(volumeSet);
+        volumeSets.add(metaVolumeSet);
+        if (dbVolumeSet != null) {
+          volumeSets.add(dbVolumeSet);
+        }
+        kernelLogMonitor = KernelLogMonitor.createDefault(
+            volumeSets, datanodeDetails.threadNamePrefix());
+        kernelLogMonitor.start();
+      } catch (RuntimeException e) {
+        LOG.warn("Kernel log monitor failed to start. Feature disabled.", e);
+      }
+    }
 
     initHddsVolumeContainer();
 
@@ -612,6 +629,10 @@ public class OzoneContainer {
       diskBalancerService.shutdown();
     }
     recoveringContainerScrubbingService.shutdown();
+    if (kernelLogMonitor != null) {
+      kernelLogMonitor.close();
+      kernelLogMonitor = null;
+    }
     IOUtils.closeQuietly(metrics);
     ContainerMetrics.remove();
     checksumTreeManager.stop();

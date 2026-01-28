@@ -1612,6 +1612,16 @@
     </description>
   </property>
   <property>
+    <name>hdds.datanode.kernel.log.monitor.enabled</name>
+    <value>false</value>
+    <tag>OZONE, DATANODE, MANAGEMENT</tag>
+    <description>
+      Enable kernel ring buffer monitoring to detect early disk issues.
+      Requires access to /dev/kmsg (CAP_SYSLOG) or read access to the
+      systemd journal.
+    </description>
+  </property>
+  <property>
     <name>hdds.datanode.storage.utilization.warning.threshold</name>
     <value>0.75</value>
     <tag>OZONE, SCM, MANAGEMENT</tag>

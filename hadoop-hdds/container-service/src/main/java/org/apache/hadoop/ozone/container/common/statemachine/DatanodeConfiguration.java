@@ -59,6 +59,7 @@ public class DatanodeConfiguration extends ReconfigurableConfig {
   public static final String FAILED_DATA_VOLUMES_TOLERATED_KEY = "hdds.datanode.failed.data.volumes.tolerated";
   public static final String FAILED_METADATA_VOLUMES_TOLERATED_KEY = "hdds.datanode.failed.metadata.volumes.tolerated";
   public static final String FAILED_DB_VOLUMES_TOLERATED_KEY = "hdds.datanode.failed.db.volumes.tolerated";
+  public static final String KERNEL_LOG_MONITOR_ENABLED_KEY = "hdds.datanode.kernel.log.monitor.enabled";
   public static final String DISK_CHECK_MIN_GAP_KEY = "hdds.datanode.disk.check.min.gap";
   public static final String DISK_CHECK_TIMEOUT_KEY = "hdds.datanode.disk.check.timeout";
 
@@ -98,6 +99,8 @@ public class DatanodeConfiguration extends ReconfigurableConfig {
   static final Duration DISK_CHECK_MIN_GAP_DEFAULT = Duration.ofMinutes(10);
 
   static final Duration DISK_CHECK_TIMEOUT_DEFAULT = Duration.ofMinutes(10);
+
+  static final boolean KERNEL_LOG_MONITOR_ENABLED_DEFAULT = false;
 
   static final boolean CONTAINER_SCHEMA_V3_ENABLED_DEFAULT = true;
   static final long ROCKSDB_LOG_MAX_FILE_SIZE_BYTES_DEFAULT = 32 * 1024 * 1024;
@@ -542,6 +545,15 @@ public class DatanodeConfiguration extends ReconfigurableConfig {
   private boolean bCheckEmptyContainerDir =
       OZONE_DATANODE_CHECK_EMPTY_CONTAINER_DIR_ON_DELETE_DEFAULT;
 
+  @Config(key = KERNEL_LOG_MONITOR_ENABLED_KEY,
+      type = ConfigType.BOOLEAN,
+      defaultValue = "false",
+      tags = { DATANODE, MANAGEMENT },
+      description = "Enable kernel ring buffer monitoring to detect early disk issues. " +
+          "Requires access to /dev/kmsg or read access to the systemd journal."
+  )
+  private boolean kernelLogMonitorEnabled = KERNEL_LOG_MONITOR_ENABLED_DEFAULT;
+
   /**
    * Whether to check container directory or not to determine
    * container is empty.
@@ -889,6 +901,10 @@ public class DatanodeConfiguration extends ReconfigurableConfig {
 
   public boolean getCheckEmptyContainerDir() {
     return bCheckEmptyContainerDir;
+  }
+
+  public boolean isKernelLogMonitorEnabled() {
+    return kernelLogMonitorEnabled;
   }
 
   public Duration getDiskCheckMinGap() {
