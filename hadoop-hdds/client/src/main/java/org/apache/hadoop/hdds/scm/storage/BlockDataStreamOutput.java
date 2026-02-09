@@ -138,6 +138,8 @@ public class BlockDataStreamOutput implements ByteBufferStreamOutput {
   // buffers for which putBlock is yet to be executed
   private List<StreamBuffer> buffersForPutBlock;
   private boolean isDatastreamPipelineMode;
+  private final long flushBoundary;
+  private final long streamWindow;
 
   /**
    * Creates a new BlockDataStreamOutput.
@@ -191,6 +193,10 @@ public class BlockDataStreamOutput implements ByteBufferStreamOutput {
     checksum = new Checksum(config.getChecksumType(),
         config.getBytesPerChecksum());
     metrics = XceiverClientManager.getXceiverClientMetrics();
+    this.flushBoundary = config.getDataStreamBufferFlushSize()
+        / config.getDataStreamMinPacketSize();
+    this.streamWindow = config.getStreamWindowSize()
+        / config.getDataStreamMinPacketSize();
   }
 
   private DataStreamOutput setupStream(Pipeline pipeline) throws IOException {
@@ -291,16 +297,12 @@ public class BlockDataStreamOutput implements ByteBufferStreamOutput {
   }
 
   private void doFlushIfNeeded() throws IOException {
-    long boundary = config.getDataStreamBufferFlushSize() / config
-        .getDataStreamMinPacketSize();
     // streamWindow is the maximum number of buffers that
     // are allowed to exist in the bufferList. If buffers in
     // the list exceed this limit , client will till it gets
     // one putBlockResponse (first index) . This is similar to
     // the bufferFull condition in async write path.
-    long streamWindow = config.getStreamWindowSize() / config
-        .getDataStreamMinPacketSize();
-    if (!bufferList.isEmpty() && bufferList.size() % boundary == 0 &&
+    if (!bufferList.isEmpty() && bufferList.size() % flushBoundary == 0 &&
         buffersForPutBlock != null && !buffersForPutBlock.isEmpty()) {
       updateFlushLength();
       executePutBlock(false, false);
@@ -339,13 +341,13 @@ public class BlockDataStreamOutput implements ByteBufferStreamOutput {
     if (LOG.isDebugEnabled()) {
       LOG.debug("Retrying write length {} for blockID {}", len, blockID);
     }
+    if (buffersForPutBlock == null) {
+      buffersForPutBlock = new ArrayList<>();
+    }
     int count = 0;
     while (len > 0) {
       final StreamBuffer buf = bufferList.get(count);
       final long writeLen = Math.min(buf.position(), len);
-      if (buffersForPutBlock == null) {
-        buffersForPutBlock = new ArrayList<>();
-      }
       buffersForPutBlock.add(buf);
       final ByteBuffer duplicated = buf.duplicate();
       duplicated.position(0);
