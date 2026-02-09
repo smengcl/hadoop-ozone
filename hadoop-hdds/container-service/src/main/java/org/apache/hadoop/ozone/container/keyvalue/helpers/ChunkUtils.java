@@ -212,7 +212,9 @@ public final class ChunkUtils {
     final ByteBuffer[] buffers = BufferUtils.assignByteBuffers(len,
         bufferCapacity);
     readData(file, off, len, c -> c.position(off).read(buffers), volume);
-    Arrays.stream(buffers).forEach(ByteBuffer::flip);
+    for (ByteBuffer buffer : buffers) {
+      buffer.flip();
+    }
     return ChunkBuffer.wrap(Arrays.asList(buffers));
   }
 
@@ -265,7 +267,9 @@ public final class ChunkUtils {
       final ByteBuffer[] buffers = BufferUtils.assignByteBuffers(length,
           chunkSize);
       readData(file, offset, length, c -> c.position(offset).read(buffers), volume);
-      Arrays.stream(buffers).forEach(ByteBuffer::flip);
+      for (ByteBuffer buffer : buffers) {
+        buffer.flip();
+      }
       return ChunkBuffer.wrap(Arrays.asList(buffers));
     } else {
       try {
