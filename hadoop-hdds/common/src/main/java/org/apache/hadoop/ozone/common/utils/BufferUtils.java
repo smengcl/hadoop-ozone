@@ -73,7 +73,7 @@ public final class BufferUtils {
    */
   public static List<ByteBuffer> getReadOnlyByteBuffers(
       List<ByteString> byteStrings) {
-    List<ByteBuffer> buffers = new ArrayList<>();
+    List<ByteBuffer> buffers = new ArrayList<>(byteStrings.size());
     for (ByteString byteString : byteStrings) {
       buffers.add(byteString.asReadOnlyByteBuffer());
     }
@@ -101,7 +101,11 @@ public final class BufferUtils {
    */
   public static ByteBuffer[] getReadOnlyByteBuffersArray(
       List<ByteString> byteStrings) {
-    return getReadOnlyByteBuffers(byteStrings).toArray(new ByteBuffer[0]);
+    ByteBuffer[] buffers = new ByteBuffer[byteStrings.size()];
+    for (int i = 0; i < byteStrings.size(); i++) {
+      buffers[i] = byteStrings.get(i).asReadOnlyByteBuffer();
+    }
+    return buffers;
   }
 
   public static ByteString concatByteStrings(List<ByteString> byteStrings) {
