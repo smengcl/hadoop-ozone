@@ -26,7 +26,6 @@ import java.util.List;
 import java.util.Map;
 import java.util.function.Function;
 import java.util.stream.Collectors;
-import org.apache.commons.collections4.CollectionUtils;
 import org.apache.hadoop.hdds.client.BlockID;
 import org.apache.hadoop.hdds.scm.OzoneClientConfig;
 import org.apache.hadoop.hdds.scm.XceiverClientFactory;
@@ -106,19 +105,14 @@ public class KeyInputStream extends MultipartInputStream {
     return partStreams;
   }
 
-  private static BlockLocationInfo getBlockLocationInfo(OmKeyInfo newKeyInfo,
+  static BlockLocationInfo getBlockLocationInfo(OmKeyInfo newKeyInfo,
       BlockID blockID) {
-    List<OmKeyLocationInfo> collect =
-        newKeyInfo.getLatestVersionLocations()
-            .getLocationList()
-            .stream()
-            .filter(l -> l.getBlockID().equals(blockID))
-            .collect(Collectors.toList());
-    if (CollectionUtils.isNotEmpty(collect)) {
-      return collect.get(0);
-    } else {
-      return null;
-    }
+    return newKeyInfo.getLatestVersionLocations()
+        .getLocationList()
+        .stream()
+        .filter(l -> l.getBlockID().equals(blockID))
+        .findFirst()
+        .orElse(null);
   }
 
   private static LengthInputStream getFromOmKeyInfo(
