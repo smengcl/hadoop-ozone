@@ -22,6 +22,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.mockito.Mockito.any;
 import static org.mockito.Mockito.mock;
@@ -34,10 +35,14 @@ import java.util.List;
 import java.util.Random;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
+import java.lang.reflect.Method;
 import org.apache.hadoop.hdds.client.BlockID;
+import org.apache.hadoop.hdds.protocol.datanode.proto.ContainerProtos;
 import org.apache.hadoop.hdds.protocol.datanode.proto.ContainerProtos.ChecksumType;
 import org.apache.hadoop.hdds.protocol.datanode.proto.ContainerProtos.ChunkInfo;
 import org.apache.hadoop.hdds.protocol.datanode.proto.ContainerProtos.ContainerCommandRequestProto;
+import org.apache.hadoop.hdds.protocol.datanode.proto.ContainerProtos.ContainerCommandResponseProto;
+import org.apache.hadoop.hdds.protocol.datanode.proto.ContainerProtos.ReadChunkRequestProto;
 import org.apache.hadoop.hdds.scm.ByteStringConversion;
 import org.apache.hadoop.hdds.scm.XceiverClientFactory;
 import org.apache.hadoop.hdds.scm.XceiverClientSpi;
@@ -283,5 +288,44 @@ public class TestChunkInputStream {
       verify(clientFactory).acquireClientForReadData(newPipeline);
       verify(newToken).encodeToUrlString();
     }
+  }
+
+  @Test
+  public void testValidateChunkSkipsChecksumWhenDisabled() throws Exception {
+    byte[] data = new byte[] {1, 2, 3, 4};
+    Checksum checksum = new Checksum(ChecksumType.CRC32, 2);
+    ChunkInfo badChecksumChunkInfo = ChunkInfo.newBuilder()
+        .setChunkName("chunk")
+        .setOffset(0)
+        .setLen(data.length)
+        .setChecksumData(checksum.computeChecksum(new byte[] {9, 9, 9, 9}, 0, data.length)
+            .getProtoBufMessage())
+        .build();
+
+    BlockID block = new BlockID(1, 1);
+    ChunkInputStream subject = new ChunkInputStream(badChecksumChunkInfo, block,
+        null, () -> MockPipeline.createRatisPipeline(), false, () -> null);
+
+    ReadChunkRequestProto readReq = ReadChunkRequestProto.newBuilder()
+        .setBlockID(block.getDatanodeBlockIDProtobuf())
+        .setChunkData(badChecksumChunkInfo)
+        .setReadChunkVersion(ContainerProtos.ReadChunkVersion.V1)
+        .build();
+    ContainerCommandRequestProto request = ContainerCommandRequestProto.newBuilder()
+        .setCmdType(ContainerProtos.Type.ReadChunk)
+        .setContainerID(block.getContainerID())
+        .setDatanodeUuid("dn")
+        .setReadChunk(readReq)
+        .build();
+
+    ContainerCommandResponseProto response = getReadChunkResponse(
+        request, ChunkBuffer.wrap(ByteBuffer.wrap(data)),
+        ByteStringConversion.createByteBufferConversion(false));
+
+    Method validate = ChunkInputStream.class.getDeclaredMethod(
+        "validateChunk", ContainerCommandRequestProto.class, ContainerCommandResponseProto.class);
+    validate.setAccessible(true);
+
+    assertDoesNotThrow(() -> validate.invoke(subject, request, response));
   }
 }

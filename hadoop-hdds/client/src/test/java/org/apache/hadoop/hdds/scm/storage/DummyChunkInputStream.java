@@ -71,7 +71,7 @@ public class DummyChunkInputStream extends ChunkInputStream {
     }
 
     return BufferUtils.getReadOnlyByteBuffers(readByteBuffers)
-        .toArray(new ByteBuffer[0]);
+        .toArray(new ByteBuffer[readByteBuffers.size()]);
   }
 
   @Override

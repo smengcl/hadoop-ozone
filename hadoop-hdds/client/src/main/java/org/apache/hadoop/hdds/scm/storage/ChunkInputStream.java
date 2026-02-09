@@ -441,8 +441,8 @@ public class ChunkInputStream extends InputStream
             tokenSupplier.get());
 
     if (readChunkResponse.hasData()) {
-      return readChunkResponse.getData().asReadOnlyByteBufferList()
-          .toArray(new ByteBuffer[0]);
+      List<ByteBuffer> dataBuffers = readChunkResponse.getData().asReadOnlyByteBufferList();
+      return dataBuffers.toArray(new ByteBuffer[dataBuffers.size()]);
     } else if (readChunkResponse.hasDataBuffers()) {
       List<ByteString> buffersList = readChunkResponse.getDataBuffers()
           .getBuffersList();
@@ -461,7 +461,7 @@ public class ChunkInputStream extends InputStream
         request.getReadChunk().getChunkData();
 
     ReadChunkResponseProto readChunkResponse = response.getReadChunk();
-    List<ByteString> byteStrings;
+    List<ByteString> byteStrings = null;
     if (readChunkResponse.hasData()) {
       ByteString byteString = readChunkResponse.getData();
       if (byteString.size() != reqChunkInfo.getLen()) {
@@ -471,8 +471,10 @@ public class ChunkInputStream extends InputStream
             reqChunkInfo.getChunkName(), reqChunkInfo.getLen(),
             byteString.size()));
       }
-      byteStrings = new ArrayList<>();
-      byteStrings.add(byteString);
+      if (verifyChecksum) {
+        byteStrings = new ArrayList<>(1);
+        byteStrings.add(byteString);
+      }
     } else {
       byteStrings = readChunkResponse.getDataBuffers().getBuffersList();
       long buffersLen = BufferUtils.getBuffersLen(byteStrings);
