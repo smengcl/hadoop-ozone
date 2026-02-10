@@ -36,132 +36,128 @@ The primary inefficiency in the current snapshot mechanism stems from constant R
 
 ## Snapshot Defragmentation
 
-Currently, snapshot RocksDBs has automatic RocksDB compaction disabled intentionally to preserve snapshot diff performance, preventing any form of compaction. However, snapshots can be defragmented in the way that the next active snapshot in the chain is a checkpoint of its previous active snapshot plus a diff stored in separate SST files (one SST for each column family changed). The proposed approach involves rewriting snapshots iteratively from the beginning of the snapshot chain and restructuring them in a separate directory.
+Currently, snapshot RocksDBs have automatic RocksDB compaction disabled intentionally to preserve snapshot diff performance. Snapshot defragmentation builds a new snapshot version by starting from a checkpoint of the previous snapshot (or the snapshot itself for the first snapshot in a chain) and ingesting SST diffs for the tracked column families. The service iterates the active snapshot chain in order and rewrites snapshots into versioned checkpoint directories rather than a separate tree.
 
 Note: Snapshot Defragmentation was previously called Snapshot Compaction earlier during the design phase. It is not RocksDB compaction. Thus the rename to avoid such confusion. We are also not going to enable RocksDB auto compaction on snapshot RocksDBs.
 
-1. ### Introducing last defragmentation time
+1. ### Snapshot local metadata (YAML) and versioning
 
-   A new boolean flag (`needsDefrag`), timestamp (`lastDefragTime`), int `version` would be added to snapshot metadata.
-   `needsDefrag` tells the system whether a snapshot is pending defrag (`true`) or if it is already defragged and up to date (`false`). This helps manage and automate the defrag workflow, ensuring snapshots are efficiently stored and maintained. `needsDefrag` defaults to `false` during initialization and when absent.
-   A new list of Map\<String, List\<Longs\>\> (`notDefraggedSstFileList`) also would be added to snapshot meta as part of snapshot create operation; this would be storing the original list of SST files in the not defragged copy of the snapshot corresponding to keyTable/fileTable/DirectoryTable. This should be done as part of the snapshot create operation.
-   Since this is not going to be consistent across all OMs this would have to be written to a local yaml file inside the snapshot directory and this can be maintained in the SnapshotChainManager in memory on startup. So all updates should not go through Ratis.  
-   An additional Map\<Integer, Map\<String, List\<Long\>\>\> (`defraggedSstFileList`) also would be added to snapshotMeta. This will be maintaining a list of sstFiles of different versions of defragged snapshots. The key here would be the version number of snapshot DBs.
+   Snapshot defrag state is stored in a per-snapshot YAML file (local to each OM, not through Ratis) alongside the checkpoint directory. The YAML is managed by `OmSnapshotLocalDataManager`, which also maintains an in-memory DAG of `(snapshotId, version)` dependencies to validate adds/removals and to clean up orphan versions.
 
-2. ### Snapshot Cache Lock for Read Prevention
+   The local metadata fields now include:
 
-   A snapshot lock will be introduced in the snapshot cache to prevent reads on a specific snapshot during the last step of defragmentation. This ensures no active reads occur while we are replacing the underlying RocksDB instance. The swap should be instantaneous.
+   - `needsDefrag`, `lastDefragTime`, and `version` (version `0` indicates the original snapshot).
+   - `previousSnapshotId` (used to resolve the active chain).
+   - `isSSTFiltered` (local marker; defrag effectively performs filtering).
+   - `dbTxSequenceNumber` and optional `transactionInfo` (used for purge/orphan cleanup).
+   - `versionSstFileInfos`: a map of `version -> VersionMeta`, where each `VersionMeta`
+     contains `previousSnapshotVersion` and a list of `SstFileInfo` entries
+     (`fileName`, `startKey`, `endKey`, `columnFamily`).
+
+   The original (non-defragged) SST list is captured as `versionSstFileInfos[0]` during snapshot creation. Defragmentation adds a new version entry and increments the snapshot version.
+
+2. ### Snapshot content lock for DB switch
+
+   The implementation uses `SNAPSHOT_DB_CONTENT_LOCK` via `MultiSnapshotLocks` to protect snapshot contents during the final switch. This avoids readers observing partially updated snapshot DB directories while the checkpoint is moved into place.
 
 3. ### Directory Structure Changes
 
-   Snapshots currently reside under `db.snapshots/checkpointState/` directory. The proposal introduces a `db.snapshots/checkpointStateDefragged/` directory for defragged snapshots. The directory format should be as follows:
+   Snapshots (all versions) reside under `db.snapshots/checkpointState/`. Defragged versions use the same parent directory and a version suffix in the checkpoint name. The format is:
 
 | om.db-\<snapshot\_id\>-\<version\> |
 | :---- |
+
+   Version `0` is the original snapshot. Defragged versions are `1, 2, ...`. A temporary working directory `tmp_defrag/` is created under the snapshots parent, with a `differSstFiles/` subdirectory for delta SST files; it is deleted on service shutdown.
 
 4. ### Optimized Snapshot Diff Computation
 
 To compute a snapshot diff:
 
-* If both snapshots are defragged, their defragged versions will be used. The diff between two defragged snapshot should be present in one SST file.
-* If the target snapshot is not defragged & the source snapshot is defragged (other way is not possible as we always defrag snapshots in order) and if the DAG has all the sst files corresponding to the not defragged snapshot version of the defragged snapshot which would be captured as part of the snapshot metadata, then an efficient diff can be performed with the information present in the DAG. Use `notDefraggedSstFileList` from each of the snapshot's meta  
-* Otherwise, a full diff will be computed between the defragged source and the defragged target snapshot. Delta SST files would be computed corresponding to the latest version number of the target snapshot(version number of target snapshot would always be greater)
-* Changes in the full diff logic is required to check inode ids of sst files and remove the common sst files b/w source and target snapshots.
+* Defragmentation uses `CompositeDeltaDiffComputer`, which prefers `RocksDBCheckpointDiffer` (DAG-based) and falls back to a full diff when needed.
+* The differ uses `versionSstFileInfos` plus `previousSnapshotVersion` to resolve versions across the chain.
+* When multiple delta files exist for a table, defrag merges them by reading keys from delta SSTs and comparing values between the current and previous snapshots, writing updated values or tombstones to a new SST for ingestion.
 
 
 5. ### Snapshot Defragmentation Workflow
 
-   A background snapshot defragmentation service should be added which would be done by iterating through the snapshot chain in the same order as the global snapshot chain. This is to ensure the snapshot created after is always defragged after all the snapshots previously created are defragged. Snapshot defragmentation should only occur once the snapshot has undergone SST filtering. The following steps outline the process:  
-1. **Create a RocksDB checkpoint** of the path previous snapshot corresponding to the bucket in the chain (if it exists). `version` of previous snapshot should be strictly greater than the current snapshot’s `version` otherwise skip compacting this snapshot in this iteration.
-2. **Acquire the `SNAPSHOT_GC_LOCK`** for the snapshot ID to prevent garbage collection during defragmentation\[This is to keep contents of deleted Table contents same while defragmentation consistent\].  
-   1. If there is no path previous snapshot then  
-      1.  Take a checkpoint of the same RocksDB instance remove keys that don’t correspond to the bucket from tables `keyTable`, `fileTable`, `directoryTable,deletedTable,deletedDirectoryTable` by running RocksDB delete range api. This should be done if the snapshot has never been defragged before i.e. if `lastDefragTime` is zero or null. Otherwise just update the `needsDefrag` to False.  
-      2. We can trigger a forced manual compaction on the RocksDB instance(i & ii can be behind a flag where in we can just work with the checkpoint of the RocksDB if the flag is disabled).  
-   2. If path previous snapshot exists:  
-      1. **Compute the diff** between tables (`keyTable`, `fileTable`, `directoryTable`) of the checkpoint and the current snapshot using snapshot diff functionality.  
-      2. **Flush changed objects** into separate SST files using the SST file writer, categorizing them by table type.  
-      3. **Ingest these SST files** into the RocksDB checkpoint using the `ingestFile` API.  
-3. Check if the entire current snapshot has been flushed to disk otherwise wait for the flush to happen.  
-4. Truncate `deletedTable,deletedDirectoryTable,snapshotRenamedTable etc. (All tables excepting keyTable/fileTable/directoryTable)` in checkpointed RocksDB and ingest the entire table from deletedTable and deletedDirectoryTable from the current snapshot RocksDB.  
-5. **Acquire the snapshot cache lock** to prevent snapshot access during directory updates.\[While performing the snapshot RocksDB directory switch there should be no RocksDB handle with read happening on it\].  
-6. **Move the checkpoint directory** into `checkpointStateDefragged` with the format:
-
-| om.db-\<snapshot\_id\>-\<version\> |
-| :---- |
-
-7. **Update snapshot metadata**, setting `lastDefragTime` and marking `needsDefrag = false` and set the next snapshot in the chain is marked for defragmentation. If there is no path previous snapshot in the chain then increase `version`  by 1 otherwise set `version` which is equal to the previous snapshot in the chain. Based on the sstFiles in the RocksDB compute Map\<String, List\<Long\>\> and add this Map to `defraggedSstFileList` corresponding to the `version` of the snapshot.  
-8. **Delete old not defragged/defragged snapshots**, ensuring unreferenced not defragged/defragged snapshots are purged during OM startup(This is to handle jvm crash after viii).  
-9. **Release the snapshot cache lock** on the snapshot id. Now the snapshot is ready to be used to read.
+   The background snapshot defragmentation service iterates the active snapshot chain in order and only processes active snapshots. It no longer depends on the legacy SST filtering service (which is disabled when defrag is enabled). The high-level steps are:
+1. **Determine defrag eligibility** from the snapshot local YAML (`needsDefrag` or a version mismatch with the resolved previous snapshot).
+2. **Create a RocksDB checkpoint** of the previous snapshot in the chain (or the current snapshot if it is the first snapshot).
+3. **Full defrag (first snapshot):** delete ranges outside the bucket prefix in `keyTable`, `fileTable`, and `directoryTable`, then compact those tables with `kForce` to remove tombstones.
+4. **Incremental defrag (subsequent snapshots):**
+   1. Compute delta SSTs for `keyTable`, `fileTable`, and `directoryTable` using `CompositeDeltaDiffComputer`.
+   2. If a table has multiple delta files (or the snapshot version is 0), merge deltas by streaming keys and comparing values from the current and previous snapshots, writing updates/tombstones to a new SST.
+   3. Ingest the delta SST(s) into the checkpoint.
+5. **Ingest non-incremental tables** from the current snapshot by dumping each table (scoped to the bucket prefix where applicable) to an SST file and loading it into the checkpoint.
+6. **Acquire `SNAPSHOT_DB_CONTENT_LOCK`** for the snapshot and atomically switch the snapshot directory to the next version (`om.db-<snapshotId>-<version+1>`).
+7. **Update snapshot local metadata**: add a new version entry, set `needsDefrag=false`, and record the new SST list in `versionSstFileInfos`.
+8. **Delete the previous snapshot version directory** and release the content lock.
 
 
 #### Visualization
 
 ```mermaid
 flowchart TD
-    A[Start: Not defragged Snapshot Exists] --> B[Has SST Filtering Occurred?]
-    B -- No --> Z[Wait for SST Filtering]
-    B -- Yes --> C[Create RocksDB Checkpoint of Previous Snapshot]
-    C --> D{Defragged Copy Exists?}
-    D -- Yes --> E[Update defragTime, set needsDefrag=false]
-    D -- No --> F[Create Checkpoint in Temp Directory]
-    E --> G[Acquire SNAPSHOT_GC_LOCK]
-    F --> G
-    G --> H[Compute Diff between Checkpoint & Current Snapshot]
-    H --> I[Flush Changed Objects into SST Files by table]
-    I --> J[Ingest SST Files into Checkpointed RocksDB]
-    J --> K[Truncate/Replace deletedTable, etc.]
-    K --> L[Acquire Snapshot Cache Lock]
-    L --> M[Move Checkpoint Dir to checkpointStateDefragged]
-    M --> N[Update Snapshot Metadata: lastDefragTime, needsDefrag=false, set next snapshot needsDefrag=true, set sstFiles]
-    N --> O[Delete old snapshot DB dir]
-    O --> P[Release Snapshot Cache Lock]
-    P --> Q[Defragged Snapshot Ready]
+    A[Start: Snapshot needs defrag] --> B[Create checkpoint of previous snapshot]
+    B --> C{First snapshot in chain?}
+    C -- Yes --> D[Full defrag: delete ranges + compact]
+    C -- No --> E[Incremental defrag: compute delta SSTs]
+    D --> F[Ingest non-incremental tables]
+    E --> F
+    F --> G[Acquire SNAPSHOT_DB_CONTENT_LOCK]
+    G --> H[Move checkpoint to next version dir]
+    H --> I[Update local YAML version metadata]
+    I --> J[Delete previous version dir]
+    J --> K[Release content lock]
+    K --> L[Defragged snapshot ready]
 ```
 
+### Operational Notes
 
+- Incremental defrag only tracks `keyTable`, `directoryTable`, and `fileTable` (same set used by the RocksDB checkpoint differ DAG).
+- The service runs only when filesystem snapshots are enabled and the `SNAPSHOT_DEFRAG` layout feature is allowed.
+- `rocks-tools` native libraries must be available; otherwise defrag is skipped and the service logs a warning.
+- `SstFilteringService` is disabled when defrag is enabled, as defrag already performs filtering. The filtering service is deprecated.
+- The service is single-threaded and bounded by `SNAPSHOT_DEFRAG_LIMIT_PER_TASK` per run, with interval/timeout controlled by `OZONE_SNAPSHOT_DEFRAG_SERVICE_INTERVAL` and `OZONE_SNAPSHOT_DEFRAG_SERVICE_TIMEOUT`.
 
 ### Computing Changed Objects Between Snapshots
 
-   The following steps outline how to compute changed objects:  
-1. **Determine delta SST files**:  
-   * Retrieve from DAG if the snapshot was not defragged previously and the previous snapshot has an not defragged copy.  
-   * Otherwise, compute delta SST files by comparing SST files in both defragged RocksDBs.  
-2. **Initialize SST file writers** for `keyTable`, `directoryTable`, and `fileTable`.  
-3. **Iterate SST files in parallel**, reading and merging keys to maintain sorted order.(Similar to the MinHeapIterator instead of iterating through multiple tables we would be iterating through multiple sst files concurrently).  
-4. **Compare keys** between snapshots to determine changes and write updated objects if and only if they have changed into the SST file.  
-   * If the object is present in the target snapshot then do an sstFileWriter.put().  
-     * If the object is present in source snapshot but not present in target snapshot then we just have to write a tombstone entry by calling sstFileWriter.delete().  
-5. **Ingest these SST files** into the checkpointed RocksDB.
+   The following steps outline how changed objects are computed during incremental defrag:
+1. **Compute delta SST files** using `CompositeDeltaDiffComputer` (RDB differ with full-diff fallback).
+2. **Group delta files by table** (`keyTable`, `directoryTable`, `fileTable`).
+3. **If a single delta file exists and snapshot version > 0**, ingest it directly into the checkpoint.
+4. **Otherwise, merge deltas**:
+   * Stream keys from delta SSTs with a merge iterator.
+   * Compare values in current and previous snapshots.
+   * Write updated values with `put` or deletions with tombstones (`delete`) into a new SST file.
+5. **Ingest merged SST files** into the checkpointed RocksDB.
 
 #### Visualization
 
 ```mermaid
 flowchart TD
-    A[Start: Need Diff Between Snapshots] --> B[Determine delta SST files]
-    B -- DAG Info available --> C[Retrieve from DAG]
-    B -- Otherwise --> D[Compute delta by comparing SST files in both RocksDBs]
-    C --> E[Initialize SST file writers: keyTable, directoryTable, fileTable]
-    D --> E
-    E --> F[Iterate SST files in parallel, merge keys: MinHeapIterator-like]
-    F --> G[Compare keys between snapshots]
-    G --> H{Object in Target?}
-    H -- Yes --> I[sstFileWriter.put]
-    H -- No --> J[sstFileWriter.delete tombstone]
-    I --> K[Ingest SST Files into Checkpointed RocksDB]
-    J --> K
+    A[Start: Compute delta SSTs] --> B[CompositeDeltaDiffComputer]
+    B --> C[Group delta files by table]
+    C --> D{Single delta file and version > 0?}
+    D -- Yes --> E[Ingest delta file directly]
+    D -- No --> F[Merge delta files: stream keys + compare values]
+    F --> G[Write merged SST with puts/tombstones]
+    G --> H[Ingest merged SST into checkpoint]
 ```
 
 
-### Handling Snapshot Purge
+### Handling Snapshot Purge and Orphan Versions
 
-   Upon snapshot deletion, the `needsDefrag` flag for the next snapshot in the chain is set to `true`, ensuring defragmentation propagates incrementally across the snapshot chain.
+Snapshot deletion does not directly toggle `needsDefrag` in snapshot metadata. Instead, when the snapshot chain changes, the local data manager resolves `previousSnapshotId` and marks `needsDefrag=true` if it detects a version mismatch. Orphan snapshot versions are cleaned up by `OmSnapshotLocalDataManager` using its in-memory DAG and a periodic orphan-check service, which removes unreferenced versions from YAML once safe.
 
 #### Visualization
 
 ```mermaid
 flowchart TD
-    A[Snapshot Deletion Requested] --> B[Set needsDefrag=true for next snapshot in chain]
-    B --> C[Next snapshots will be defragged incrementally]
+    A[Snapshot Deletion or chain change] --> B[Resolve previousSnapshotId in YAML]
+    B --> C{Version mismatch?}
+    C -- Yes --> D[Mark needsDefrag=true]
+    C -- No --> E[No defrag required]
 ```
 
 
