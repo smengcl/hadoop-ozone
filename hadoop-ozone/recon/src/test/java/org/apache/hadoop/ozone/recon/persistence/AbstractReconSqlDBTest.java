@@ -79,7 +79,9 @@ public class AbstractReconSqlDBTest {
 
   @BeforeEach
   public void createReconSchemaForTest(@TempDir Path temporaryFolder) throws IOException {
-    init(temporaryFolder);
+    if (configurationProvider == null) {
+      init(temporaryFolder);
+    }
     injector = Guice.createInjector(getReconSqlDBModules());
     dslContext = DSL.using(new DefaultConfiguration().set(
         injector.getInstance(DataSource.class)));

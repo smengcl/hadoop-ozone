@@ -19,13 +19,22 @@ package org.apache.hadoop.ozone.recon.persistence;
 
 import com.google.inject.Inject;
 import com.google.inject.Provider;
+import java.io.IOException;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.Paths;
 import javax.sql.DataSource;
 import org.sqlite.SQLiteDataSource;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /**
  * Provide a {@link javax.sql.DataSource} for the application.
  */
 public class SqliteDataSourceProvider implements Provider<DataSource> {
+  private static final Logger LOG =
+      LoggerFactory.getLogger(SqliteDataSourceProvider.class);
+  private static final String SQLITE_URL_PREFIX = "jdbc:sqlite:";
 
   private DataSourceConfiguration configuration;
 
@@ -43,8 +52,32 @@ public class SqliteDataSourceProvider implements Provider<DataSource> {
    */
   @Override
   public DataSource get() {
+    ensureParentDirectoryExists(configuration.getJdbcUrl());
     SQLiteDataSource ds = new SQLiteDataSource();
     ds.setUrl(configuration.getJdbcUrl());
     return ds;
+  }
+
+  private void ensureParentDirectoryExists(String jdbcUrl) {
+    if (jdbcUrl == null || !jdbcUrl.startsWith(SQLITE_URL_PREFIX)) {
+      return;
+    }
+
+    String dbPath = jdbcUrl.substring(SQLITE_URL_PREFIX.length());
+    if (dbPath.isEmpty() || ":memory:".equals(dbPath) || dbPath.startsWith("file:")) {
+      return;
+    }
+
+    Path parentDir = Paths.get(dbPath).getParent();
+    if (parentDir == null) {
+      return;
+    }
+
+    try {
+      Files.createDirectories(parentDir);
+    } catch (IOException e) {
+      LOG.error("Failed to create parent directory for SQLite DB {}", dbPath, e);
+      throw new IllegalStateException("Unable to create SQLite DB parent directory", e);
+    }
   }
 }

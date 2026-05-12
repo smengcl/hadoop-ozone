@@ -91,8 +91,11 @@ public class ReconService implements MiniOzoneCluster.Service {
     conf.set(OZONE_RECON_SCM_DB_DIR, dir.getAbsolutePath());
 
     ReconSqlDbConfig dbConfig = conf.getObject(ReconSqlDbConfig.class);
-    dbConfig.setJdbcUrl("jdbc:derby:" + dir.getAbsolutePath()
-        + "/ozone_recon_derby.db");
+    if (dbConfig.getJdbcUrl() == null ||
+        dbConfig.getJdbcUrl().contains(OZONE_RECON_DB_DIR)) {
+      dbConfig.setJdbcUrl("jdbc:derby:" + dir.getAbsolutePath()
+          + "/ozone_recon_derby.db");
+    }
     conf.setFromObject(dbConfig);
 
     conf.set(OZONE_RECON_TASK_SAFEMODE_WAIT_THRESHOLD, "10s");

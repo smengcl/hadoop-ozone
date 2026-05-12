@@ -67,6 +67,8 @@ public class TestReconWithDifferentSqlDBs {
     assertNotNull(reconSqlDB.getConfiguration());
     assertNotNull(reconSqlDB.getDslContext());
     assertNotNull(reconSqlDB.getConnection());
+    assertEquals(SQLDialect.valueOf(provider.get().getSqlDialect()),
+        reconSqlDB.getConfiguration().dialect());
     RECON_DAO_LIST.forEach(dao -> {
       assertNotNull(reconSqlDB.getDao(dao));
     });

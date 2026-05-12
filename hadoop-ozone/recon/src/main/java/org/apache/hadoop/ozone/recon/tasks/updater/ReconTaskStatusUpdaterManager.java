@@ -20,11 +20,15 @@ package org.apache.hadoop.ozone.recon.tasks.updater;
 import static org.jooq.impl.DSL.name;
 
 import com.google.inject.Inject;
+import java.sql.Connection;
+import java.sql.DatabaseMetaData;
+import java.sql.ResultSet;
 import com.google.inject.Singleton;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicBoolean;
+import org.jooq.ConnectionProvider;
 import org.apache.ozone.recon.schema.generated.tables.daos.ReconTaskStatusDao;
 import org.apache.ozone.recon.schema.generated.tables.pojos.ReconTaskStatus;
 import org.jooq.DSLContext;
@@ -121,17 +125,27 @@ public class ReconTaskStatusUpdaterManager {
    * @return true if the column exists, false otherwise
    */
   private boolean columnExists(DSLContext dsl, String columnName) {
+    ConnectionProvider connectionProvider = dsl.configuration().connectionProvider();
+    Connection connection = null;
     try {
-      // Query Derby system catalog to check if column exists
-      Integer count = dsl.selectCount()
-          .from(DSL.table(name("SYS", "SYSCOLUMNS")))
-          .where(DSL.field(name("TABLENAME")).eq(RECON_TASK_STATUS_TABLE_NAME))
-          .and(DSL.field(name("COLUMNNAME")).eq(columnName.toUpperCase()))
-          .fetchOne(0, int.class);
-      return count != null && count > 0;
+      connection = connectionProvider.acquire();
+      DatabaseMetaData metadata = connection.getMetaData();
+      try (ResultSet columns = metadata.getColumns(
+          connection.getCatalog(), null, RECON_TASK_STATUS_TABLE_NAME, null)) {
+        while (columns.next()) {
+          if (columnName.equalsIgnoreCase(columns.getString("COLUMN_NAME"))) {
+            return true;
+          }
+        }
+      }
+      return false;
     } catch (Exception e) {
       LOG.debug("Could not check column existence, assuming columns don't exist: {}", e.getMessage());
       return false;
+    } finally {
+      if (connection != null) {
+        connectionProvider.release(connection);
+      }
     }
   }
 

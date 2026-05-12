@@ -115,3 +115,10 @@ ozone.recon.sql.db.username | none | Recon SQL数据库的用户名。
 ozone.recon.sql.db.password | none | Recon SQL数据库的密码。
 ozone.recon.sql.db.driver | org.apache.derby.jdbc<br>.EmbeddedDriver | Recon SQL数据库的 jdbc driver。
 
+也支持 SQLite。如果要使用 SQLite 而不是默认的 Derby，请设置：
+
+```properties
+ozone.recon.sql.db.jooq.dialect=SQLITE
+ozone.recon.sql.db.jdbc.url=jdbc:sqlite:${ozone.recon.db.dir}/ozone_recon_sqlite.db
+ozone.recon.sql.db.driver=org.sqlite.JDBC
+```

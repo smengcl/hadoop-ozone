@@ -160,3 +160,10 @@ ozone.recon.sql.db.username | none | Recon SQL database username.
 ozone.recon.sql.db.password | none | Recon SQL database password.
 ozone.recon.sql.db.driver | org.apache.derby.jdbc<br>.EmbeddedDriver | Recon SQL database jdbc driver.
 
+SQLite is also supported. To run Recon with SQLite instead of the default Derby backend, set:
+
+```properties
+ozone.recon.sql.db.jooq.dialect=SQLITE
+ozone.recon.sql.db.jdbc.url=jdbc:sqlite:${ozone.recon.db.dir}/ozone_recon_sqlite.db
+ozone.recon.sql.db.driver=org.sqlite.JDBC
+```
