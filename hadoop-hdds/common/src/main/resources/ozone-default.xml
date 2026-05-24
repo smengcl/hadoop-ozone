@@ -86,7 +86,10 @@
     <value>false</value>
     <tag>OZONE, CONTAINER, MANAGEMENT</tag>
     <description>Determines whether the chunk writes in the container happen as
-      sync I/0 or buffered I/O operation.
+      data-sync (O_DSYNC) I/O or buffered I/O operation. When true, every
+      write to a chunk file is flushed to the underlying storage device before
+      returning, but inode metadata (atime, ctime) are not flushed on each
+      write, which avoids unnecessary metadata I/O overhead compared to O_SYNC.
     </description>
   </property>
   <property>

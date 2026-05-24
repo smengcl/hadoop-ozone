@@ -393,7 +393,7 @@ public class FilePerBlockStrategy implements ChunkManager {
     private final RandomAccessFile file;
 
     private OpenFile(File file, boolean sync) throws FileNotFoundException {
-      String mode = sync ? "rws" : "rw";
+      String mode = sync ? "rwd" : "rw";
       this.file = new RandomAccessFile(file, mode);
       if (LOG.isDebugEnabled()) {
         LOG.debug("Opened file {}", file);
