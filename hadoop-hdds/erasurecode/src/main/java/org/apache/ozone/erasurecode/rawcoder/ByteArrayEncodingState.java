@@ -84,6 +84,37 @@ class ByteArrayEncodingState extends EncodingState {
   }
 
   /**
+   * Convert to a ByteBufferEncodingState, reusing direct buffers from the
+   * supplied pool to avoid per-call direct-memory allocation.
+   *
+   * <p>Slot indices: inputs occupy [0 .. inputs.length-1], outputs occupy
+   * [inputs.length .. inputs.length + outputs.length - 1].
+   *
+   * @param pool per-coder-instance direct buffer pool (caller holds the lock)
+   * @return a ByteBufferEncodingState backed by pooled direct buffers
+   */
+  ByteBufferEncodingState convertToByteBufferState(DirectBufferPool pool) {
+    ByteBuffer[] newInputs = new ByteBuffer[inputs.length];
+    ByteBuffer[] newOutputs = new ByteBuffer[outputs.length];
+
+    for (int i = 0; i < inputs.length; i++) {
+      ByteBuffer buf = pool.get(i, encodeLength);
+      buf.put(inputs[i], inputOffsets[i], encodeLength);
+      buf.flip();
+      newInputs[i] = buf;
+    }
+
+    for (int i = 0; i < outputs.length; i++) {
+      ByteBuffer buf = pool.get(inputs.length + i, encodeLength);
+      newOutputs[i] = buf;
+    }
+
+    ByteBufferEncodingState bbeState = new ByteBufferEncodingState(encoder,
+        encodeLength, newInputs, newOutputs);
+    return bbeState;
+  }
+
+  /**
    * Check and ensure the buffers are of the desired length.
    * @param buffers the buffers to check
    */

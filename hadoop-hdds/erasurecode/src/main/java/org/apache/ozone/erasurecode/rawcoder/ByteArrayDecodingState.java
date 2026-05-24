@@ -86,6 +86,44 @@ class ByteArrayDecodingState extends DecodingState {
   }
 
   /**
+   * Convert to a ByteBufferDecodingState, reusing direct buffers from the
+   * supplied pool to avoid per-call direct-memory allocation.
+   *
+   * <p>Slot indices: inputs occupy [0 .. inputs.length-1], outputs occupy
+   * [inputs.length .. inputs.length + outputs.length - 1]. A null input
+   * (erased unit) maps to a null buffer entry; no pool slot is consumed
+   * for it, but the slot index is still advanced so slot assignments stay
+   * stable across calls.
+   *
+   * @param pool per-coder-instance direct buffer pool (caller holds the lock)
+   * @return a ByteBufferDecodingState backed by pooled direct buffers
+   */
+  ByteBufferDecodingState convertToByteBufferState(DirectBufferPool pool) {
+    ByteBuffer[] newInputs = new ByteBuffer[inputs.length];
+    ByteBuffer[] newOutputs = new ByteBuffer[outputs.length];
+
+    for (int i = 0; i < inputs.length; i++) {
+      if (inputs[i] == null) {
+        newInputs[i] = null;
+      } else {
+        ByteBuffer buf = pool.get(i, decodeLength);
+        buf.put(inputs[i], inputOffsets[i], decodeLength);
+        buf.flip();
+        newInputs[i] = buf;
+      }
+    }
+
+    for (int i = 0; i < outputs.length; i++) {
+      ByteBuffer buf = pool.get(inputs.length + i, decodeLength);
+      newOutputs[i] = buf;
+    }
+
+    ByteBufferDecodingState bbdState = new ByteBufferDecodingState(decoder,
+        decodeLength, erasedIndexes, newInputs, newOutputs);
+    return bbdState;
+  }
+
+  /**
    * Check and ensure the buffers are of the desired length.
    * @param buffers the buffers to check
    */

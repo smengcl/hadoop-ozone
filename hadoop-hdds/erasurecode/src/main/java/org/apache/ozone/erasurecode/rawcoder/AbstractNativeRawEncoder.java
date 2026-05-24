@@ -40,6 +40,13 @@ abstract class AbstractNativeRawEncoder extends RawErasureEncoder {
   protected final ReentrantReadWriteLock encoderLock =
       new ReentrantReadWriteLock();
 
+  /**
+   * Per-instance pool of direct scratch buffers reused across encode calls
+   * when the byte-array input path is taken. Access is serialized by the
+   * write side of {@link #encoderLock} (read lock suffices for encode).
+   */
+  private final DirectBufferPool scratchBufferPool = new DirectBufferPool();
+
   AbstractNativeRawEncoder(ECReplicationConfig replicationConfig) {
     super(replicationConfig);
   }
@@ -82,7 +89,8 @@ abstract class AbstractNativeRawEncoder extends RawErasureEncoder {
     PerformanceAdvisory.LOG.debug("convertToByteBufferState is invoked, " +
         "not efficiently. Please use direct ByteBuffer inputs/outputs");
 
-    ByteBufferEncodingState bbeState = encodingState.convertToByteBufferState();
+    ByteBufferEncodingState bbeState =
+        encodingState.convertToByteBufferState(scratchBufferPool);
     doEncode(bbeState);
 
     for (int i = 0; i < encodingState.outputs.length; i++) {
