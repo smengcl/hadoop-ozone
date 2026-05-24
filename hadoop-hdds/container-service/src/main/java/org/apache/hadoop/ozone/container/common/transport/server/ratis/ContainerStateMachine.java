@@ -543,12 +543,20 @@ public class ContainerStateMachine extends BaseStateMachine {
   private static ContainerCommandRequestProto getContainerCommandRequestProto(
       RaftGroupId id, ByteString request)
       throws InvalidProtocolBufferException {
-    // TODO: We can avoid creating new builder and set pipeline Id if
-    // the client is already sending the pipeline id, then we just have to
-    // validate the pipeline Id.
-    return ContainerCommandRequestProto.newBuilder(
-        ContainerCommandRequestProto.parseFrom(request))
-        .setPipelineID(id.getUuid().toString()).build();
+    final ContainerCommandRequestProto proto =
+        ContainerCommandRequestProto.parseFrom(request);
+    final String gidString = id.getUuid().toString();
+    if (proto.hasPipelineID()) {
+      final String pid = proto.getPipelineID();
+      if (!gidString.equals(pid)) {
+        throw new InvalidProtocolBufferException("ID mismatched: PipelineID "
+            + pid + " does not match the groupId " + gidString);
+      }
+      // pipelineID is already set correctly; return the parsed proto as-is,
+      // avoiding an unnecessary builder round-trip and re-serialization.
+      return proto;
+    }
+    return proto.toBuilder().setPipelineID(gidString).build();
   }
 
   private ContainerCommandRequestProto message2ContainerCommandRequestProto(
