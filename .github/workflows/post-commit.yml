@@ -17,6 +17,10 @@ on:
   pull_request:
     types: [opened, ready_for_review, synchronize]
   push:
+    # HDDS-15788: throwaway flaky-check branch runs only flaky-check-HDDS-15788,
+    # skip the regular (full-ci) build to avoid wasting CI resources.
+    branches-ignore:
+      - HDDS-15788-flaky-testssbgs-10x10
 concurrency:
   group: ci-${{ github.event.pull_request.number || case(github.repository == 'apache/ozone', github.sha, github.ref_name) }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' || github.repository != 'apache/ozone' }}

@@ -1,0 +1,173 @@
+# Licensed to the Apache Software Foundation (ASF) under one or more
+# contributor license agreements.  See the NOTICE file distributed with
+# this work for additional information regarding copyright ownership.
+# The ASF licenses this file to You under the Apache License, Version 2.0
+# (the "License"); you may not use this file except in compliance with
+# the License.  You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# TEMPORARY throwaway workflow: push-triggered 10x10 flaky-test-check for
+# TestSnapshotBackgroundServices#testSnapshotAndKeyDeletionBackgroundServices
+# (HDDS-15788). Do NOT merge to master. Mirrors intermittent-test-check.yml
+# with inputs hardcoded so a plain push runs 10 splits x 10 iterations = 100 runs.
+name: flaky-check-HDDS-15788
+on:
+  push:
+    branches:
+      - HDDS-15788-flaky-testssbgs-10x10
+  workflow_dispatch: {}
+env:
+  MAVEN_OPTS: -Dhttp.keepAlive=false -Dmaven.wagon.http.pool=false -Dmaven.wagon.http.retryHandler.class=standard -Dmaven.wagon.http.retryHandler.count=3
+  TEST_CLASS: TestSnapshotBackgroundServices
+  TEST_METHOD: testSnapshotAndKeyDeletionBackgroundServices
+  ITERATIONS: '10'
+  FAIL_FAST: 'false'
+  JAVA_VERSION: '25'
+  SPLITS: '10'
+  SUBMODULE: 'ozone-integration-test'
+  # Surefire 3.0.0-M4 is used because newer versions do not reliably kill the fork on timeout
+  # SUREFIRE-1722, SUREFIRE-1815
+  SUREFIRE_VERSION: 3.0.0-M4
+permissions: { }
+jobs:
+  prepare-job:
+    runs-on: ubuntu-slim
+    outputs:
+      matrix: ${{steps.generate.outputs.matrix}}
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+      - id: generate
+        name: Generate test matrix
+        run: |
+          splits=()
+          for ((i = 1; i <= $SPLITS; i++)); do
+            splits+=("$i")
+          done
+          printf -v x "%s," "${splits[@]}"
+          split_matrix="[${x%,}]"
+          echo "matrix=$split_matrix" >> $GITHUB_OUTPUT
+  build:
+    if: ${{ !cancelled() }}
+    needs:
+      - prepare-job
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - name: Checkout project
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+      - name: Cache for maven dependencies
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.m2/repository/*/*/*
+            !~/.m2/repository/org/apache/ozone
+          key: maven-repo-${{ hashFiles('**/pom.xml') }}
+          restore-keys: |
+            maven-repo-
+      - name: Setup java
+        uses: actions/setup-java@1bcf9fb12cf4aa7d266a90ae39939e61372fe520 # v5.4.0
+        with:
+          distribution: 'temurin'
+          java-version: ${{ env.JAVA_VERSION }}
+      - name: Build (most) of Ozone
+        run: |
+          args="-DskipRecon -DskipShade -Dmaven.javadoc.skip=true -Drocks_tools_native"
+          args="$args -am -pl :$SUBMODULE"
+
+          hadoop-ozone/dev-support/checks/build.sh $args
+      - name: Store Maven repo for tests
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ozone-repo
+          path: |
+            ~/.m2/repository/org/apache/ozone
+          retention-days: 1
+  run-test:
+    if: ${{ !cancelled() }}
+    needs:
+      - prepare-job
+      - build
+    name: Run-Split
+    runs-on: ubuntu-24.04
+    strategy:
+      matrix:
+        split: ${{fromJson(needs.prepare-job.outputs.matrix)}}  # Define  splits
+      fail-fast: false
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+      - name: Cache for maven dependencies
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.m2/repository/*/*/*
+            !~/.m2/repository/org/apache/ozone
+          key: maven-repo-${{ hashFiles('**/pom.xml') }}
+          restore-keys: |
+            maven-repo-
+      - name: Download Ozone repo
+        id: download-ozone-repo
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: ozone-repo
+          path: |
+            ~/.m2/repository/org/apache/ozone
+      - name: Setup java
+        uses: actions/setup-java@1bcf9fb12cf4aa7d266a90ae39939e61372fe520 # v5.4.0
+        with:
+          distribution: 'temurin'
+          java-version: ${{ env.JAVA_VERSION }}
+      - name: Execute tests
+        run: |
+          if [[ -e "$repo_path" ]]; then
+            export OZONE_REPO_CACHED=true
+          fi
+
+          args="-DexcludedGroups=slow|unhealthy -DskipShade -Drocks_tools_native"
+          args="$args -pl :$SUBMODULE"
+
+          echo "Running test: $TEST_METHOD from $TEST_CLASS"
+          set -x
+          hadoop-ozone/dev-support/checks/junit.sh $args -Dtest="$TEST_CLASS#$TEST_METHOD,Abstract*Test*\$*"
+        env:
+          DEVELOCITY_ACCESS_KEY: ${{ secrets.DEVELOCITY_ACCESS_KEY }}
+          repo_path: ${{ steps.download-ozone-repo.outputs.download-path }}
+      - name: Summary of failures
+        run: hadoop-ozone/dev-support/checks/_summary.sh target/unit/summary.txt
+        if: ${{ failure() }}
+      - name: Archive build results
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: ${{ failure() }}
+        with:
+          name: result-${{ github.run_number }}-${{ github.run_id }}-split-${{ matrix.split }}
+          path: target/unit
+  count-failures:
+    if: ${{ failure() }}
+    needs: run-test
+    runs-on: ubuntu-slim
+    steps:
+      - name: Download build results
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+      - name: Count failures
+        run: |
+          failures=$(find . -name 'summary.txt' | grep --text -v 'iteration' | xargs grep --text -v 'exit code: 0' | wc -l)
+          echo "Total failures: $failures"
+          if [[ $failures -gt 0 ]]; then
+            echo ""
+            echo "Failed runs:"
+            grep --text 'exit code: 1' */summary.txt | grep --text -o 'split.*teration [0-9]*' | sed -e 's/.summary.txt:/ /' -e 's/-/ /' | sort -g -k2 -k4
+            echo ""
+            exit 1
+          fi
