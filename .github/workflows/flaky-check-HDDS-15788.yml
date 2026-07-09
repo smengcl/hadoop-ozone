@@ -27,7 +27,10 @@ on:
 env:
   MAVEN_OPTS: -Dhttp.keepAlive=false -Dmaven.wagon.http.pool=false -Dmaven.wagon.http.retryHandler.class=standard -Dmaven.wagon.http.retryHandler.count=3
   TEST_CLASS: TestSnapshotBackgroundServices
-  TEST_METHOD: testSnapshotAndKeyDeletionBackgroundServices
+  # ALL = run the whole class (shared PER_CLASS cluster + ordered methods), which
+  # builds up the snapshot/compaction/background-load contention that makes the
+  # single-method run insufficient to reproduce the flaky timeout.
+  TEST_METHOD: 'ALL'
   ITERATIONS: '10'
   FAIL_FAST: 'false'
   JAVA_VERSION: '25'
@@ -139,9 +142,15 @@ jobs:
           args="-DexcludedGroups=slow|unhealthy -DskipShade -Drocks_tools_native"
           args="$args -pl :$SUBMODULE"
 
-          echo "Running test: $TEST_METHOD from $TEST_CLASS"
-          set -x
-          hadoop-ozone/dev-support/checks/junit.sh $args -Dtest="$TEST_CLASS#$TEST_METHOD,Abstract*Test*\$*"
+          if [ "$TEST_METHOD" = "ALL" ]; then
+            echo "Running all tests from $TEST_CLASS"
+            set -x
+            hadoop-ozone/dev-support/checks/junit.sh $args -Dtest="$TEST_CLASS,Abstract*Test*\$*"
+          else
+            echo "Running test: $TEST_METHOD from $TEST_CLASS"
+            set -x
+            hadoop-ozone/dev-support/checks/junit.sh $args -Dtest="$TEST_CLASS#$TEST_METHOD,Abstract*Test*\$*"
+          fi
         env:
           DEVELOCITY_ACCESS_KEY: ${{ secrets.DEVELOCITY_ACCESS_KEY }}
           repo_path: ${{ steps.download-ozone-repo.outputs.download-path }}
