@@ -59,6 +59,35 @@ public class TestHddsUtils {
         HddsUtils.getHostName(":1234"));
   }
 
+  @Test
+  void testGetHostNameIpv6() {
+    // Bracketed IPv6 literal with a port: brackets are stripped so the result
+    // is usable for InetAddress lookups.
+    assertEquals(Optional.of("::1"),
+        HddsUtils.getHostName("[::1]:9862"));
+    assertEquals(Optional.of("2001:db8::1"),
+        HddsUtils.getHostName("[2001:db8::1]:9862"));
+
+    // Bare IPv6 literal (no port): the whole value is the host.
+    assertEquals(Optional.of("::1"),
+        HddsUtils.getHostName("::1"));
+    assertEquals(Optional.of("2001:db8::1"),
+        HddsUtils.getHostName("2001:db8::1"));
+  }
+
+  @Test
+  void testSplitHostPortRoleString() {
+    assertEquals(Arrays.asList("host", "9865", "LEADER", "uuid", "1.2.3.4"),
+        HddsUtils.splitHostPortRoleString("host:9865:LEADER:uuid:1.2.3.4"));
+
+    assertEquals(Arrays.asList("[::1]", "9865", "LEADER", "uuid", "[::1]"),
+        HddsUtils.splitHostPortRoleString("[::1]:9865:LEADER:uuid:[::1]"));
+
+    assertEquals(
+        Arrays.asList("[2001:db8::1]", "9865", "FOLLOWER"),
+        HddsUtils.splitHostPortRoleString("[2001:db8::1]:9865:FOLLOWER"));
+  }
+
   static List<Arguments> validPaths() {
     return Arrays.asList(
         Arguments.of("/", "/"),

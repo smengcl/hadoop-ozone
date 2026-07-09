@@ -45,6 +45,7 @@ import java.lang.reflect.UndeclaredThrowableException;
 import java.net.InetSocketAddress;
 import java.net.UnknownHostException;
 import java.nio.file.Path;
+import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.HashSet;
@@ -165,7 +166,7 @@ public final class HddsUtils {
       }
 
       return Collections.singletonList(
-          NetUtils.createSocketAddr(getHostName(address).get() + ":" + port));
+          NetUtils.createSocketAddrForHost(getHostName(address).get(), port));
     }
   }
 
@@ -203,7 +204,10 @@ public final class HddsUtils {
     if ((value == null) || value.isEmpty()) {
       return Optional.empty();
     }
-    String hostname = value.replaceAll("\\:[0-9]+$", "");
+    // HostAndPort understands bracketed IPv6 literals ([::1]:port) and bare
+    // IPv6 literals (::1), and returns the host without the surrounding
+    // brackets, which is what InetAddress lookups and config comparisons want.
+    String hostname = HostAndPort.fromString(value).getHost();
     if (hostname.isEmpty()) {
       return Optional.empty();
     } else {
@@ -325,7 +329,7 @@ public final class HddsUtils {
         .orElse(conf.getInt(HDDS_DATANODE_CLIENT_PORT_KEY,
             HDDS_DATANODE_CLIENT_PORT_DEFAULT));
 
-    return NetUtils.createSocketAddr(host + ":" + port);
+    return NetUtils.createSocketAddrForHost(host, port);
   }
 
   /**
@@ -579,12 +583,41 @@ public final class HddsUtils {
   public static String format(List<String> nodes) {
     StringBuilder sb = new StringBuilder();
     for (String node : nodes) {
-      String[] x = node.split(":");
+      List<String> x = splitHostPortRoleString(node);
       sb.append(String
-          .format("{ HostName : %s, Ratis Port : %s, Role : %s } ", x[0], x[1],
-              x[2]));
+          .format("{ HostName : %s, Ratis Port : %s, Role : %s } ",
+              x.get(0), x.get(1), x.get(2)));
     }
     return sb.toString();
+  }
+
+  /**
+   * Split a colon-delimited peer string into its fields while keeping a
+   * bracketed IPv6 literal (for example {@code [2001:db8::1]}) intact as a
+   * single field. Colons inside square brackets are not treated as field
+   * separators, so both {@code host:port:role} and
+   * {@code [::1]:port:role:...} parse correctly.
+   *
+   * @param value colon-delimited string, fields may be bracketed IPv6 literals
+   * @return the parsed fields in order
+   */
+  public static List<String> splitHostPortRoleString(String value) {
+    List<String> fields = new ArrayList<>();
+    int start = 0;
+    boolean inBrackets = false;
+    for (int i = 0; i < value.length(); i++) {
+      char c = value.charAt(i);
+      if (c == '[') {
+        inBrackets = true;
+      } else if (c == ']') {
+        inBrackets = false;
+      } else if (c == ':' && !inBrackets) {
+        fields.add(value.substring(start, i));
+        start = i + 1;
+      }
+    }
+    fields.add(value.substring(start));
+    return fields;
   }
 
   /**
