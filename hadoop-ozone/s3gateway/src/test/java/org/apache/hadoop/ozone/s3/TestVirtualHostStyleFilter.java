@@ -175,6 +175,22 @@ public class TestVirtualHostStyleFilter {
   }
 
   @ParameterizedTest
+  @CsvSource(value = {"[::1]:9878,::1", "[::1],::1", "[2001:db8::1]:443,2001:db8::1"})
+  public void testCheckHostWithoutPortIpv6(String hostHeader,
+                                           String expectedHost) throws Exception {
+    VirtualHostStyleFilter virtualHostStyleFilter = new VirtualHostStyleFilter();
+    virtualHostStyleFilter.setConfiguration(conf);
+    ContainerRequest containerRequest =
+        createContainerRequest(hostHeader, null, null, true);
+    // No configured domain matches an IPv6 literal, but the reported host in
+    // the error proves the port and brackets were stripped correctly instead of
+    // a mid-address segment being removed.
+    InvalidRequestException exception = assertThrows(InvalidRequestException.class,
+        () -> virtualHostStyleFilter.filter(containerRequest));
+    assertThat(exception).hasMessageContaining("host {" + expectedHost + "}");
+  }
+
+  @ParameterizedTest
   @CsvSource(value = {"mybucket.myhost:9999,No matching domain", "mybucketlocalhost:9878,invalid format"})
   public void testVirtualHostStyleWithInvalidInputs(String hostAddress,
                                                     String expectErrorMessage) throws Exception {

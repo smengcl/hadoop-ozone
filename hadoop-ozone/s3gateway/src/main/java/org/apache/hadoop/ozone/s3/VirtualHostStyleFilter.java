@@ -20,6 +20,7 @@ package org.apache.hadoop.ozone.s3;
 import static org.apache.hadoop.ozone.s3.S3GatewayConfigKeys.OZONE_S3G_DOMAIN_NAME;
 
 import com.google.common.annotations.VisibleForTesting;
+import com.google.common.net.HostAndPort;
 import java.io.IOException;
 import java.net.URI;
 import java.util.Arrays;
@@ -144,11 +145,10 @@ public class VirtualHostStyleFilter implements ContainerRequestFilter {
   }
 
   private String checkHostWithoutPort(String host) {
-    int portIndex = host.lastIndexOf(':');
-    if (portIndex >= 0) {
-      return host.substring(0, portIndex);
-    } else {
-      return host;
-    }
+    // HostAndPort understands bracketed IPv6 literals ([::1]:443), so it strips
+    // the port without corrupting a bare IPv6 host, and returns a bracket-free
+    // host. lastIndexOf(':') would have stripped the last address segment of a
+    // bare IPv6 literal instead of a port.
+    return HostAndPort.fromString(host).getHost();
   }
 }
