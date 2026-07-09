@@ -31,13 +31,16 @@ import static org.mockito.Mockito.spy;
 import static org.mockito.Mockito.when;
 
 import java.io.IOException;
+import java.net.URI;
 import java.util.Arrays;
 import java.util.Collection;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
+import org.apache.hadoop.hdds.conf.ConfigurationSource;
 import org.apache.hadoop.hdds.conf.OzoneConfiguration;
 import org.apache.hadoop.hdds.conf.StorageSize;
+import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.MethodSource;
 
@@ -135,6 +138,49 @@ public class TestBasicOzoneFileSystems {
       fail("Test case not implemented for FileSystem: " +
           subject.getClass().getSimpleName());
     }
+  }
+
+  @Test
+  public void testOfsInitializeParsesIpv6Authority() throws IOException {
+    String[] capturedHost = {null};
+    int[] capturedPort = {-2};
+    BasicRootedOzoneFileSystem ofs = new BasicRootedOzoneFileSystem() {
+      @Override
+      protected OzoneClientAdapter createAdapter(ConfigurationSource conf,
+          String omHost, int omPort) {
+        capturedHost[0] = omHost;
+        capturedPort[0] = omPort;
+        return mock(BasicRootedOzoneClientAdapterImpl.class);
+      }
+    };
+    ofs.initialize(URI.create("ofs://[2001:db8::1]:9862"),
+        new OzoneConfiguration());
+    // Brackets are stripped so the host is usable for InetAddress lookups.
+    assertEquals("2001:db8::1", capturedHost[0]);
+    assertEquals(9862, capturedPort[0]);
+  }
+
+  @Test
+  public void testO3fsInitializeParsesHostAndPort() throws IOException {
+    // o3fs embeds the OM host after bucket.volume. A bracketed IPv6 literal is
+    // not a legal java.net.URI authority mid-string, so the practical way to
+    // reach an IPv6 OM over o3fs is an OM service id; this guards that the
+    // HostAndPort-based host:port parse still handles a plain host and port.
+    String[] capturedHost = {null};
+    int[] capturedPort = {-2};
+    BasicOzoneFileSystem o3fs = new BasicOzoneFileSystem() {
+      @Override
+      protected OzoneClientAdapter createAdapter(ConfigurationSource conf,
+          String bucketStr, String volumeStr, String omHost, int omPort) {
+        capturedHost[0] = omHost;
+        capturedPort[0] = omPort;
+        return mock(BasicOzoneClientAdapterImpl.class);
+      }
+    };
+    o3fs.initialize(URI.create("o3fs://buck1.vol1.om1:9862"),
+        new OzoneConfiguration());
+    assertEquals("om1", capturedHost[0]);
+    assertEquals(9862, capturedPort[0]);
   }
 
   private void assertDefaultBlockSize(long expected, FileSystem subject) {

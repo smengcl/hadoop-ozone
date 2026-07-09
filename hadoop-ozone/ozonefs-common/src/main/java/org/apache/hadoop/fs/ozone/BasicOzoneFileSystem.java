@@ -33,6 +33,7 @@ import static org.apache.hadoop.ozone.OzoneConsts.OZONE_URI_SCHEME;
 
 import com.google.common.base.Function;
 import com.google.common.base.Preconditions;
+import com.google.common.net.HostAndPort;
 import java.io.FileNotFoundException;
 import java.io.IOException;
 import java.io.InputStream;
@@ -164,18 +165,16 @@ public class BasicOzoneFileSystem extends FileSystem {
     String omHost = null;
     int omPort = -1;
     if (!isEmpty(remaining)) {
-      String[] parts = remaining.split(":");
-      // Array length should be either 1(hostname or service id) or 2(host:port)
-      if (parts.length > 2) {
-        throw new IllegalArgumentException(URI_EXCEPTION_TEXT);
-      }
-      omHost = parts[0];
-      if (parts.length == 2) {
-        try {
-          omPort = Integer.parseInt(parts[1]);
-        } catch (NumberFormatException e) {
-          throw new IllegalArgumentException(URI_EXCEPTION_TEXT);
+      // Parse hostname and port. HostAndPort understands bracketed IPv6
+      // literals ([::1]:9862) and returns a bracket-free host.
+      try {
+        HostAndPort hostAndPort = HostAndPort.fromString(remaining);
+        omHost = hostAndPort.getHost();
+        if (hostAndPort.hasPort()) {
+          omPort = hostAndPort.getPort();
         }
+      } catch (IllegalArgumentException e) {
+        throw new IllegalArgumentException(URI_EXCEPTION_TEXT, e);
       }
     }
 

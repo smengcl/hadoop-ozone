@@ -37,6 +37,7 @@ import static org.apache.hadoop.ozone.om.exceptions.OMException.ResultCodes.VOLU
 
 import com.google.common.base.Function;
 import com.google.common.base.Preconditions;
+import com.google.common.net.HostAndPort;
 import io.opentelemetry.api.trace.Span;
 import java.io.FileNotFoundException;
 import java.io.IOException;
@@ -160,18 +161,16 @@ public class BasicRootedOzoneFileSystem extends FileSystem {
 
     String omHostOrServiceId;
     int omPort = -1;
-    // Parse hostname and port
-    String[] parts = authority.split(":");
-    if (parts.length > 2) {
-      throw new IllegalArgumentException(URI_EXCEPTION_TEXT);
-    }
-    omHostOrServiceId = parts[0];
-    if (parts.length == 2) {
-      try {
-        omPort = Integer.parseInt(parts[1]);
-      } catch (NumberFormatException e) {
-        throw new IllegalArgumentException(URI_EXCEPTION_TEXT);
+    // Parse hostname and port. HostAndPort understands bracketed IPv6
+    // literals ([::1]:9862) and returns a bracket-free host.
+    try {
+      HostAndPort hostAndPort = HostAndPort.fromString(authority);
+      omHostOrServiceId = hostAndPort.getHost();
+      if (hostAndPort.hasPort()) {
+        omPort = hostAndPort.getPort();
       }
+    } catch (IllegalArgumentException e) {
+      throw new IllegalArgumentException(URI_EXCEPTION_TEXT, e);
     }
 
     try {
