@@ -628,6 +628,8 @@
 
       When HA mode is enabled, append the service ID and node ID to each OM property. For example:
       ozone.om.http-bind-host.service1.om1
+
+      Set to "::" to bind on IPv6 (dual-stack).
     </description>
   </property>
   <property>
@@ -662,6 +664,8 @@
 
       When HA mode is enabled, append the service ID and node ID to each OM property. For example:
       ozone.om.https-bind-host.service1.om1
+
+      Set to "::" to bind on IPv6 (dual-stack).
     </description>
   </property>
   <property>
@@ -778,6 +782,8 @@
     <description>
       The hostname or IP address used by the SCM block client
       endpoint to bind.
+
+      Set to "::" to bind on IPv6 (dual-stack).
     </description>
   </property>
   <property>
@@ -897,6 +903,8 @@
       availability of the SCM client service to a specific interface.
 
       The default is appropriate for most clusters.
+
+      Set to "::" to bind on IPv6 (dual-stack).
     </description>
   </property>
   <property>
@@ -1077,6 +1085,8 @@
     <description>
       The hostname or IP address used by the SCM service endpoint to
       bind.
+
+      Set to "::" to bind on IPv6 (dual-stack).
     </description>
   </property>
   <property>
@@ -1300,6 +1310,8 @@
       The actual address the SCM web server will bind to. If this
       optional address is set, it overrides only the hostname portion of
       ozone.scm.http-address.
+
+      Set to "::" to bind on IPv6 (dual-stack).
     </description>
   </property>
   <property>
@@ -1329,6 +1341,8 @@
       The actual address the SCM web server will bind to using HTTPS.
       If this optional address is set, it overrides only the hostname portion of
       ozone.scm.https-address.
+
+      Set to "::" to bind on IPv6 (dual-stack).
     </description>
   </property>
   <property>
@@ -1963,7 +1977,10 @@
     <description>The actual address the HTTP server will bind to. If this optional address
       is set, it overrides only the hostname portion of ozone.s3g.http-address.
       This is useful for making the Ozone S3Gateway HTTP server listen on all
-      interfaces by setting it to 0.0.0.0.</description>
+      interfaces by setting it to 0.0.0.0.
+
+      Set to "::" to bind on IPv6 (dual-stack).
+    </description>
   </property>
 
   <property>
@@ -1990,7 +2007,10 @@
     <description>The actual address the HTTPS server will bind to. If this optional address
       is set, it overrides only the hostname portion of ozone.s3g.https-address.
       This is useful for making the Ozone S3Gateway HTTPS server listen on all
-      interfaces by setting it to 0.0.0.0.</description>
+      interfaces by setting it to 0.0.0.0.
+
+      Set to "::" to bind on IPv6 (dual-stack).
+    </description>
   </property>
 
   <property>
@@ -2014,7 +2034,10 @@
     <description>The actual address the HTTPS server will bind to. If this optional address
       is set, it overrides only the hostname portion of ozone.s3g.webadmin.https-address.
       This is useful for making the Ozone S3Gateway HTTPS server listen on all
-      interfaces by setting it to 0.0.0.0.</description>
+      interfaces by setting it to 0.0.0.0.
+
+      Set to "::" to bind on IPv6 (dual-stack).
+    </description>
   </property>
 
   <property>
@@ -2032,7 +2055,10 @@
     <description>The actual address the HTTP server will bind to. If this optional address
       is set, it overrides only the hostname portion of ozone.s3g.webadmin.http-address.
       This is useful for making the Ozone S3Gateway HTTP server listen on all
-      interfaces by setting it to 0.0.0.0.</description>
+      interfaces by setting it to 0.0.0.0.
+
+      Set to "::" to bind on IPv6 (dual-stack).
+    </description>
   </property>
 
   <property>
@@ -2750,7 +2776,10 @@
     <name>ozone.scm.security.service.bind.host</name>
     <value>0.0.0.0</value>
     <tag>OZONE, HDDS, SECURITY</tag>
-    <description>SCM security server host.</description>
+    <description>SCM security server host.
+
+      Set to "::" to bind on IPv6 (dual-stack).
+    </description>
   </property>
   <property>
     <name>ozone.scm.security.service.port</name>
@@ -2951,6 +2980,8 @@
       The actual address the Freon web server will bind to. If this
       optional address is set, it overrides only the hostname portion of
       ozone.freon.http-address.
+
+      Set to "::" to bind on IPv6 (dual-stack).
     </description>
   </property>
   <property>
@@ -2979,6 +3010,8 @@
       The actual address the Freon web server will bind to using HTTPS.
       If this optional address is set, it overrides only the hostname portion of
       ozone.freon.http-address.
+
+      Set to "::" to bind on IPv6 (dual-stack).
     </description>
   </property>
   <property>
@@ -3127,6 +3160,8 @@
       The actual address the Datanode web server will bind to. If this
       optional address is set, it overrides only the hostname portion of
       hdds.datanode.http-address.
+
+      Set to "::" to bind on IPv6 (dual-stack).
     </description>
   </property>
   <property>
@@ -3156,6 +3191,8 @@
       The actual address the Datanode web server will bind to using HTTPS.
       If this optional address is set, it overrides only the hostname portion of
       hdds.datanode.http-address.
+
+      Set to "::" to bind on IPv6 (dual-stack).
     </description>
   </property>
   <property>
@@ -3174,6 +3211,8 @@
     <description>
       The hostname or IP address used by the Datanode client service
       endpoint to bind.
+
+      Set to "::" to bind on IPv6 (dual-stack).
     </description>
   </property>
   <property>
@@ -3318,6 +3357,8 @@
       The actual address the Recon server will bind to. If this optional
       the address is set, it overrides only the hostname portion of
       ozone.recon.http-address.
+
+      Set to "::" to bind on IPv6 (dual-stack).
     </description>
   </property>
   <property>
@@ -3328,6 +3369,8 @@
       The actual address the Recon web server will bind to using HTTPS.
       If this optional address is set, it overrides only the hostname portion of
       ozone.recon.https-address.
+
+      Set to "::" to bind on IPv6 (dual-stack).
     </description>
   </property>
   <property>
