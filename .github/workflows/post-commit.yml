@@ -21,6 +21,7 @@ on:
     # skip the regular (full-ci) build to avoid wasting CI resources.
     branches-ignore:
       - HDDS-15788-flaky-testssbgs-10x10
+      - HDDS-15788-flaky-testssbgs-10x10-revert
 concurrency:
   group: ci-${{ github.event.pull_request.number || case(github.repository == 'apache/ozone', github.sha, github.ref_name) }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' || github.repository != 'apache/ozone' }}
