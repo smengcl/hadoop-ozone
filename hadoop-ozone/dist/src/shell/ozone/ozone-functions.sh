@@ -636,7 +636,9 @@ function ozone_bootstrap
   export HDDS_LIB_JARS_DIR="${OZONE_HOME}/share/ozone/lib"
 
   export OZONE_OS_TYPE=${OZONE_OS_TYPE:-$(uname -s)}
-  export OZONE_OPTS=${OZONE_OPTS:-"-Djava.net.preferIPv4Stack=true"}
+  # Default to dual-stack networking. To force IPv4-only, set OZONE_OPTS to
+  # include "-Djava.net.preferIPv4Stack=true" in ozone-env.sh.
+  export OZONE_OPTS=${OZONE_OPTS:-""}
   ozone_using_envvar OZONE_OPTS
   JSVC_HOME=${JSVC_HOME:-"/usr/bin"}
 
