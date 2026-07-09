@@ -621,6 +621,23 @@ public final class HddsUtils {
   }
 
   /**
+   * Wrap an IPv6 literal in square brackets so it can be combined with a port
+   * or embedded in a colon-delimited string without its colons being
+   * misinterpreted as separators. Hostnames and IPv4 literals are returned
+   * unchanged, and an already-bracketed value is left as-is.
+   *
+   * @param host a hostname, IPv4 literal, or IPv6 literal (bracketed or not)
+   * @return the host, bracketed if it is a bare IPv6 literal
+   */
+  public static String bracketIfIpv6Literal(String host) {
+    if (host == null || host.isEmpty() || host.charAt(0) == '['
+        || host.indexOf(':') < 0) {
+      return host;
+    }
+    return "[" + host + "]";
+  }
+
+  /**
    * Return Ozone service shutdown time out.
    * @param conf
    */

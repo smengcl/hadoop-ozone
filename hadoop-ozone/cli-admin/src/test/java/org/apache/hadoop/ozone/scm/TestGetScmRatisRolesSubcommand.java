@@ -61,4 +61,29 @@ public class TestGetScmRatisRolesSubcommand {
     }
   }
 
+  @Test
+  public void testGetScmHARatisRolesIpv6() throws Exception {
+    GetScmRatisRolesSubcommand cmd = new GetScmRatisRolesSubcommand();
+    ScmClient client = mock(ScmClient.class);
+    CommandLine c = new CommandLine(cmd);
+    c.parseArgs("--table");
+
+    // Host and host-address fields are bracketed IPv6 literals, so a naive
+    // split on ':' would shift every column.
+    List<String> result = new ArrayList<>();
+    result.add("[2001:db8::31]:9894:FOLLOWER:61b1c8e5-da40-4567-8a17-96a0234ba14e:[2001:db8::31]");
+    result.add("[2001:db8::32]:9894:LEADER:e428ca07-b2a3-4756-bf9b-a4abb033c7d1:[2001:db8::32]");
+
+    when(client.getScmRoles()).thenAnswer(invocation -> result);
+
+    try (GenericTestUtils.SystemOutCapturer capture =
+        new GenericTestUtils.SystemOutCapturer()) {
+      cmd.execute(client);
+      assertThat(capture.getOutput()).contains(
+          "[2001:db8::31] |    9894    | FOLLOWER | 61b1c8e5-da40-4567-8a17-96a0234ba14e");
+      assertThat(capture.getOutput()).contains(
+          "[2001:db8::32] |    9894    |  LEADER  | e428ca07-b2a3-4756-bf9b-a4abb033c7d1");
+    }
+  }
+
 }

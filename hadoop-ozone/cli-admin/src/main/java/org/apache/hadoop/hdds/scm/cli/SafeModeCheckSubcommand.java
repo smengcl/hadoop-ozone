@@ -104,14 +104,17 @@ public class SafeModeCheckSubcommand extends AbstractSubcommand implements Calla
     try {
       List<String> roles = scmClient.getScmRoles();
       for (String role : roles) {
-        String[] parts = role.split(":");
-        if (parts.length < 3 || !"LEADER".equalsIgnoreCase(parts[2])) {
+        List<String> parts = HddsUtils.splitHostPortRoleString(role);
+        if (parts.size() < 3 || !"LEADER".equalsIgnoreCase(parts.get(2))) {
           continue;
         }
-        String leaderHost = parts[0];
-        String leaderIp = parts.length >= 5 ? parts[4] : null;
+        // Strip IPv6 brackets/port so host comparisons below are bracket-insensitive.
+        String leaderHost = HddsUtils.getHostName(parts.get(0)).orElse(parts.get(0));
+        String leaderIp = parts.size() >= 5
+            ? HddsUtils.getHostName(parts.get(4)).orElse(parts.get(4)) : null;
         for (SCMNodeInfo node : nodes) {
-          String nodeHost = node.getScmClientAddress().split(":")[0];
+          String nodeHost = HddsUtils.getHostName(node.getScmClientAddress())
+              .orElse(node.getScmClientAddress());
 
           if (matchesAddress(leaderHost, nodeHost) || (leaderIp != null && !leaderIp.isEmpty() &&
                   matchesAddress(leaderIp, nodeHost))) {

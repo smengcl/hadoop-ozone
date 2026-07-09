@@ -25,6 +25,7 @@ import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import org.apache.hadoop.hdds.HddsUtils;
 import org.apache.hadoop.hdds.cli.HddsVersionProvider;
 import org.apache.hadoop.hdds.scm.cli.ScmSubcommand;
 import org.apache.hadoop.hdds.scm.client.ScmClient;
@@ -73,11 +74,11 @@ public class GetScmRatisRolesSubcommand extends ScmSubcommand {
       formattingCLIUtils.addHeaders(SCM_ROLES_HEADER);
 
       for (String role : peerRoles) {
-        String[] roleItems = role.split(":");
-        if (roleItems.length < 2) {
+        List<String> roleItems = HddsUtils.splitHostPortRoleString(role);
+        if (roleItems.size() < 2) {
           err.println("Invalid response received for ScmRatisRoles.");
         }
-        formattingCLIUtils.addLine(roleItems);
+        formattingCLIUtils.addLine(roleItems.toArray());
       }
       System.out.println(formattingCLIUtils.render());
     } else {
@@ -92,20 +93,20 @@ public class GetScmRatisRolesSubcommand extends ScmSubcommand {
     Map<String, Map<String, String>> allRoles = new HashMap<>();
     for (String role : peerRoles) {
       Map<String, String> roleDetails = new HashMap<>();
-      String[] roles = role.split(":");
-      if (roles.length < 2) {
+      List<String> roles = HddsUtils.splitHostPortRoleString(role);
+      if (roles.size() < 2) {
         err.println("Invalid response received for ScmRatisRoles.");
         return Collections.emptyMap();
       }
       // In case, there is no ratis, there is no ratis role.
       // This will just print the hostname with ratis port as the address
-      roleDetails.put("address", roles[0].concat(":").concat(roles[1]));
-      if (roles.length == 5) {
-        roleDetails.put("raftPeerRole", roles[2]);
-        roleDetails.put("ID", roles[3]);
-        roleDetails.put("InetAddress", roles[4]);
+      roleDetails.put("address", roles.get(0).concat(":").concat(roles.get(1)));
+      if (roles.size() == 5) {
+        roleDetails.put("raftPeerRole", roles.get(2));
+        roleDetails.put("ID", roles.get(3));
+        roleDetails.put("InetAddress", roles.get(4));
       }
-      allRoles.put(roles[0], roleDetails);
+      allRoles.put(roles.get(0), roleDetails);
     }
     return allRoles;
   }

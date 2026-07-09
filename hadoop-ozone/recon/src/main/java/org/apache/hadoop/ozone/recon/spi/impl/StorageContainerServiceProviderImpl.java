@@ -31,6 +31,7 @@ import java.util.concurrent.ExecutionException;
 import java.util.concurrent.atomic.AtomicBoolean;
 import javax.inject.Inject;
 import org.apache.commons.io.FileUtils;
+import org.apache.hadoop.hdds.HddsUtils;
 import org.apache.hadoop.hdds.conf.OzoneConfiguration;
 import org.apache.hadoop.hdds.protocol.proto.HddsProtos;
 import org.apache.hadoop.hdds.protocolPB.SCMSecurityProtocolClientSideTranslatorPB;
@@ -138,9 +139,11 @@ public class StorageContainerServiceProviderImpl
       try {
         List<String> ratisRoles = scmClient.getScmInfo().getPeerRoles();
         for (String ratisRole : ratisRoles) {
-          String[] role = ratisRole.split(":");
-          if (role[2].equals(RaftProtos.RaftPeerRole.LEADER.toString())) {
-            String hostAddress = role[4].trim();
+          List<String> role = HddsUtils.splitHostPortRoleString(ratisRole);
+          if (role.get(2).equals(RaftProtos.RaftPeerRole.LEADER.toString())) {
+            // Strip IPv6 brackets: the gRPC client expects a bare host.
+            String hostAddress =
+                HddsUtils.getHostName(role.get(4).trim()).orElse(role.get(4).trim());
             int grpcPort = configuration.getInt(
                 ScmConfigKeys.OZONE_SCM_GRPC_PORT_KEY,
                 ScmConfigKeys.OZONE_SCM_GRPC_PORT_DEFAULT);
