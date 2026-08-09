@@ -158,7 +158,8 @@ jobs:
           rc=0
           for ((i = 1; i <= REPEAT_ITERATIONS; i++)); do
             echo "::group::Iteration ${i}/${REPEAT_ITERATIONS}"
-            OUTPUT_DIR="target/acceptance/iteration-${i}" ./hadoop-ozone/dev-support/checks/acceptance.sh || rc=1
+            OUTPUT_DIR="${GITHUB_WORKSPACE}/target/acceptance/iteration-${i}" \
+              ./hadoop-ozone/dev-support/checks/acceptance.sh || rc=1
             echo "::endgroup::"
           done
           exit ${rc}
