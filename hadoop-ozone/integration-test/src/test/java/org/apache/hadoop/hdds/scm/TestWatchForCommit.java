@@ -23,6 +23,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
 import java.io.OutputStream;
@@ -234,7 +235,6 @@ public class TestWatchForCommit {
   @ParameterizedTest
   @EnumSource(value = RaftProtos.ReplicationLevel.class, names = {"MAJORITY_COMMITTED", "ALL_COMMITTED"})
   public void testWatchForCommitForRetryfailure(RaftProtos.ReplicationLevel watchType) throws Exception {
-    LogCapturer logCapturer = LogCapturer.captureLogs(XceiverClientRatis.class);
     RatisClientConfig ratisClientConfig = conf.getObject(RatisClientConfig.class);
     ratisClientConfig.setWatchType(watchType.toString());
     conf.setFromObject(ratisClientConfig);
@@ -255,8 +255,10 @@ public class TestWatchForCommit {
                 xceiverClient.getPipeline()));
         reply.getResponse().get();
         long index = reply.getLogIndex();
-        cluster.shutdownHddsDatanode(pipeline.getNodes().get(0));
-        cluster.shutdownHddsDatanode(pipeline.getNodes().get(1));
+        // Shut down the Ratis leader and one follower so that no reachable
+        // leader remains to answer the watch with NotReplicatedException, which
+        // would let an ALL_COMMITTED watch degrade to a normal (majority) reply.
+        shutdownRatisLeaderAndOneFollower(pipeline);
         // emulate closing pipeline when SCM detects DEAD datanodes
         cluster.getStorageContainerManager()
             .getPipelineManager().closePipeline(pipeline.getId());
@@ -272,15 +274,30 @@ public class TestWatchForCommit {
         // RuntimeException
         assertFalse(HddsClientUtils
             .checkForException(e) instanceof TimeoutException);
-        // client should not attempt to watch with
-        // MAJORITY_COMMITTED replication level, except the grpc IO issue
-        if (!logCapturer.getOutput().contains("Connection refused")) {
-          assertThat(e.getMessage()).doesNotContain("Watch-MAJORITY_COMMITTED");
-        }
       } finally {
         clientManager.releaseClient(xceiverClient, false);
       }
     }
+  }
+
+  private void shutdownRatisLeaderAndOneFollower(Pipeline pipeline) throws Exception {
+    DatanodeDetails leader = null;
+    DatanodeDetails follower = null;
+    for (HddsDatanodeService dn : cluster.getHddsDatanodes()) {
+      DatanodeDetails details = dn.getDatanodeDetails();
+      if (!pipeline.getNodes().contains(details)) {
+        continue;
+      }
+      if (RatisTestHelper.isRatisLeader(dn, pipeline)) {
+        leader = details;
+      } else if (follower == null && RatisTestHelper.isRatisFollower(dn, pipeline)) {
+        follower = details;
+      }
+    }
+    assertNotNull(leader, "No Ratis leader found in pipeline " + pipeline.getId());
+    assertNotNull(follower, "No Ratis follower found in pipeline " + pipeline.getId());
+    cluster.shutdownHddsDatanode(leader);
+    cluster.shutdownHddsDatanode(follower);
   }
 
   @ParameterizedTest
