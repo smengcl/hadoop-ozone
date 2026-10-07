@@ -33,6 +33,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.junit.jupiter.api.Assumptions.assumeTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyBoolean;
+import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.doAnswer;
@@ -41,6 +42,7 @@ import static org.mockito.Mockito.spy;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
+import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
@@ -1146,6 +1148,27 @@ public class TestOMFileAppendRequest extends OMKeyRequestTests {
     assertThat(committedFile().getAppendOwnerSessionId()).isNull();
     assertThat(blockIds(committedFile())).containsExactly(prefixBlockId(0), suffixBlockId(0));
     assertThat(openRecord(sessionId)).isNull();
+  }
+
+  /** RecoverLease is applied on every OM. One that cannot reach SCM then must fence the session like the others. */
+  @Test
+  public void testRecoverLeaseFencesSessionWithoutScm() throws Exception {
+    addCommittedFile(1);
+    long sessionId = admit();
+    allocate(sessionId);
+    assertThat(hsync(sessionId, BLOCK_LENGTH + 150, 150).getOMResponse().getStatus()).isEqualTo(OK);
+    when(scmContainerLocationProtocol.getContainerWithPipeline(anyLong())).thenThrow(new IOException("SCM is down"));
+
+    OMClientResponse response = execute(recoverLease(true));
+
+    assertThat(response.getOMResponse().getStatus()).isEqualTo(OK);
+    assertThat(blockIds(OmKeyInfo.getFromProtobuf(response.getOMResponse().getRecoverLeaseResponse().getOpenKeyInfo())))
+        .containsExactly(suffixBlockId(0));
+    flush(response);
+    assertThat(omMetadataManager.getOpenKeyTable(getBucketLayout()).getSkipCache(dbOpenKey(sessionId))
+        .getAppendSession().getPhase()).isEqualTo(AppendSessionPhase.APPEND_RECOVERING);
+    assertThat(hsync(sessionId, BLOCK_LENGTH + 160, 160).getOMResponse().getStatus())
+        .isEqualTo(APPEND_SESSION_NOT_FOUND);
   }
 
   @Test

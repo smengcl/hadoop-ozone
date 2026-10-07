@@ -320,15 +320,25 @@ public class OMRecoverLeaseRequest extends OMKeyRequest {
 
     // An append session owns only the blocks after its prefix. Never issue a write token for a prefix block.
     final OmAppendSession appendSession = openKeyInfo.getAppendSession();
-    if (!keyLocationInfoList.isEmpty()
-        && (appendSession == null || keyLocationInfoList.size() > appendSession.getPrefixBlockCount())) {
-      updateBlockInfo(ozoneManager, keyLocationInfoList.get(keyLocationInfoList.size() - 1));
-    }
-    if (openKeyLocationInfoList.size() > 1) {
-      updateBlockInfo(ozoneManager, openKeyLocationInfoList.get(openKeyLocationInfoList.size() - 1));
-      updateBlockInfo(ozoneManager, openKeyLocationInfoList.get(openKeyLocationInfoList.size() - 2));
-    } else if (!openKeyLocationInfoList.isEmpty()) {
-      updateBlockInfo(ozoneManager, openKeyLocationInfoList.get(0));
+    try {
+      if (!keyLocationInfoList.isEmpty()
+          && (appendSession == null || keyLocationInfoList.size() > appendSession.getPrefixBlockCount())) {
+        updateBlockInfo(ozoneManager, keyLocationInfoList.get(keyLocationInfoList.size() - 1));
+      }
+      if (openKeyLocationInfoList.size() > 1) {
+        updateBlockInfo(ozoneManager, openKeyLocationInfoList.get(openKeyLocationInfoList.size() - 1));
+        updateBlockInfo(ozoneManager, openKeyLocationInfoList.get(openKeyLocationInfoList.size() - 2));
+      } else if (!openKeyLocationInfoList.isEmpty()) {
+        updateBlockInfo(ozoneManager, openKeyLocationInfoList.get(0));
+      }
+    } catch (IOException | RuntimeException e) {
+      if (appendSession == null) {
+        throw e;
+      }
+      // The session is already fenced in the table cache. An OM that failed here would not write that to its DB and
+      // would let the writer publish again, unlike the OMs that reached SCM. The client gets the stored locations.
+      LOG.warn("Cannot refresh the block locations and tokens for RecoverLease of {}/{}/{}: {}", volumeName,
+          bucketName, keyName, e.toString());
     }
 
     RecoverLeaseResponse.Builder rb = RecoverLeaseResponse.newBuilder();

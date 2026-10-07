@@ -140,6 +140,18 @@ public class TestLeaseRecoveryClientDNHandler {
   }
 
   @Test
+  public void failsWhenOmReturnedNoPipelineForTheLastBlocks() throws IOException {
+    // OM answers RecoverLease also when it cannot reach SCM.
+    OmKeyInfo open = keyInfo(RATIS, SESSION, block(11, ALLOCATED, null), block(12, ALLOCATED, null));
+    for (OmKeyInfo committed : Arrays.asList(keyInfo(RATIS, null, block(1, 100), block(2, 50)),
+        keyInfo(RATIS, null, block(1, 100), block(2, 50), block(11, 10, null)))) {
+      assertThatThrownBy(() -> recover(new LeaseKeyInfo(committed, open)))
+          .isInstanceOf(IOException.class).hasMessageContaining("no pipeline");
+    }
+    verify(adapter, never()).finalizeBlock(any());
+  }
+
+  @Test
   public void unpublishedSuffixFailsOnDatanodeErrorUnlessForced() throws IOException {
     datanodeBlocks.put(11L, 200L);
     datanodeBlocks.put(12L, new IOException("datanodes are not reachable"));

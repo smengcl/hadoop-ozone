@@ -105,6 +105,15 @@ public final class LeaseRecoveryClientDNHandler {
         // keep what was published.
         return keyLocationInfoList;
       }
+      // OM answers also when it could not get the pipelines from SCM. Recovering without them would drop the data
+      // after the last publication, so fail and let the caller retry.
+      OmKeyLocationInfo lastOpen = openKeyLocationInfoList.get(openKeyLocationInfoList.size() - 1);
+      OmKeyLocationInfo lastKnown = keyLocationInfoList.isEmpty() ? lastOpen
+          : keyLocationInfoList.get(keyLocationInfoList.size() - 1);
+      if (lastOpen.getPipeline() == null || lastKnown.getPipeline() == null) {
+        throw new IOException("OM returned no pipeline for the last blocks of " + leaseKeyInfo.getKeyInfo().getKeyName()
+            + ", retry the lease recovery");
+      }
       if (keyLocationInfoList.isEmpty()) {
         return finalizeUnpublishedSuffix(openKeyLocationInfoList, adapter, forceRecovery);
       }
