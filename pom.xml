@@ -2965,6 +2965,7 @@
             <configuration>
               <includes>
                 <include>org.apache.hadoop.ozone.om.**</include>
+                <include>org.apache.hadoop.ozone.security.**</include>
               </includes>
               <excludes>
                 <exclude>org.apache.hadoop.ozone.om.Test*</exclude>
@@ -3005,6 +3006,10 @@
             <configuration>
               <includes>
                 <include>org.apache.hadoop.fs.**</include>
+                <include>org.apache.hadoop.ozone.debug.**</include>
+                <include>org.apache.hadoop.ozone.freon.**</include>
+                <include>org.apache.hadoop.ozone.repair.**</include>
+                <include>org.apache.hadoop.ozone.s3*.**</include>
               </includes>
               <excludedGroups>${unstable-test-groups}</excludedGroups>
             </configuration>
@@ -3026,6 +3031,7 @@
               <excludes>
                 <exclude>org.apache.hadoop.hdds.scm.Test*</exclude>
                 <exclude>org.apache.hadoop.hdds.scm.container.**</exclude>
+                <exclude>org.apache.hadoop.hdds.scm.node.**</exclude>
                 <!-- default excludes -->
                 <exclude>**/*$*</exclude>
               </excludes>
@@ -3036,7 +3042,7 @@
       </build>
     </profile>
     <profile>
-      <!-- only classes directly in the scm package, its subpackages are in test-hdds and test-container -->
+      <!-- classes directly in the scm package and scm.node, other subpackages are in test-hdds and test-container -->
       <id>test-scm</id>
       <build>
         <plugins>
@@ -3046,6 +3052,7 @@
             <configuration>
               <includes>
                 <include>org.apache.hadoop.hdds.scm.Test*</include>
+                <include>org.apache.hadoop.hdds.scm.node.**</include>
               </includes>
               <excludedGroups>${unstable-test-groups}</excludedGroups>
             </configuration>
@@ -3068,8 +3075,13 @@
               <excludes>
                 <exclude>org.apache.hadoop.ozone.client.**</exclude>
                 <exclude>org.apache.hadoop.ozone.container.**</exclude>
+                <exclude>org.apache.hadoop.ozone.debug.**</exclude>
+                <exclude>org.apache.hadoop.ozone.freon.**</exclude>
                 <exclude>org.apache.hadoop.ozone.om.**</exclude>
                 <exclude>org.apache.hadoop.ozone.recon.**</exclude>
+                <exclude>org.apache.hadoop.ozone.repair.**</exclude>
+                <exclude>org.apache.hadoop.ozone.s3*.**</exclude>
+                <exclude>org.apache.hadoop.ozone.security.**</exclude>
                 <!-- default excludes -->
                 <exclude>**/*$*</exclude>
               </excludes>

@@ -15,7 +15,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-#suite:balancer
+#suite:secure-s3g
 
 set -u -o pipefail
 
@@ -26,8 +26,16 @@ export COMPOSE_DIR
 source "$COMPOSE_DIR/../testlib.sh"
 
 export SECURITY_ENABLED=true
-export COMPOSE_FILE=docker-compose.yaml:diskbalancer.yaml
+
+: ${OZONE_BUCKET_KEY_NAME:=key1}
 
 start_docker_env
 
-execute_robot_test scm diskbalancer
+execute_command_in_container kms hadoop key create ${OZONE_BUCKET_KEY_NAME}
+
+exclude=""
+for bucket in encrypted; do
+  execute_robot_test s3g -v BUCKET:${bucket} -N s3-${bucket} ${exclude} s3
+  # some tests are independent of the bucket type, only need to be run once
+  exclude="--exclude no-bucket-type"
+done
