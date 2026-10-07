@@ -164,7 +164,8 @@ public class S3MultipartUploadCommitPartRequest extends OMKeyRequest {
 
       omKeyInfo = getOmKeyInfo(omMetadataManager, openKey, keyName);
 
-      if (omKeyInfo == null) {
+      // The open record of an append session has the same form of DB key, but is never a part of an upload.
+      if (omKeyInfo == null || omKeyInfo.getAppendSession() != null) {
         throw new OMException("Failed to commit Multipart Upload key, as " +
             openKey + "entry is not found in the openKey table",
             KEY_NOT_FOUND);

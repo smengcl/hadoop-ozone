@@ -44,6 +44,7 @@ import org.apache.hadoop.ozone.om.helpers.OmDirectoryInfo;
 import org.apache.hadoop.ozone.om.helpers.OmKeyInfo;
 import org.apache.hadoop.ozone.om.helpers.OmKeyLocationInfo;
 import org.apache.hadoop.ozone.om.request.file.OMFileRequest;
+import org.apache.hadoop.ozone.om.request.util.OmAppendUtil;
 import org.apache.hadoop.ozone.om.request.util.OmResponseUtil;
 import org.apache.hadoop.ozone.om.response.OMClientResponse;
 import org.apache.hadoop.ozone.om.response.key.OMKeyCreateResponseWithFSO;
@@ -135,6 +136,7 @@ public class OMKeyCreateRequestWithFSO extends OMKeyCreateRequest {
         throw new OMException("Can not create file: " + keyName
             + " as there is already file in the given path", NOT_A_FILE);
       }
+      OmAppendUtil.checkNotReserved(dbFileInfo, keyName);
 
       // do open key
       OmBucketInfo bucketInfo = omMetadataManager.getBucketTable().get(

@@ -60,6 +60,7 @@ import org.apache.hadoop.ozone.om.helpers.RepeatedOmKeyInfo;
 import org.apache.hadoop.ozone.om.request.file.OMFileRequest;
 import org.apache.hadoop.ozone.om.request.key.OMKeyRequest;
 import org.apache.hadoop.ozone.om.request.util.OMMultipartUploadUtils;
+import org.apache.hadoop.ozone.om.request.util.OmAppendUtil;
 import org.apache.hadoop.ozone.om.request.util.OmResponseUtil;
 import org.apache.hadoop.ozone.om.request.validation.RequestFeatureValidator;
 import org.apache.hadoop.ozone.om.request.validation.ValidationCondition;
@@ -276,6 +277,7 @@ public class S3MultipartUploadCompleteRequest extends OMKeyRequest {
       // BUCKET_LOCK is held, so validation and commit are atomic.
       // Only 412 PreconditionFailed is possible; 409 Conflict cannot occur.
       OmKeyInfo existingKeyInfo = omMetadataManager.getKeyTable(getBucketLayout()).get(dbOzoneKey);
+      OmAppendUtil.checkNotReserved(existingKeyInfo, keyName);
       validateAtomicRewrite(existingKeyInfo, keyArgs);
       validateIfMatchETag(keyArgs, existingKeyInfo);
 

@@ -171,7 +171,11 @@ public class OMKeyCommitRequestWithFSO extends OMKeyCommitRequest {
       OmKeyInfo keyToDelete =
           omMetadataManager.getKeyTable(getBucketLayout()).get(dbFileKey);
       long writerClientId = commitKeyRequest.getClientID();
-      if (keyToDelete != null && keyToDelete.getAppendOwnerSessionId() != null && isRecovery && writerClientId == 0) {
+      if (isRecovery && keyToDelete != null && keyToDelete.getAppendOwnerSessionId() != null) {
+        if (writerClientId != 0) {
+          throw new OMException("Append session " + writerClientId + " of " + keyName + " is not active",
+              APPEND_SESSION_NOT_FOUND);
+        }
         // Recovery by a client that does not know the session ID: the file names its append session.
         long owner = keyToDelete.getAppendOwnerSessionId();
         omClientResponse = commitAppendSession(ozoneManager, trxnLogIndex, omBucketInfo, owner,
@@ -179,6 +183,8 @@ public class OMKeyCommitRequestWithFSO extends OMKeyCommitRequest {
             auditMap);
         return omClientResponse;
       }
+      // An ordinary writer must not replace a file that an append session has reserved.
+      OmAppendUtil.checkNotReserved(keyToDelete, keyName);
       boolean isSameHsyncKey = false;
       boolean isOverwrittenHsyncKey = false;
       final String clientIdString = String.valueOf(writerClientId);

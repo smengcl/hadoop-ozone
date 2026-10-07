@@ -43,6 +43,7 @@ import org.apache.hadoop.ozone.om.request.util.OmResponseUtil;
 import org.apache.hadoop.ozone.om.response.OMClientResponse;
 import org.apache.hadoop.ozone.om.response.key.OMOpenKeysDeleteResponse;
 import org.apache.hadoop.ozone.protocol.proto.OzoneManagerProtocolProtos;
+import org.apache.hadoop.ozone.protocol.proto.OzoneManagerProtocolProtos.AppendSessionPhase;
 import org.apache.hadoop.ozone.protocol.proto.OzoneManagerProtocolProtos.OMRequest;
 import org.apache.hadoop.ozone.protocol.proto.OzoneManagerProtocolProtos.OpenKey;
 import org.apache.hadoop.ozone.protocol.proto.OzoneManagerProtocolProtos.OpenKeyBucket;
@@ -188,6 +189,12 @@ public class OMOpenKeysDeleteRequest extends OMKeyRequest {
             omMetadataManager.getOpenKeyTable(getBucketLayout())
                 .get(fullKeyName);
         if (omKeyInfo != null) {
+          if (omKeyInfo.getAppendSession() != null
+              && omKeyInfo.getAppendSession().getPhase() != AppendSessionPhase.APPEND_INVALIDATED) {
+            // Its blocks can be published in the committed file. Only the writer or lease recovery ends it.
+            LOG.warn("Open key {} is a live append session, skipping deletion.", fullKeyName);
+            continue;
+          }
           if (trxnLogIndex < omKeyInfo.getUpdateID()) {
             LOG.warn("Transaction log index {} is smaller than " +
                 "the current updateID {} of key {}, skipping deletion.",

@@ -26,6 +26,7 @@ import static org.apache.hadoop.ozone.protocol.proto.OzoneManagerProtocolProtos.
 import static org.apache.hadoop.ozone.protocol.proto.OzoneManagerProtocolProtos.Status.NOT_A_FILE;
 import static org.apache.hadoop.ozone.protocol.proto.OzoneManagerProtocolProtos.Status.OK;
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -40,6 +41,7 @@ import org.apache.hadoop.ozone.OzoneAcl;
 import org.apache.hadoop.ozone.OzoneConfigKeys;
 import org.apache.hadoop.ozone.OzoneConsts;
 import org.apache.hadoop.ozone.om.OMConfigKeys;
+import org.apache.hadoop.ozone.om.exceptions.OMException;
 import org.apache.hadoop.ozone.om.helpers.BucketLayout;
 import org.apache.hadoop.ozone.om.helpers.OmAppendSession;
 import org.apache.hadoop.ozone.om.helpers.OmKeyInfo;
@@ -49,6 +51,7 @@ import org.apache.hadoop.ozone.om.helpers.RepeatedOmKeyInfo;
 import org.apache.hadoop.ozone.om.request.OMRequestTestUtils;
 import org.apache.hadoop.ozone.om.request.key.OMAllocateBlockRequestWithFSO;
 import org.apache.hadoop.ozone.om.request.key.OMKeyCommitRequestWithFSO;
+import org.apache.hadoop.ozone.om.request.key.OMKeyCreateRequestWithFSO;
 import org.apache.hadoop.ozone.om.request.key.OMKeyRequestTests;
 import org.apache.hadoop.ozone.om.request.util.OmAppendUtil;
 import org.apache.hadoop.ozone.om.response.OMClientResponse;
@@ -60,11 +63,14 @@ import org.apache.hadoop.ozone.protocol.proto.OzoneManagerProtocolProtos.AppendF
 import org.apache.hadoop.ozone.protocol.proto.OzoneManagerProtocolProtos.AppendSessionPhase;
 import org.apache.hadoop.ozone.protocol.proto.OzoneManagerProtocolProtos.AppendWriterKind;
 import org.apache.hadoop.ozone.protocol.proto.OzoneManagerProtocolProtos.CommitKeyRequest;
+import org.apache.hadoop.ozone.protocol.proto.OzoneManagerProtocolProtos.CreateFileRequest;
+import org.apache.hadoop.ozone.protocol.proto.OzoneManagerProtocolProtos.CreateKeyRequest;
 import org.apache.hadoop.ozone.protocol.proto.OzoneManagerProtocolProtos.KeyArgs;
 import org.apache.hadoop.ozone.protocol.proto.OzoneManagerProtocolProtos.KeyLocation;
 import org.apache.hadoop.ozone.protocol.proto.OzoneManagerProtocolProtos.OMRequest;
 import org.apache.hadoop.ozone.protocol.proto.OzoneManagerProtocolProtos.OMResponse;
 import org.apache.hadoop.ozone.protocol.proto.OzoneManagerProtocolProtos.Type;
+import org.apache.hadoop.security.UserGroupInformation;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
@@ -195,6 +201,16 @@ public class TestOMFileAppendRequest extends OMKeyRequestTests {
   public void testFeatureDisabled() throws Exception {
     addCommittedFile(1);
     ozoneManager.getConfiguration().setBoolean(OMConfigKeys.OZONE_OM_APPEND_ENABLED, false);
+
+    assertThatThrownBy(this::append).isInstanceOfSatisfying(OMException.class,
+        e -> assertThat(e.getResult()).isEqualTo(OMException.ResultCodes.APPEND_NOT_SUPPORTED));
+
+    assertThat(committedFile().getAppendOwnerSessionId()).isNull();
+  }
+
+  @Test
+  public void testGdprFileIsRejected() throws Exception {
+    addCommittedFile(1, OzoneConsts.GDPR_FLAG, "true");
 
     assertThat(append().getOMResponse().getStatus()).isEqualTo(APPEND_NOT_SUPPORTED);
 
@@ -421,6 +437,81 @@ public class TestOMFileAppendRequest extends OMKeyRequestTests {
     assertThat(committedFile()).isNull();
   }
 
+  @Test
+  public void testOrdinaryCreateRejectedDuringReservation() throws Exception {
+    addCommittedFile(1);
+    long sessionId = admit();
+
+    OMRequest createFile = OMRequest.newBuilder()
+        .setCmdType(Type.CreateFile)
+        .setClientId(UUID.randomUUID().toString())
+        .setCreateFileRequest(CreateFileRequest.newBuilder()
+            .setKeyArgs(keyArgs().setDataSize(100)).setIsOverwrite(true).setIsRecursive(true))
+        .build();
+    OMFileCreateRequestWithFSO fileCreate = new OMFileCreateRequestWithFSO(createFile, getBucketLayout());
+    fileCreate.setUGI(UserGroupInformation.getCurrentUser());
+    fileCreate = new OMFileCreateRequestWithFSO(fileCreate.preExecute(ozoneManager), getBucketLayout());
+    assertThat(fileCreate.validateAndUpdateCache(ozoneManager, ++txnId).getOMResponse().getStatus())
+        .isEqualTo(APPEND_WRITER_CONFLICT);
+
+    OMRequest createKey = OMRequest.newBuilder()
+        .setCmdType(Type.CreateKey)
+        .setClientId(UUID.randomUUID().toString())
+        .setCreateKeyRequest(CreateKeyRequest.newBuilder().setKeyArgs(keyArgs().setDataSize(100)))
+        .build();
+    OMKeyCreateRequestWithFSO keyCreate = new OMKeyCreateRequestWithFSO(createKey, getBucketLayout());
+    keyCreate.setUGI(UserGroupInformation.getCurrentUser());
+    keyCreate = new OMKeyCreateRequestWithFSO(keyCreate.preExecute(ozoneManager), getBucketLayout());
+    assertThat(keyCreate.validateAndUpdateCache(ozoneManager, ++txnId).getOMResponse().getStatus())
+        .isEqualTo(APPEND_WRITER_CONFLICT);
+
+    assertThat(committedFile().getAppendOwnerSessionId()).isEqualTo(sessionId);
+  }
+
+  @Test
+  public void testCommitRejectsDuplicateBlocksAndHsyncWithRecovery() throws Exception {
+    addCommittedFile(1, OzoneConsts.ETAG, "etag");
+    long sessionId = admit();
+    allocate(sessionId);
+
+    KeyArgs.Builder sameBlockTwice = keyArgs().setDataSize(3 * BLOCK_LENGTH);
+    for (int i = 0; i < 2; i++) {
+      sameBlockTwice.addKeyLocations(KeyLocation.newBuilder()
+          .setBlockID(suffixBlockId(0).getProtobuf()).setOffset(0).setLength(BLOCK_LENGTH));
+    }
+    assertThat(commit(sessionId, true, false, sameBlockTwice).getOMResponse().getStatus()).isEqualTo(INVALID_REQUEST);
+    assertThat(commit(sessionId, true, true, 2 * BLOCK_LENGTH, BLOCK_LENGTH).getOMResponse().getStatus())
+        .isEqualTo(INVALID_REQUEST);
+    assertThat(blockIds(committedFile())).containsExactly(prefixBlockId(0));
+    assertThat(committedFile().getMetadata()).containsKey(OzoneConsts.ETAG);
+
+    // Growth drops the ETag, which described the old contents.
+    assertThat(hsync(sessionId, 2 * BLOCK_LENGTH, BLOCK_LENGTH).getOMResponse().getStatus()).isEqualTo(OK);
+    assertThat(blockIds(committedFile())).containsExactly(prefixBlockId(0), suffixBlockId(0));
+    assertThat(committedFile().getMetadata()).doesNotContainKey(OzoneConsts.ETAG);
+  }
+
+  @Test
+  public void testOrdinaryCommitRejectedDuringReservation() throws Exception {
+    OmKeyInfo before = addCommittedFile(1);
+    long sessionId = admit();
+    // An ordinary writer of this path, as left behind when the reserved file is renamed onto the path.
+    long ordinaryClientId = 11;
+    addOrdinaryOpenRecord(ordinaryClientId, true);
+
+    KeyArgs.Builder keyArgs = keyArgs().setDataSize(BLOCK_LENGTH).addKeyLocations(KeyLocation.newBuilder()
+        .setBlockID(new BlockID(ORDINARY_CONTAINER_ID, LOCAL_ID).getProtobuf()).setOffset(0).setLength(BLOCK_LENGTH));
+    assertThat(commit(ordinaryClientId, false, false, keyArgs).getOMResponse().getStatus())
+        .isEqualTo(APPEND_WRITER_CONFLICT);
+    // A recovery commit that names a session other than the owner.
+    assertThat(commit(sessionId + 1, false, true, BLOCK_LENGTH).getOMResponse().getStatus())
+        .isEqualTo(APPEND_SESSION_NOT_FOUND);
+
+    OmKeyInfo committed = committedFile();
+    assertThat(committed.getAppendOwnerSessionId()).isEqualTo(sessionId);
+    assertThat(blockIds(committed)).isEqualTo(blockIds(before));
+  }
+
   private static AppendConflictInfo assertConflict(OMClientResponse response, AppendWriterKind kind) {
     OMResponse omResponse = response.getOMResponse();
     assertThat(omResponse.getStatus()).isEqualTo(APPEND_WRITER_CONFLICT);
@@ -481,6 +572,11 @@ public class TestOMFileAppendRequest extends OMKeyRequestTests {
       keyArgs.addKeyLocations(KeyLocation.newBuilder()
           .setBlockID(suffixBlockId(i).getProtobuf()).setOffset(0).setLength(suffixBlockLengths[i]));
     }
+    return commit(commitClientId, hsync, recovery, keyArgs);
+  }
+
+  private OMClientResponse commit(long commitClientId, boolean hsync, boolean recovery, KeyArgs.Builder keyArgs)
+      throws Exception {
     OMRequest request = OMRequest.newBuilder()
         .setCmdType(Type.CommitKey)
         .setClientId(UUID.randomUUID().toString())

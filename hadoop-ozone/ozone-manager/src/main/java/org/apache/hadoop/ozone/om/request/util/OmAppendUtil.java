@@ -61,6 +61,17 @@ public final class OmAppendUtil {
   }
 
   /**
+   * Fails with APPEND_WRITER_CONFLICT if the committed file is reserved by an append session. Ordinary writers must
+   * not create, overwrite or commit over such a file.
+   */
+  public static void checkNotReserved(OmKeyInfo committed, String keyName) throws OMException {
+    if (committed != null && committed.getAppendOwnerSessionId() != null) {
+      throw new OMException("File " + keyName + " is reserved by append session "
+          + committed.getAppendOwnerSessionId(), OMException.ResultCodes.APPEND_WRITER_CONFLICT);
+    }
+  }
+
+  /**
    * Returns the file table DB key of the file that an append session's open record belongs to. It is derived from
    * the open record, which follows renames, and never from the path of a request.
    */

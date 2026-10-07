@@ -39,6 +39,7 @@ import org.apache.hadoop.ozone.om.helpers.OmBucketInfo;
 import org.apache.hadoop.ozone.om.helpers.OmDirectoryInfo;
 import org.apache.hadoop.ozone.om.helpers.OmKeyInfo;
 import org.apache.hadoop.ozone.om.helpers.OmKeyLocationInfo;
+import org.apache.hadoop.ozone.om.request.util.OmAppendUtil;
 import org.apache.hadoop.ozone.om.request.util.OmResponseUtil;
 import org.apache.hadoop.ozone.om.response.OMClientResponse;
 import org.apache.hadoop.ozone.om.response.file.OMFileCreateResponseWithFSO;
@@ -141,6 +142,7 @@ public class OMFileCreateRequestWithFSO extends OMFileCreateRequest {
       // check if the file or directory already existed in OM
       checkDirectoryResult(keyName, isOverWrite,
               pathInfoFSO.getDirectoryResult());
+      OmAppendUtil.checkNotReserved(dbFileInfo, keyName);
 
       if (!isRecursive) {
         checkAllParentsExist(keyArgs, pathInfoFSO);
