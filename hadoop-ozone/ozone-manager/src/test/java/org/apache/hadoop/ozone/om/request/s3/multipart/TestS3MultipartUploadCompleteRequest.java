@@ -36,11 +36,13 @@ import java.util.Set;
 import java.util.UUID;
 import java.util.stream.Collectors;
 import org.apache.hadoop.hdds.client.ContainerBlockID;
+import org.apache.hadoop.hdds.client.ECReplicationConfig;
 import org.apache.hadoop.hdds.client.RatisReplicationConfig;
 import org.apache.hadoop.hdds.protocol.proto.HddsProtos;
 import org.apache.hadoop.hdds.utils.db.BatchOperation;
 import org.apache.hadoop.hdds.utils.db.Table;
 import org.apache.hadoop.hdds.utils.db.cache.CacheKey;
+import org.apache.hadoop.hdds.utils.db.cache.CacheValue;
 import org.apache.hadoop.ozone.OzoneConsts;
 import org.apache.hadoop.ozone.om.helpers.OmBucketInfo;
 import org.apache.hadoop.ozone.om.helpers.OmKeyInfo;
@@ -327,6 +329,35 @@ public class TestS3MultipartUploadCompleteRequest
     assertThat(deletedBlockIds)
         .contains(oldOnlyBlock.getBlockID().getContainerBlockID())
         .doesNotContain(sharedBlock.getBlockID().getContainerBlockID());
+  }
+
+  @Test
+  public void testOverwriteReleasesAppendedECKeyPerBlockGroup() throws Exception {
+    String volumeName = UUID.randomUUID().toString();
+    String bucketName = UUID.randomUUID().toString();
+    String keyName = getKeyName();
+    OMRequestTestUtils.addVolumeAndBucketToDB(volumeName, bucketName, omMetadataManager, getBucketLayout());
+    String bucketKey = omMetadataManager.getBucketKey(volumeName, bucketName);
+    checkValidateAndUpdateCacheSuccess(volumeName, bucketName, keyName, new HashMap<>(), new HashMap<>());
+    long partSize = omMetadataManager.getBucketTable().get(bucketKey).getUsedBytes();
+
+    // Give the key the shape of an appended EC file: its first block group ends in a partial stripe.
+    String dbKey = getOzoneDBKey(volumeName, bucketName, keyName);
+    Table<String, OmKeyInfo> keyTable = omMetadataManager.getKeyTable(getBucketLayout());
+    OmKeyInfo appended = keyTable.get(dbKey).toBuilder()
+        .setReplicationConfig(new ECReplicationConfig(3, 2, ECReplicationConfig.EcCodec.RS, 1024))
+        .setOmKeyLocationInfos(Collections.singletonList(new OmKeyLocationInfoGroup(0L, Arrays.asList(
+            OmKeyLocationInfo.getFromProtobuf(createKeyLocation(1L, 1L).toBuilder().setLength(200).build()),
+            OmKeyLocationInfo.getFromProtobuf(createKeyLocation(2L, 1L).toBuilder().setLength(1000).build())))))
+        .setDataSize(1200)
+        .build();
+    keyTable.addCacheEntry(new CacheKey<>(dbKey), CacheValue.get(4L, appended));
+
+    checkValidateAndUpdateCacheSuccess(volumeName, bucketName, keyName, new HashMap<>(), new HashMap<>());
+
+    // The new part is charged. The overwritten key releases 200 and 1000 bytes with two parity cells each, as its
+    // delete would, not the 3248 of the formula on the 1200 bytes of the file.
+    assertEquals(2 * partSize - (3 * 200 + 3 * 1000), omMetadataManager.getBucketTable().get(bucketKey).getUsedBytes());
   }
 
   private static KeyLocation createKeyLocation(long containerID, long localID) {

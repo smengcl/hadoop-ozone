@@ -806,8 +806,9 @@ public class OMKeyCommitRequest extends OMKeyRequest {
 
     // Only the newly published bytes are charged. The file already exists, so the namespace does not change.
     // Charged per block group, as delete releases it: an EC prefix can end in a partial block group.
-    // ponytail: OmKeyInfo.getReplicatedSize() still applies the EC formula to the whole file, so overwrite, quota
-    // repair and the other callers undercount an appended EC file. Summing per block group there is the upgrade.
+    // ponytail: OmKeyInfo.getReplicatedSize() still applies the EC formula to the whole file, so the callers that
+    // only report sizes (snapshot exclusive and trapped sizes, lifecycle metrics) undercount an appended EC file.
+    // Summing per block group there is the upgrade.
     long addedSpace = sumBlockLengths(newCommitted) - sumBlockLengths(committed);
     if (addedSpace > 0) {
       // A commit that adds nothing (the same publication again, an empty close, a recovery without new data) must

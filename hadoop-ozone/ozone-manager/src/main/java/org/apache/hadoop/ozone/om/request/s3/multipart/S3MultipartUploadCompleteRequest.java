@@ -350,7 +350,8 @@ public class S3MultipartUploadCompleteRequest extends OMKeyRequest {
           // so there is no double-charge to correct.
           filterOutBlocksStillInUse(omKeyInfo, oldKeyVersionsToDelete);
           allKeyInfoToRemove.addAll(oldKeyVersionsToDelete.getOmKeyInfoList());
-          usedBytesDiff -= keyToDelete.getReplicatedSize();
+          // Per block group, as delete releases it: an appended EC key has a partial block group in the middle.
+          usedBytesDiff -= sumBlockLengths(keyToDelete);
         } else {
           checkBucketQuotaInNamespace(omBucketInfo, 1L);
           omBucketInfo.incrUsedNamespace(1L);

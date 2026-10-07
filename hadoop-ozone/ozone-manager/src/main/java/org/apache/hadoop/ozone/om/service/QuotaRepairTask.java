@@ -54,6 +54,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.Consumer;
 import org.apache.commons.io.FileUtils;
+import org.apache.hadoop.hdds.client.ECReplicationConfig;
 import org.apache.hadoop.hdds.conf.OzoneConfiguration;
 import org.apache.hadoop.hdds.server.JsonUtils;
 import org.apache.hadoop.hdds.utils.db.ByteArrayCodec;
@@ -81,6 +82,7 @@ import org.apache.hadoop.ozone.om.helpers.QuotaUtil;
 import org.apache.hadoop.ozone.om.helpers.RepeatedOmKeyInfo;
 import org.apache.hadoop.ozone.om.helpers.SnapshotInfo;
 import org.apache.hadoop.ozone.om.ratis.utils.OzoneManagerRatisUtils;
+import org.apache.hadoop.ozone.om.request.key.OMKeyRequest;
 import org.apache.hadoop.ozone.om.request.util.OMMultipartUploadUtils;
 import org.apache.hadoop.ozone.protocol.proto.OzoneManagerProtocolProtos;
 import org.apache.hadoop.util.Time;
@@ -567,7 +569,11 @@ public class QuotaRepairTask {
     if (usage == null) {
       return;
     }
-    usage.incrSpace(val.getTotalSize().getRight());
+    // The same sizes as delete moved to snapshotUsedBytes and purge takes off again, see countKey for an EC key.
+    for (OmKeyInfo key : val.getOmKeyInfoList()) {
+      usage.incrSpace(key.getReplicationConfig() instanceof ECReplicationConfig
+          ? OMKeyRequest.sumBlockLengths(key) : key.getReplicatedSize());
+    }
     usage.incrNamespace(val.getOmKeyInfoList().size());
   }
 
@@ -821,7 +827,11 @@ public class QuotaRepairTask {
     if (haveValue) {
       VALUE value = kv.getValue();
       if (value instanceof OmKeyInfo) {
-        usage.incrSpace(((OmKeyInfo) value).getReplicatedSize());
+        OmKeyInfo key = (OmKeyInfo) value;
+        // An appended EC file has a partial block group before its last one, so an EC key is counted per block group,
+        // as the append charged and as delete releases. Other keys keep the formula on the data size.
+        usage.incrSpace(key.getReplicationConfig() instanceof ECReplicationConfig
+            ? OMKeyRequest.sumBlockLengths(key) : key.getReplicatedSize());
       }
     }
   }

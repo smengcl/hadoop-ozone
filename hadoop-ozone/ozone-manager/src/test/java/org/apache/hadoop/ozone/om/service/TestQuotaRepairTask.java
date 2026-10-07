@@ -48,6 +48,7 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
+import org.apache.hadoop.hdds.client.BlockID;
 import org.apache.hadoop.hdds.client.ECReplicationConfig;
 import org.apache.hadoop.hdds.client.RatisReplicationConfig;
 import org.apache.hadoop.hdds.client.ReplicationConfig;
@@ -64,6 +65,8 @@ import org.apache.hadoop.ozone.om.codec.OMDBDefinition;
 import org.apache.hadoop.ozone.om.helpers.BucketLayout;
 import org.apache.hadoop.ozone.om.helpers.OmBucketInfo;
 import org.apache.hadoop.ozone.om.helpers.OmKeyInfo;
+import org.apache.hadoop.ozone.om.helpers.OmKeyLocationInfo;
+import org.apache.hadoop.ozone.om.helpers.OmKeyLocationInfoGroup;
 import org.apache.hadoop.ozone.om.helpers.OmMultipartKeyInfo;
 import org.apache.hadoop.ozone.om.helpers.OmMultipartPartInfo;
 import org.apache.hadoop.ozone.om.helpers.OmMultipartPartKey;
@@ -72,6 +75,7 @@ import org.apache.hadoop.ozone.om.helpers.OmVolumeArgs;
 import org.apache.hadoop.ozone.om.helpers.RepeatedOmKeyInfo;
 import org.apache.hadoop.ozone.om.ratis.OzoneManagerRatisServer;
 import org.apache.hadoop.ozone.om.request.OMRequestTestUtils;
+import org.apache.hadoop.ozone.om.request.key.OMKeyRequest;
 import org.apache.hadoop.ozone.om.request.key.OMKeyRequestTests;
 import org.apache.hadoop.ozone.om.request.s3.multipart.S3MultipartUploadAbortRequest;
 import org.apache.hadoop.ozone.om.request.s3.multipart.S3MultipartUploadAbortRequestWithFSO;
@@ -388,6 +392,37 @@ public class TestQuotaRepairTask extends OMKeyRequestTests {
     OmBucketInfo repaired = omMetadataManager.getBucketTable().get(bucketKey);
     assertEquals(0, repaired.getSnapshotUsedBytes());
     assertEquals(dirs + 1, repaired.getSnapshotUsedNamespace());
+  }
+
+  @Test
+  public void testQuotaRepairCountsAppendedECKeyPerBlockGroup() throws Exception {
+    AtomicReference<OzoneManagerProtocolProtos.OMRequest> request = mockQuotaRepairRequest();
+    OMRequestTestUtils.addVolumeAndBucketToDB(volumeName, bucketName, omMetadataManager, BucketLayout.OBJECT_STORE);
+    ReplicationConfig ec = new ECReplicationConfig(3, 2, ECReplicationConfig.EcCodec.RS, 1024);
+    // The shape of an appended EC file: the first block group ends in a partial stripe.
+    OmKeyInfo appended = OMRequestTestUtils.createOmKeyInfo(volumeName, bucketName, "appended", ec,
+        new OmKeyLocationInfoGroup(0L, Arrays.asList(
+            new OmKeyLocationInfo.Builder().setBlockID(new BlockID(1, 1)).setLength(200).build(),
+            new OmKeyLocationInfo.Builder().setBlockID(new BlockID(2, 1)).setLength(1000).build())))
+        .setDataSize(1200).build();
+    // repair scans a RocksDB checkpoint, so the row must be written to the table, not the cache
+    omMetadataManager.getKeyTable(BucketLayout.OBJECT_STORE)
+        .put(omMetadataManager.getOzoneKey(volumeName, bucketName, "appended"), appended);
+    // the same file deleted and not purged yet
+    RepeatedOmKeyInfo deleted = new RepeatedOmKeyInfo(
+        omMetadataManager.getBucketTable().get(omMetadataManager.getBucketKey(volumeName, bucketName)).getObjectID());
+    deleted.addOmKeyInfo(appended);
+    omMetadataManager.getDeletedTable().put(omMetadataManager.getOzoneDeletePathKey(1L,
+        omMetadataManager.getOzoneKey(volumeName, bucketName, "deleted")), deleted);
+    String bucketKey = corruptBucketUsage(bucketName, 7L, 7L, 1L);
+
+    applyQuotaRepair(request, 2L, bucketKey);
+
+    // 200 and 1000 bytes with two parity cells each. The formula on the 1200 bytes of the file gives 3248.
+    OmBucketInfo repaired = omMetadataManager.getBucketTable().get(bucketKey);
+    assertEquals(3 * 200 + 3 * 1000, repaired.getUsedBytes());
+    assertEquals(OMKeyRequest.sumBlockLengths(appended), repaired.getUsedBytes());
+    assertEquals(OMKeyRequest.sumBlockLengths(appended), repaired.getSnapshotUsedBytes());
   }
 
   @Test
