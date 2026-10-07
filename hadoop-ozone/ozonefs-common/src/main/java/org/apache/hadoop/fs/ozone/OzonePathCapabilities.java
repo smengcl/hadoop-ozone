@@ -19,8 +19,10 @@ package org.apache.hadoop.fs.ozone;
 
 import static org.apache.hadoop.fs.impl.PathCapabilitiesSupport.validatePathCapabilityArgs;
 
+import java.io.IOException;
 import org.apache.hadoop.fs.CommonPathCapabilities;
 import org.apache.hadoop.fs.Path;
+import org.apache.ratis.util.function.CheckedSupplier;
 
 /**
  * Utility class to help implement {@code hasPathCapability} API in Ozone
@@ -35,12 +37,17 @@ public final class OzonePathCapabilities {
    * Common implementation of {@code hasPathCapability} for all ofs and o3fs.
    * @param path path to check
    * @param capability capability
+   * @param appendSupported tells if the bucket of the path supports append, evaluated only for that capability
    * @return either a value to return or, if empty, a cue for the FS to
    * pass up to its superclass.
    */
   public static boolean hasPathCapability(final Path path,
-      final String capability) {
+      final String capability, final CheckedSupplier<Boolean, IOException> appendSupported) throws IOException {
     switch (validatePathCapabilityArgs(path, capability)) {
+    case CommonPathCapabilities.FS_APPEND:
+      // ponytail: reflects the bucket layout only, not the OM version, ozone.om.append.enabled or snapshot paths;
+      // add an OM capability probe if callers need an exact answer before calling append.
+      return appendSupported.get();
     case CommonPathCapabilities.FS_ACLS:
     case CommonPathCapabilities.FS_CHECKSUMS:
     case CommonPathCapabilities.FS_SNAPSHOTS:

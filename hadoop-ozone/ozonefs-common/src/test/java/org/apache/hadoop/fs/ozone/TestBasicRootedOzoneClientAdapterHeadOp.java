@@ -17,6 +17,8 @@
 
 package org.apache.hadoop.fs.ozone;
 
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -26,6 +28,7 @@ import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.CALLS_REAL_METHODS;
 import static org.mockito.Mockito.doReturn;
+import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
@@ -36,6 +39,7 @@ import java.io.IOException;
 import java.lang.reflect.Field;
 import java.net.URI;
 import java.time.Instant;
+import java.util.Arrays;
 import java.util.Collections;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.hdds.client.RatisReplicationConfig;
@@ -186,6 +190,43 @@ public class TestBasicRootedOzoneClientAdapterHeadOp {
     assertThrows(FileNotFoundException.class,
         () -> adapter.getFileStatus("/vol/bucket/key", URI_OFS, WORKING_DIR,
             "user", true));
+  }
+
+  @Test
+  public void appendFileMapsMissingFileToFileNotFoundException() throws IOException {
+    for (OMException.ResultCodes code : Arrays.asList(OMException.ResultCodes.KEY_NOT_FOUND,
+        OMException.ResultCodes.FILE_NOT_FOUND, OMException.ResultCodes.DIRECTORY_NOT_FOUND,
+        OMException.ResultCodes.NOT_A_FILE)) {
+      doThrow(new OMException("no file", code)).when(bucket).appendFile("dir/key");
+      assertThrows(FileNotFoundException.class, () -> adapter.appendFile("/vol/bucket/dir/key"));
+    }
+
+    doThrow(new OMException("busy", OMException.ResultCodes.APPEND_WRITER_CONFLICT))
+        .when(bucket).appendFile("dir/key");
+    assertThat(assertThrows(OMException.class, () -> adapter.appendFile("/vol/bucket/dir/key")).getResult())
+        .isEqualTo(OMException.ResultCodes.APPEND_WRITER_CONFLICT);
+  }
+
+  @Test
+  public void appendFileRejectsPathsThatAreNotLiveFiles() throws IOException {
+    for (String path : Arrays.asList("/", "/vol", "/vol/bucket")) {
+      assertThrows(FileNotFoundException.class, () -> adapter.appendFile(path));
+    }
+    for (String path : Arrays.asList("/vol/bucket/.snapshot", "/vol/bucket/.snapshot/snap1/key")) {
+      assertThatThrownBy(() -> adapter.appendFile(path))
+          .isInstanceOf(IOException.class).hasMessageContaining("snapshot");
+    }
+    verify(bucket, never()).appendFile(anyString());
+  }
+
+  @Test
+  public void isFileClosedSeesAppendOwner() throws IOException {
+    when(bucket.getFileStatus("key")).thenReturn(fileStatus(false));
+    assertTrue(adapter.isFileClosed("/vol/bucket/key"));
+
+    when(bucket.getFileStatus("key")).thenReturn(new OzoneFileStatus(
+        fileStatus(false).getKeyInfo().toBuilder().setAppendOwnerSessionId(1L).build(), 512, false));
+    assertFalse(adapter.isFileClosed("/vol/bucket/key"));
   }
 
   @Test

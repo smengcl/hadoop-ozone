@@ -35,6 +35,7 @@ import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.nullable;
 import static org.mockito.Mockito.same;
 import static org.mockito.Mockito.spy;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -44,10 +45,18 @@ import java.net.URISyntaxException;
 import java.util.Arrays;
 import java.util.Collection;
 import org.apache.hadoop.conf.Configuration;
+import org.apache.hadoop.fs.CommonPathCapabilities;
+import org.apache.hadoop.fs.FSDataOutputStream;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.hdds.conf.OzoneConfiguration;
 import org.apache.hadoop.hdds.conf.StorageSize;
+import org.apache.hadoop.ozone.OFSPath;
+import org.apache.hadoop.ozone.client.OzoneBucket;
+import org.apache.hadoop.ozone.client.io.KeyOutputStream;
+import org.apache.hadoop.ozone.client.io.OzoneOutputStream;
+import org.apache.hadoop.ozone.om.exceptions.OMException;
+import org.apache.hadoop.ozone.om.helpers.BucketLayout;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.CsvSource;
@@ -289,6 +298,81 @@ public class TestBasicOzoneFileSystems {
     // HostAndPort rejects ports outside 0-65535, unlike a bare Integer.parseInt.
     assertThrows(IllegalArgumentException.class,
         () -> ofs.initialize(new URI("ofs://host:99999/"), new OzoneConfiguration()));
+  }
+
+  @Test
+  public void testAppendStartsAtEndOfFile() throws Exception {
+    BasicOzoneClientAdapterImpl o3fsAdapter = mock(BasicOzoneClientAdapterImpl.class);
+    assertAppendStartsAtEndOfFile(newO3fs(o3fsAdapter), o3fsAdapter, new Path("/dir/file"), "dir/file");
+
+    BasicRootedOzoneClientAdapterImpl ofsAdapter = mock(BasicRootedOzoneClientAdapterImpl.class);
+    assertAppendStartsAtEndOfFile(newOfs(ofsAdapter), ofsAdapter, new Path("/vol/bucket/dir/file"),
+        "vol/bucket/dir/file");
+  }
+
+  private static void assertAppendStartsAtEndOfFile(FileSystem fs, OzoneClientAdapter adapter, Path path, String key)
+      throws IOException {
+    KeyOutputStream keyOutputStream = mock(KeyOutputStream.class);
+    when(keyOutputStream.getAppendPrefixLength()).thenReturn(42L);
+    OzoneOutputStream ozoneOutputStream = mock(OzoneOutputStream.class);
+    when(ozoneOutputStream.getKeyOutputStream()).thenReturn(keyOutputStream);
+    when(adapter.appendFile(key)).thenAnswer(invocation -> new OzoneFSOutputStream(ozoneOutputStream));
+
+    try (FSDataOutputStream out = fs.append(path)) {
+      assertEquals(42, out.getPos());
+      out.write(new byte[3]);
+      assertEquals(45, out.getPos());
+    }
+    verify(ozoneOutputStream).write(any(byte[].class), eq(0), eq(3));
+
+    // The appendFile() builder of Hadoop goes through append().
+    try (FSDataOutputStream out = fs.appendFile(path).build()) {
+      assertEquals(42, out.getPos());
+    }
+    verify(adapter, times(2)).appendFile(key);
+  }
+
+  @Test
+  public void testAppendCapabilityFollowsBucketLayout() throws Exception {
+    Path path = new Path("/vol/bucket/file");
+    assertTrue(OzonePathCapabilities.hasPathCapability(path, CommonPathCapabilities.FS_APPEND, () -> true));
+    assertFalse(OzonePathCapabilities.hasPathCapability(path, CommonPathCapabilities.FS_APPEND, () -> false));
+    // other capabilities do not look at the bucket
+    assertTrue(OzonePathCapabilities.hasPathCapability(path, CommonPathCapabilities.FS_ACLS, () -> fail()));
+
+    BasicOzoneClientAdapterImpl o3fsAdapter = mock(BasicOzoneClientAdapterImpl.class);
+    BasicOzoneFileSystem o3fs = newO3fs(o3fsAdapter);
+    assertFalse(o3fs.isAppendSupported(path));
+    when(o3fsAdapter.isFSOptimizedBucket()).thenReturn(true);
+    assertTrue(o3fs.isAppendSupported(path));
+
+    BasicRootedOzoneClientAdapterImpl ofsAdapter = mock(BasicRootedOzoneClientAdapterImpl.class);
+    BasicRootedOzoneFileSystem ofs = newOfs(ofsAdapter);
+    OzoneBucket bucket = mock(OzoneBucket.class);
+    doReturn(bucket).when(ofsAdapter).getBucket(any(OFSPath.class), eq(false));
+    when(bucket.getBucketLayout()).thenReturn(BucketLayout.FILE_SYSTEM_OPTIMIZED);
+    assertTrue(ofs.isAppendSupported(path));
+    assertFalse(ofs.isAppendSupported(new Path("/")));
+    assertFalse(ofs.isAppendSupported(new Path("/vol")));
+    when(bucket.getBucketLayout()).thenReturn(BucketLayout.LEGACY);
+    assertFalse(ofs.isAppendSupported(path));
+    when(ofsAdapter.getBucket(any(OFSPath.class), eq(false)))
+        .thenThrow(new OMException("no bucket", OMException.ResultCodes.BUCKET_NOT_FOUND));
+    assertFalse(ofs.isAppendSupported(path));
+  }
+
+  private static BasicOzoneFileSystem newO3fs(BasicOzoneClientAdapterImpl adapter) throws Exception {
+    BasicOzoneFileSystem o3fs = spy(new BasicOzoneFileSystem());
+    doReturn(adapter).when(o3fs).createAdapter(any(), any(), any(), any(), anyInt());
+    o3fs.initialize(new URI("o3fs://bucket.vol/"), new OzoneConfiguration());
+    return o3fs;
+  }
+
+  private static BasicRootedOzoneFileSystem newOfs(BasicRootedOzoneClientAdapterImpl adapter) throws Exception {
+    BasicRootedOzoneFileSystem ofs = spy(new BasicRootedOzoneFileSystem());
+    doReturn(adapter).when(ofs).createAdapter(any(), anyString(), anyInt());
+    ofs.initialize(new URI("ofs://om/"), new OzoneConfiguration());
+    return ofs;
   }
 
   private void assertDefaultBlockSize(long expected, FileSystem subject) {

@@ -17,6 +17,7 @@
 
 package org.apache.hadoop.fs.ozone;
 
+import static org.apache.hadoop.ozone.OzoneConsts.OM_SNAPSHOT_INDICATOR;
 import static org.apache.hadoop.ozone.OzoneConsts.OZONE_URI_DELIMITER;
 import static org.apache.hadoop.ozone.om.exceptions.OMException.ResultCodes.DIRECTORY_NOT_FOUND;
 import static org.apache.hadoop.ozone.om.exceptions.OMException.ResultCodes.FILE_NOT_FOUND;
@@ -279,6 +280,25 @@ public class BasicOzoneClientAdapterImpl implements OzoneClientAdapter {
       } else {
         throw ex;
       }
+    }
+  }
+
+  @Override
+  public OzoneFSOutputStream appendFile(String key) throws IOException {
+    if (key.startsWith(OM_SNAPSHOT_INDICATOR + OZONE_URI_DELIMITER)) {
+      throw new IOException("Cannot append to a file in a snapshot: " + key);
+    }
+    try {
+      return new OzoneFSOutputStream(bucket.appendFile(key));
+    } catch (OMException ome) {
+      if (ome.getResult() == NOT_A_FILE) {
+        throw new FileNotFoundException("Path is not a file. " + ome.getMessage());
+      } else if (ome.getResult() == KEY_NOT_FOUND ||
+          ome.getResult() == FILE_NOT_FOUND ||
+          ome.getResult() == DIRECTORY_NOT_FOUND) {
+        throw new FileNotFoundException("File does not exist. " + ome.getMessage());
+      }
+      throw ome;
     }
   }
 
@@ -855,7 +875,7 @@ public class BasicOzoneClientAdapterImpl implements OzoneClientAdapter {
       if (!status.isFile()) {
         throw new FileNotFoundException("Path is not a file.");
       }
-      return !status.getKeyInfo().isHsync();
+      return !status.getKeyInfo().isHsync() && status.getKeyInfo().getAppendOwnerSessionId() == null;
     } catch (OMException ome) {
       if (ome.getResult() == FILE_NOT_FOUND) {
         throw new FileNotFoundException("File does not exist. " + ome.getMessage());

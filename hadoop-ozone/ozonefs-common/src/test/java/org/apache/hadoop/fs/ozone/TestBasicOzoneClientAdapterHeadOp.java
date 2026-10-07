@@ -17,6 +17,8 @@
 
 package org.apache.hadoop.fs.ozone;
 
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -24,7 +26,9 @@ import static org.mockito.ArgumentMatchers.anyBoolean;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.CALLS_REAL_METHODS;
+import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -32,6 +36,7 @@ import java.io.FileNotFoundException;
 import java.io.IOException;
 import java.lang.reflect.Field;
 import java.net.URI;
+import java.util.Arrays;
 import java.util.Collections;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.hdds.client.RatisReplicationConfig;
@@ -123,6 +128,34 @@ public class TestBasicOzoneClientAdapterHeadOp {
             OMException.ResultCodes.FILE_NOT_FOUND));
     assertThrows(FileNotFoundException.class,
         () -> adapter.getFileStatus("key", URI_O3FS, WORKING_DIR, "user", true));
+  }
+
+  @Test
+  public void appendFileMapsMissingFileToFileNotFoundException() throws IOException {
+    for (OMException.ResultCodes code : Arrays.asList(OMException.ResultCodes.KEY_NOT_FOUND,
+        OMException.ResultCodes.FILE_NOT_FOUND, OMException.ResultCodes.DIRECTORY_NOT_FOUND,
+        OMException.ResultCodes.NOT_A_FILE)) {
+      doThrow(new OMException("no file", code)).when(bucket).appendFile("key");
+      assertThrows(FileNotFoundException.class, () -> adapter.appendFile("key"));
+    }
+
+    doThrow(new OMException("busy", OMException.ResultCodes.APPEND_WRITER_CONFLICT)).when(bucket).appendFile("key");
+    assertThat(assertThrows(OMException.class, () -> adapter.appendFile("key")).getResult())
+        .isEqualTo(OMException.ResultCodes.APPEND_WRITER_CONFLICT);
+
+    assertThatThrownBy(() -> adapter.appendFile(".snapshot/snap1/key"))
+        .isInstanceOf(IOException.class).hasMessageContaining("snapshot");
+    verify(bucket, never()).appendFile(".snapshot/snap1/key");
+  }
+
+  @Test
+  public void isFileClosedSeesAppendOwner() throws IOException {
+    when(bucket.getFileStatus("key")).thenReturn(fileStatus(false));
+    assertTrue(adapter.isFileClosed("key"));
+
+    when(bucket.getFileStatus("key")).thenReturn(new OzoneFileStatus(
+        fileStatus(false).getKeyInfo().toBuilder().setAppendOwnerSessionId(1L).build(), 512, false));
+    assertFalse(adapter.isFileClosed("key"));
   }
 
   @Test

@@ -342,8 +342,33 @@ public class BasicRootedOzoneFileSystem extends FileSystem {
   @Override
   public FSDataOutputStream append(Path f, int bufferSize,
       Progressable progress) throws IOException {
-    throw new UnsupportedOperationException("append() Not implemented by the "
-        + getClass().getSimpleName() + " FileSystem implementation");
+    LOG.trace("append() path:{}", f);
+    incrementCounter(Statistic.INVOCATION_APPEND, 1);
+    statistics.incrementWriteOps(1);
+    final String key = pathToKey(f);
+    return TracingUtil.executeInNewSpan("ofs append", () -> {
+      final OzoneFSOutputStream out = adapter.appendFile(key);
+      return new FSDataOutputStream(createFSOutputStream(out), statistics, out.getAppendPrefixLength());
+    });
+  }
+
+  /**
+   * @return true if files at the path can be appended to: append is implemented for FSO buckets only.
+   *     Looks up the bucket of the path.
+   */
+  protected boolean isAppendSupported(Path path) throws IOException {
+    OFSPath ofsPath = new OFSPath(pathToKey(path), ozoneConfiguration);
+    if (ofsPath.isRoot() || ofsPath.isVolume()) {
+      return false;
+    }
+    try {
+      return adapterImpl.getBucket(ofsPath, false).getBucketLayout().isFileSystemOptimized();
+    } catch (OMException e) {
+      if (e.getResult() == VOLUME_NOT_FOUND || e.getResult() == BUCKET_NOT_FOUND) {
+        return false;
+      }
+      throw e;
+    }
   }
 
   private class RenameIterator extends OzoneListingIterator {

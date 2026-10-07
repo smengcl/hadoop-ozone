@@ -2672,8 +2672,6 @@ public abstract class OmSnapshotTests {
       assertThrows(UnsupportedOperationException.class,
           () -> fs.removeXAttr(pathVal, null));
       assertThrows(UnsupportedOperationException.class,
-          () -> fs.append(pathVal));
-      assertThrows(UnsupportedOperationException.class,
           () -> fs.truncate(pathVal, 0));
       assertThrows(UnsupportedOperationException.class,
           () -> fs.concat(pathVal, new Path[]{}));

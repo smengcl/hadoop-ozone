@@ -435,6 +435,32 @@ public class BasicRootedOzoneClientAdapterImpl
   }
 
   @Override
+  public OzoneFSOutputStream appendFile(String pathStr) throws IOException {
+    OFSPath ofsPath = new OFSPath(pathStr, config);
+    if (ofsPath.isRoot() || ofsPath.isVolume() || ofsPath.isBucket()) {
+      throw new FileNotFoundException("Path is not a file. " + pathStr);
+    }
+    String key = ofsPath.getKeyName();
+    if (key.equals(OM_SNAPSHOT_INDICATOR) || key.startsWith(OM_SNAPSHOT_INDICATOR + OZONE_URI_DELIMITER)) {
+      throw new IOException("Cannot append to a snapshot path: " + pathStr);
+    }
+    try {
+      return new OzoneFSOutputStream(getBucket(ofsPath, false).appendFile(key));
+    } catch (OMException ome) {
+      if (ome.getResult() == NOT_A_FILE) {
+        throw new FileNotFoundException("Path is not a file. " + ome.getMessage());
+      } else if (ome.getResult() == KEY_NOT_FOUND ||
+          ome.getResult() == FILE_NOT_FOUND ||
+          ome.getResult() == DIRECTORY_NOT_FOUND ||
+          ome.getResult() == VOLUME_NOT_FOUND ||
+          ome.getResult() == BUCKET_NOT_FOUND) {
+        throw new FileNotFoundException("File does not exist. " + ome.getMessage());
+      }
+      throw ome;
+    }
+  }
+
+  @Override
   public OzoneFSDataStreamOutput createStreamFile(String pathStr,
       short replication, boolean overWrite, boolean recursive)
       throws IOException {
@@ -1499,7 +1525,7 @@ public class BasicRootedOzoneClientAdapterImpl
           if (!status.isFile()) {
             throw new FileNotFoundException("Path is not a file.");
           }
-          return !status.getKeyInfo().isHsync();
+          return !status.getKeyInfo().isHsync() && status.getKeyInfo().getAppendOwnerSessionId() == null;
         }
       } catch (OMException ome) {
         if (ome.getResult() == FILE_NOT_FOUND ||

@@ -78,4 +78,9 @@ public class OzoneFSOutputStream extends OutputStream
   protected OzoneOutputStream getWrappedOutputStream() {
     return outputStream;
   }
+
+  /** @return the file length when this stream was opened for append, 0 for a newly created file. */
+  long getAppendPrefixLength() {
+    return outputStream.getKeyOutputStream().getAppendPrefixLength();
+  }
 }

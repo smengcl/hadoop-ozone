@@ -132,7 +132,7 @@ public class OzoneFileSystem extends BasicOzoneFileSystem
     // qualify the path to make sure that it refers to the current FS.
     final Path p = makeQualified(path);
     boolean cap =
-        OzonePathCapabilities.hasPathCapability(p, capability);
+        OzonePathCapabilities.hasPathCapability(p, capability, () -> isAppendSupported(p));
     if (cap) {
       return cap;
     }

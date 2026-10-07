@@ -53,6 +53,9 @@ public interface OzoneClientAdapter {
   OzoneFSDataStreamOutput createStreamFile(String key, short replication,
       boolean overWrite, boolean recursive) throws IOException;
 
+  /** Reopens an existing file for appending. The returned stream starts at the end of the file. */
+  OzoneFSOutputStream appendFile(String key) throws IOException;
+
   void renameKey(String key, String newKeyName) throws IOException;
 
   // Users should use rename instead of renameKey in OFS.

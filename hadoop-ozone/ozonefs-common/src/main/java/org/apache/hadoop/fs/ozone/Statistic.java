@@ -41,6 +41,8 @@ public enum Statistic {
       "Total number of object list query from the object store."),
   INVOCATION_COPY_FROM_LOCAL_FILE(CommonStatisticNames.OP_COPY_FROM_LOCAL_FILE,
       "Calls of copyFromLocalFile()"),
+  INVOCATION_APPEND(CommonStatisticNames.OP_APPEND,
+      "Calls of append()"),
   INVOCATION_CREATE(CommonStatisticNames.OP_CREATE,
       "Calls of create()"),
   INVOCATION_CREATE_NON_RECURSIVE(CommonStatisticNames.OP_CREATE_NON_RECURSIVE,
