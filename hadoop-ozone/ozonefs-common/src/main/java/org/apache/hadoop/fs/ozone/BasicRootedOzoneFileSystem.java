@@ -53,6 +53,7 @@ import java.util.Iterator;
 import java.util.LinkedList;
 import java.util.List;
 import java.util.Objects;
+import java.util.concurrent.TimeUnit;
 import java.util.stream.Collectors;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.BlockLocation;
@@ -128,6 +129,7 @@ public class BasicRootedOzoneFileSystem extends FileSystem {
   private boolean isRatisStreamingEnabled
       = OzoneConfigKeys.OZONE_FS_DATASTREAM_ENABLED_DEFAULT;
   private int streamingAutoThreshold;
+  private long appendRecoveryTimeoutMs;
 
   private static final String URI_EXCEPTION_TEXT =
       "URL should be one of the following formats: " +
@@ -219,6 +221,8 @@ public class BasicRootedOzoneFileSystem extends FileSystem {
         OzoneConfigKeys.OZONE_FS_DATASTREAM_AUTO_THRESHOLD,
         OzoneConfigKeys.OZONE_FS_DATASTREAM_AUTO_THRESHOLD_DEFAULT,
         StorageUnit.BYTES);
+    appendRecoveryTimeoutMs = ozoneConfiguration.getTimeDuration(OzoneConfigKeys.OZONE_FS_APPEND_RECOVERY_TIMEOUT,
+        OzoneConfigKeys.OZONE_FS_APPEND_RECOVERY_TIMEOUT_DEFAULT, TimeUnit.MILLISECONDS);
   }
 
   protected OzoneClientAdapter createAdapter(ConfigurationSource conf,
@@ -347,7 +351,7 @@ public class BasicRootedOzoneFileSystem extends FileSystem {
     statistics.incrementWriteOps(1);
     final String key = pathToKey(f);
     return TracingUtil.executeInNewSpan("ofs append", () -> {
-      final OzoneFSOutputStream out = adapter.appendFile(key);
+      final OzoneFSOutputStream out = AppendWithRecovery.append(adapter, key, appendRecoveryTimeoutMs);
       return new FSDataOutputStream(createFSOutputStream(out), statistics, out.getAppendPrefixLength());
     });
   }

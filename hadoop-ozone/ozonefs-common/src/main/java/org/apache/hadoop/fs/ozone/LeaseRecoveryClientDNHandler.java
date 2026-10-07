@@ -27,8 +27,10 @@ import java.util.ArrayList;
 import java.util.List;
 import org.apache.hadoop.hdds.protocol.proto.HddsProtos.ReplicationType;
 import org.apache.hadoop.hdds.scm.container.common.helpers.StorageContainerException;
+import org.apache.hadoop.ozone.om.exceptions.OMException;
 import org.apache.hadoop.ozone.om.helpers.LeaseKeyInfo;
 import org.apache.hadoop.ozone.om.helpers.OmAppendSession;
+import org.apache.hadoop.ozone.om.helpers.OmKeyArgs;
 import org.apache.hadoop.ozone.om.helpers.OmKeyLocationInfo;
 import org.apache.hadoop.ozone.om.helpers.OmKeyLocationInfoGroup;
 import org.slf4j.Logger;
@@ -42,6 +44,37 @@ public final class LeaseRecoveryClientDNHandler {
 
   private LeaseRecoveryClientDNHandler() {
       // Not required.
+  }
+
+  /**
+   * Recovers the lease of a file: fences its writer at OM, finalizes its last blocks on the datanodes and commits
+   * the recovered length. Returns normally if the file is already closed.
+   * @param adapter client adapter
+   * @param key key of the file
+   * @param forceRecovery whether to do force recovery
+   */
+  public static void recoverLease(OzoneClientAdapter adapter, String key, boolean forceRecovery) throws IOException {
+    LeaseKeyInfo leaseKeyInfo;
+    try {
+      leaseKeyInfo = adapter.recoverFilePrepare(key, forceRecovery);
+    } catch (OMException e) {
+      if (e.getResult() == OMException.ResultCodes.KEY_ALREADY_CLOSED) {
+        // key is already closed, let's just return success
+        return;
+      }
+      throw e;
+    }
+
+    // Get keyLocationInfo
+    List<OmKeyLocationInfo> keyLocationInfoList = getOmKeyLocationInfos(leaseKeyInfo, adapter, forceRecovery);
+    // recover and commit file
+    long keyLength = getRecoveredLength(leaseKeyInfo, keyLocationInfoList);
+    OmKeyArgs keyArgs = new OmKeyArgs.Builder().setVolumeName(leaseKeyInfo.getKeyInfo().getVolumeName())
+        .setBucketName(leaseKeyInfo.getKeyInfo().getBucketName()).setKeyName(leaseKeyInfo.getKeyInfo().getKeyName())
+        .setReplicationConfig(leaseKeyInfo.getKeyInfo().getReplicationConfig()).setDataSize(keyLength)
+        .setLocationInfoList(keyLocationInfoList)
+        .build();
+    adapter.recoverFile(keyArgs);
   }
 
   /**

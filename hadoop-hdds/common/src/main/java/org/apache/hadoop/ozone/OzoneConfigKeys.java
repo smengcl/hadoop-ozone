@@ -132,6 +132,14 @@ public final class OzoneConfigKeys {
       = false;
 
   /**
+   * How long FileSystem.append waits for an abandoned append writer to become recoverable.
+   */
+  public static final String OZONE_FS_APPEND_RECOVERY_TIMEOUT
+      = "ozone.fs.append.recovery.timeout";
+  public static final String OZONE_FS_APPEND_RECOVERY_TIMEOUT_DEFAULT
+      = "120s";
+
+  /**
    * hsync lease soft limit.
    */
   public static final String OZONE_OM_LEASE_SOFT_LIMIT

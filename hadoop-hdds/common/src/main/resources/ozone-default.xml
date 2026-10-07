@@ -4842,6 +4842,17 @@
     </description>
   </property>
   <property>
+    <name>ozone.fs.append.recovery.timeout</name>
+    <value>120s</value>
+    <tag>OZONE, CLIENT</tag>
+    <description>
+      When FileSystem.append finds the file held by another append writer, it waits for the time Ozone Manager
+      reports until that writer's lease can be recovered, recovers the lease and then appends. This is the maximum
+      time to wait. If the reported time is longer, or the writer renews its lease in the meantime, append fails
+      with the writer conflict. It should be larger than ozone.om.lease.soft.limit. Set to 0 to never wait.
+    </description>
+  </property>
+  <property>
     <name>ozone.om.lease.soft.limit</name>
     <value>60s</value>
     <tag>OZONE, OM</tag>

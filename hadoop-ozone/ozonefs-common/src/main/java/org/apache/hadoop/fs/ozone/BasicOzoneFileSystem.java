@@ -47,6 +47,7 @@ import java.util.Iterator;
 import java.util.LinkedList;
 import java.util.List;
 import java.util.Objects;
+import java.util.concurrent.TimeUnit;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import java.util.stream.Collectors;
@@ -119,6 +120,7 @@ public class BasicOzoneFileSystem extends FileSystem {
   private boolean isRatisStreamingEnabled
       = OzoneConfigKeys.OZONE_FS_DATASTREAM_ENABLED_DEFAULT;
   private int streamingAutoThreshold;
+  private long appendRecoveryTimeoutMs;
 
   private static final Pattern URL_SCHEMA_PATTERN =
       Pattern.compile("([^\\.]+)\\.([^\\.]+)\\.{0,1}(.*)");
@@ -202,6 +204,8 @@ public class BasicOzoneFileSystem extends FileSystem {
           OzoneConfigKeys.OZONE_FS_DATASTREAM_AUTO_THRESHOLD,
           OzoneConfigKeys.OZONE_FS_DATASTREAM_AUTO_THRESHOLD_DEFAULT,
           StorageUnit.BYTES);
+      appendRecoveryTimeoutMs = source.getTimeDuration(OzoneConfigKeys.OZONE_FS_APPEND_RECOVERY_TIMEOUT,
+          OzoneConfigKeys.OZONE_FS_APPEND_RECOVERY_TIMEOUT_DEFAULT, TimeUnit.MILLISECONDS);
       this.hsyncEnabled = OzoneFSUtils.canEnableHsync(source, true);
       LOG.debug("hsyncEnabled = {}", hsyncEnabled);
       this.adapter =
@@ -345,7 +349,7 @@ public class BasicOzoneFileSystem extends FileSystem {
     LOG.trace("append() path:{}", f);
     incrementCounter(Statistic.INVOCATION_APPEND, 1);
     statistics.incrementWriteOps(1);
-    final OzoneFSOutputStream out = adapter.appendFile(pathToKey(f));
+    final OzoneFSOutputStream out = AppendWithRecovery.append(adapter, pathToKey(f), appendRecoveryTimeoutMs);
     return new FSDataOutputStream(createFSOutputStream(out), statistics, out.getAppendPrefixLength());
   }
 
