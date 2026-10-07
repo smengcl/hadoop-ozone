@@ -1,0 +1,64 @@
+# Licensed to the Apache Software Foundation (ASF) under one
+# or more contributor license agreements.  See the NOTICE file
+# distributed with this work for additional information
+# regarding copyright ownership.  The ASF licenses this file
+# to you under the Apache License, Version 2.0 (the
+# "License"); you may not use this file except in compliance
+# with the License.  You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# Add-on for compose/ozone/docker-compose.yaml: Apache HBase (pseudo distributed, separate master and region
+# server containers, external ZooKeeper) with hbase.rootdir and hbase.wal.dir on Ozone through ofs://.
+# Use with: COMPOSE_FILE=docker-compose.yaml:hbase.yaml (see test-hbase.sh).
+#
+# The image is built from the Apache HBase hadoop3 binary tarball (hbase/Dockerfile): there is no official
+# multi-arch HBase image. The Ozone shaded filesystem jar is mounted into HBase's lib dir; HBase's own
+# hadoop-common 3.4.x provides the LeaseRecoverable and SafeMode interfaces it implements.
+x-hbase:
+  &hbase
+  image: ${HBASE_IMAGE:-ozone-hbase:2.6.7}
+  build: ./hbase
+  volumes:
+    - ../../share/ozone/lib/ozone-filesystem-hadoop3-@project.version@.jar:/opt/hbase/lib/ozone-filesystem-hadoop3.jar:ro
+    - ./hbase/hbase-site.xml:/opt/hbase/conf/hbase-site.xml:ro
+    - ./hbase/log4j2.properties:/opt/hbase/conf/log4j2.properties:ro
+  environment:
+    HBASE_HEAPSIZE: 1g
+
+services:
+  om:
+    environment:
+      # hsync/hflush from the HBase client is accepted by OM only when both flags are set
+      # (ozone.fs.hsync.enabled is already set in docker-config).
+      OZONE-SITE.XML_ozone.hbase.enhancements.allowed: "true"
+      # Append is not required by HBase 2.6 WAL recovery; enabled so the test can show whether HBase calls it.
+      OZONE-SITE.XML_ozone.om.append.enabled: "true"
+      # Shorten the lease soft limit so WAL lease recovery succeeds quickly after kill -9.
+      OZONE-SITE.XML_ozone.om.lease.soft.limit: 10s
+  zookeeper:
+    image: ${ZOOKEEPER_IMAGE:-zookeeper:3.8}
+    hostname: zookeeper
+  hbase-master:
+    <<: *hbase
+    hostname: hbase-master
+    ports:
+      - 16010
+    command: ["hbase", "master", "start"]
+    depends_on:
+      - zookeeper
+      - om
+  hbase-regionserver:
+    <<: *hbase
+    hostname: hbase-regionserver
+    ports:
+      - 16030
+    command: ["hbase", "regionserver", "start"]
+    depends_on:
+      - hbase-master
