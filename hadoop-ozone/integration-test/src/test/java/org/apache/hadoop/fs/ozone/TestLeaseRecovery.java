@@ -28,6 +28,7 @@ import static org.apache.hadoop.ozone.OzoneConsts.OZONE_ROOT;
 import static org.apache.hadoop.ozone.OzoneConsts.OZONE_URI_DELIMITER;
 import static org.apache.hadoop.ozone.om.OMConfigKeys.OZONE_DEFAULT_BUCKET_LAYOUT;
 import static org.apache.hadoop.ozone.om.OMConfigKeys.OZONE_OM_ADDRESS_KEY;
+import static org.apache.hadoop.ozone.om.OMConfigKeys.OZONE_OM_APPEND_ENABLED;
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -35,6 +36,7 @@ import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import com.google.common.primitives.Bytes;
 import java.io.FileNotFoundException;
 import java.io.IOException;
 import java.io.OutputStream;
@@ -136,6 +138,7 @@ public class TestLeaseRecovery extends OzoneTestBase {
     conf.setBoolean("ozone.client.hbase.enhancements.allowed", true);
     conf.setBoolean("fs." + OZONE_OFS_URI_SCHEME + ".impl.disable.cache", true);
     conf.setBoolean(OzoneConfigKeys.OZONE_FS_HSYNC_ENABLED, true);
+    conf.setBoolean(OZONE_OM_APPEND_ENABLED, true);
     conf.set(OZONE_DEFAULT_BUCKET_LAYOUT, layout.name());
     conf.setInt(OZONE_SCM_RATIS_PIPELINE_LIMIT, 10);
     conf.set(OzoneConfigKeys.OZONE_OM_LEASE_SOFT_LIMIT, "0s");
@@ -569,6 +572,59 @@ public class TestLeaseRecovery extends OzoneTestBase {
 
     // open it again, make sure the data is correct
     verifyData(data, (blockSize - 1) * 2, file, fs);
+  }
+
+  /**
+   * The writer of an append stream is gone and a datanode of the pipeline of its suffix block is down. Lease recovery
+   * closes the file at the length that the remaining datanodes hold, and the file can be appended to again.
+   */
+  @Test
+  // After the tests that use closeLatestContainer: they expect the next block in the latest container.
+  @Order(Integer.MAX_VALUE - 1)
+  public void testAppendRecoveryWithDatanodeDown() throws Exception {
+    int dataSize = 100;
+    final byte[] data = getData(dataSize);
+    try (FSDataOutputStream out = fs.create(file, true)) {
+      out.write(data);
+    }
+
+    final FSDataOutputStream stream = fs.append(file);
+    try {
+      stream.write(data);
+      stream.hsync();
+      // write more data without hsync
+      stream.write(data);
+      stream.flush();
+
+      // Every pipeline of this cluster has all three datanodes.
+      cluster.shutdownHddsDatanode(0);
+      try {
+        assertTrue(fs.recoverLease(file));
+        assertTrue(fs.isFileClosed(file), "File should be closed");
+        assertEquals(dataSize * 3, fs.getFileStatus(file).getLen());
+        assertArrayEquals(Bytes.concat(data, data, data), readFully(dataSize * 3));
+      } finally {
+        cluster.restartHddsDatanode(0, false);
+        cluster.waitForClusterToBeReady();
+      }
+    } finally {
+      // The fenced writer cannot publish any more.
+      IOUtils.closeQuietly(stream);
+    }
+
+    try (FSDataOutputStream out = fs.append(file)) {
+      out.write(data);
+    }
+    assertEquals(dataSize * 4, fs.getFileStatus(file).getLen());
+    assertArrayEquals(Bytes.concat(data, data, data, data), readFully(dataSize * 4));
+  }
+
+  private byte[] readFully(int length) throws IOException {
+    final byte[] read = new byte[length];
+    try (FSDataInputStream in = fs.open(file)) {
+      in.readFully(read);
+    }
+    return read;
   }
 
   private ContainerInfo closeLatestContainer() throws IOException, TimeoutException, InterruptedException {

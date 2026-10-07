@@ -27,12 +27,15 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
 
+import com.google.common.primitives.Bytes;
 import java.io.IOException;
 import java.time.Duration;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collections;
 import java.util.List;
 import java.util.UUID;
+import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
 import org.apache.hadoop.hdds.HddsUtils;
@@ -55,9 +58,12 @@ import org.apache.hadoop.ozone.HddsDatanodeService;
 import org.apache.hadoop.ozone.MiniOzoneCluster;
 import org.apache.hadoop.ozone.OzoneConfigKeys;
 import org.apache.hadoop.ozone.OzoneConsts;
+import org.apache.hadoop.ozone.client.BucketArgs;
 import org.apache.hadoop.ozone.client.ObjectStore;
+import org.apache.hadoop.ozone.client.OzoneBucket;
 import org.apache.hadoop.ozone.client.OzoneClient;
 import org.apache.hadoop.ozone.client.OzoneClientFactory;
+import org.apache.hadoop.ozone.client.OzoneVolume;
 import org.apache.hadoop.ozone.client.io.BlockOutputStreamEntry;
 import org.apache.hadoop.ozone.client.io.KeyOutputStream;
 import org.apache.hadoop.ozone.client.io.OzoneOutputStream;
@@ -68,6 +74,8 @@ import org.apache.hadoop.ozone.container.common.interfaces.DBHandle;
 import org.apache.hadoop.ozone.container.keyvalue.KeyValueContainer;
 import org.apache.hadoop.ozone.container.keyvalue.KeyValueContainerData;
 import org.apache.hadoop.ozone.container.keyvalue.helpers.BlockUtils;
+import org.apache.hadoop.ozone.om.OMConfigKeys;
+import org.apache.hadoop.ozone.om.helpers.BucketLayout;
 import org.apache.hadoop.ozone.om.helpers.OmKeyArgs;
 import org.apache.hadoop.ozone.om.helpers.OmKeyInfo;
 import org.apache.hadoop.ozone.om.helpers.OmKeyLocationInfo;
@@ -220,6 +228,71 @@ public class TestFailureHandlingByClient {
   }
 
   /**
+   * An append stream loses two datanodes of the pipeline of its suffix block after an hsync. What it writes after that
+   * goes to a new block, and hsync and close publish both suffix blocks behind the untouched prefix.
+   */
+  @Test
+  public void testAppendWithDnFailures() throws Exception {
+    String appendBucket = UUID.randomUUID().toString();
+    String keyName = UUID.randomUUID().toString();
+    byte[] prefix = randomBytes();
+    byte[] synced = randomBytes();
+    byte[] afterFailure = randomBytes();
+    byte[] beforeClose = randomBytes();
+    // OM reads the append settings when a request arrives. The client needs them to hsync.
+    OzoneConfiguration appendConf = new OzoneConfiguration(conf);
+    for (OzoneConfiguration c : Arrays.asList(cluster.getOzoneManager().getConfiguration(), appendConf)) {
+      c.setBoolean(OzoneConfigKeys.OZONE_HBASE_ENHANCEMENTS_ALLOWED, true);
+      c.setBoolean("ozone.client.hbase.enhancements.allowed", true);
+      c.setBoolean(OzoneConfigKeys.OZONE_FS_HSYNC_ENABLED, true);
+      c.setBoolean(OMConfigKeys.OZONE_OM_APPEND_ENABLED, true);
+    }
+    try (OzoneClient appendClient = OzoneClientFactory.getRpcClient(appendConf)) {
+      OzoneVolume volume = appendClient.getObjectStore().getVolume(volumeName);
+      volume.createBucket(appendBucket,
+          BucketArgs.newBuilder().setBucketLayout(BucketLayout.FILE_SYSTEM_OPTIMIZED).build());
+      OzoneBucket bucket = volume.getBucket(appendBucket);
+      try (OzoneOutputStream out = bucket.createKey(keyName, 0, RatisReplicationConfig.getInstance(THREE),
+          Collections.emptyMap())) {
+        out.write(prefix);
+      }
+      OmKeyLocationInfo prefixBlock = blocks(appendBucket, keyName).get(0);
+
+      try (OzoneOutputStream out = bucket.appendFile(keyName)) {
+        out.write(synced);
+        out.hsync();
+        for (DatanodeDetails datanode : blocks(appendBucket, keyName).get(1).getPipeline().getNodes().subList(0, 2)) {
+          cluster.shutdownHddsDatanode(datanode);
+          restartDataNodes.add(datanode);
+        }
+        out.write(afterFailure);
+        out.hsync();
+        assertThat(blocks(appendBucket, keyName)).extracting(OmKeyLocationInfo::getLength)
+            .containsExactly((long) prefix.length, (long) synced.length, (long) afterFailure.length);
+        out.write(beforeClose);
+      }
+
+      List<OmKeyLocationInfo> blocks = blocks(appendBucket, keyName);
+      assertThat(blocks).extracting(OmKeyLocationInfo::getLength).containsExactly(
+          (long) prefix.length, (long) synced.length, (long) afterFailure.length + beforeClose.length);
+      assertThat(blocks.get(0).getBlockID()).isEqualTo(prefixBlock.getBlockID());
+      OzoneTestHelper.validateData(keyName, Bytes.concat(prefix, synced, afterFailure, beforeClose),
+          appendClient.getObjectStore(), volumeName, appendBucket);
+    }
+  }
+
+  private byte[] randomBytes() {
+    byte[] data = new byte[chunkSize / 2];
+    ThreadLocalRandom.current().nextBytes(data);
+    return data;
+  }
+
+  private List<OmKeyLocationInfo> blocks(String bucket, String keyName) throws IOException {
+    return cluster.getOzoneManager().lookupKey(new OmKeyArgs.Builder().setVolumeName(volumeName)
+        .setBucketName(bucket).setKeyName(keyName).build()).getLatestVersionLocations().getBlocksLatestVersionOnly();
+  }
+
+  /**
    * Test whether blockData and Container metadata (block count and used
    * bytes) is updated correctly when there is a write failure.
    * We can combine this test with {@link #testBlockWritesWithDnFailures()}
@@ -314,6 +387,10 @@ public class TestFailureHandlingByClient {
     AtomicReference<KeyValueContainerData> found = new AtomicReference<>();
     GenericTestUtils.waitFor(() -> {
       for (HddsDatanodeService dn : cluster.getHddsDatanodes()) {
+        if (restartDataNodes.contains(dn.getDatanodeDetails())) {
+          // Stopped by the test. A container DB opened here stays open, and the restarted datanode cannot open it.
+          continue;
+        }
         KeyValueContainer container = (KeyValueContainer) dn
             .getDatanodeStateMachine().getContainer().getContainerSet()
             .getContainer(containerId);

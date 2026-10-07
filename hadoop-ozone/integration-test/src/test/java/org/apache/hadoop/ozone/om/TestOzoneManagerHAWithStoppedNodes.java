@@ -30,7 +30,9 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assertions.fail;
 
+import com.google.common.primitives.Bytes;
 import java.io.IOException;
+import java.io.UncheckedIOException;
 import java.net.ConnectException;
 import java.util.HashMap;
 import java.util.Iterator;
@@ -40,38 +42,60 @@ import java.util.Set;
 import java.util.TreeSet;
 import java.util.UUID;
 import java.util.concurrent.TimeUnit;
+import java.util.stream.Collectors;
 import org.apache.commons.codec.digest.DigestUtils;
 import org.apache.commons.io.IOUtils;
 import org.apache.commons.lang3.RandomStringUtils;
 import org.apache.hadoop.hdds.client.ReplicationFactor;
 import org.apache.hadoop.hdds.client.ReplicationType;
+import org.apache.hadoop.hdds.conf.OzoneConfiguration;
+import org.apache.hadoop.hdds.conf.StorageUnit;
 import org.apache.hadoop.hdds.ratis.RatisHelper;
+import org.apache.hadoop.hdds.scm.container.common.helpers.ExcludeList;
 import org.apache.hadoop.hdds.utils.db.Table;
 import org.apache.hadoop.hdfs.LogVerificationAppender;
 import org.apache.hadoop.ipc_.RPC;
 import org.apache.hadoop.ipc_.Server;
+import org.apache.hadoop.ozone.ClientVersion;
 import org.apache.hadoop.ozone.MiniOzoneHAClusterImpl;
 import org.apache.hadoop.ozone.OzoneConfigKeys;
 import org.apache.hadoop.ozone.OzoneConsts;
+import org.apache.hadoop.ozone.client.BucketArgs;
 import org.apache.hadoop.ozone.client.ObjectStore;
 import org.apache.hadoop.ozone.client.OzoneBucket;
+import org.apache.hadoop.ozone.client.OzoneClient;
+import org.apache.hadoop.ozone.client.OzoneClientFactory;
 import org.apache.hadoop.ozone.client.OzoneMultipartUploadPartListParts;
 import org.apache.hadoop.ozone.client.OzoneVolume;
 import org.apache.hadoop.ozone.client.VolumeArgs;
 import org.apache.hadoop.ozone.client.io.OzoneInputStream;
 import org.apache.hadoop.ozone.client.io.OzoneOutputStream;
+import org.apache.hadoop.ozone.om.exceptions.AppendConflictException;
 import org.apache.hadoop.ozone.om.exceptions.OMException;
 import org.apache.hadoop.ozone.om.ha.HadoopRpcOMFailoverProxyProvider;
 import org.apache.hadoop.ozone.om.ha.OMHAMetrics;
+import org.apache.hadoop.ozone.om.helpers.BucketLayout;
+import org.apache.hadoop.ozone.om.helpers.OmKeyArgs;
+import org.apache.hadoop.ozone.om.helpers.OmKeyInfo;
+import org.apache.hadoop.ozone.om.helpers.OmKeyLocationInfo;
 import org.apache.hadoop.ozone.om.helpers.OmMultipartInfo;
 import org.apache.hadoop.ozone.om.helpers.OmMultipartUploadCompleteInfo;
 import org.apache.hadoop.ozone.om.helpers.RepeatedOmKeyInfo;
 import org.apache.hadoop.ozone.om.protocolPB.OzoneManagerProtocolPB;
 import org.apache.hadoop.ozone.om.service.KeyDeletingService;
 import org.apache.hadoop.ozone.protocol.proto.OzoneManagerProtocolProtos;
+import org.apache.hadoop.ozone.protocol.proto.OzoneManagerProtocolProtos.AppendFileRequest;
+import org.apache.hadoop.ozone.protocol.proto.OzoneManagerProtocolProtos.AppendFileResponse;
+import org.apache.hadoop.ozone.protocol.proto.OzoneManagerProtocolProtos.AppendSessionKey;
+import org.apache.hadoop.ozone.protocol.proto.OzoneManagerProtocolProtos.CommitKeyRequest;
+import org.apache.hadoop.ozone.protocol.proto.OzoneManagerProtocolProtos.OMRequest;
+import org.apache.hadoop.ozone.protocol.proto.OzoneManagerProtocolProtos.OMResponse;
+import org.apache.hadoop.ozone.protocol.proto.OzoneManagerProtocolProtos.RenewAppendLeasesRequest;
+import org.apache.hadoop.ozone.protocol.proto.OzoneManagerProtocolProtos.Type;
 import org.apache.hadoop.security.UserGroupInformation;
 import org.apache.log4j.Logger;
 import org.apache.ozone.test.GenericTestUtils;
+import org.apache.ozone.test.GenericTestUtils.LogCapturer;
 import org.apache.ratis.client.RaftClient;
 import org.apache.ratis.conf.RaftProperties;
 import org.apache.ratis.protocol.ClientId;
@@ -265,8 +289,13 @@ public class TestOzoneManagerHAWithStoppedNodes extends OzoneManagerHATests {
   @Test
   @Order(Integer.MAX_VALUE)
   void testOMRestart() throws Exception {
-    // start fresh cluster
+    // start fresh cluster, with small log segments: only closed segments are purged, and without a purge the
+    // restarted OM gets the log entries it missed instead of a snapshot
     shutdown();
+    setExtraClusterConfig(c -> {
+      c.setStorageSize(OMConfigKeys.OZONE_OM_RATIS_SEGMENT_SIZE_KEY, 16, StorageUnit.KB);
+      c.setStorageSize(OMConfigKeys.OZONE_OM_RATIS_SEGMENT_PREALLOCATED_SIZE_KEY, 16, StorageUnit.KB);
+    });
     init();
 
     ObjectStore objectStore = getObjectStore();
@@ -305,6 +334,15 @@ public class TestOzoneManagerHAWithStoppedNodes extends OzoneManagerHATests {
     // Stop one follower OM
     followerOM1.stop();
 
+    // An append session that the stopped OM only learns about from the installed snapshot.
+    OzoneClient appendClient = newAppendClient();
+    OzoneBucket fsoBucket = createFsoBucket(appendClient, volumeName);
+    String appendKey = createReplicatedKey(fsoBucket);
+    OzoneOutputStream appendStream = fsoBucket.appendFile(appendKey);
+    appendStream.write("synced".getBytes(UTF_8));
+    appendStream.hsync();
+    long sessionId = fsoBucket.getFileStatus(appendKey).getKeyInfo().getAppendOwnerSessionId();
+
     // Do more transactions. Stopped OM should miss these transactions and
     // the logs corresponding to at least some missed transactions
     // should be purged. This will force the OM to install snapshot when
@@ -322,12 +360,14 @@ public class TestOzoneManagerHAWithStoppedNodes extends OzoneManagerHATests {
     assertThat(followerOM1LastAppliedIndex).isLessThan(leaderOMSnaphsotIndex);
 
     // Restart the stopped OM.
+    LogCapturer logCapture = LogCapturer.captureLogs(OzoneManager.class);
     followerOM1.restart();
 
     // Wait for the follower OM to catch up
     GenericTestUtils.waitFor(() -> followerOM1.getOmRatisServer()
         .getLastAppliedTermIndex().getIndex() >= leaderOMSnaphsotIndex,
         100, 200000);
+    GenericTestUtils.waitFor(() -> logCapture.getOutput().contains("Install Checkpoint is finished"), 100, 30000);
 
     // Do more transactions. The restarted OM should receive the
     // new transactions. It's last applied tx index should increase from the
@@ -343,6 +383,248 @@ public class TestOzoneManagerHAWithStoppedNodes extends OzoneManagerHATests {
     final long followerOM1LastAppliedIndexNew =
         followerOM1.getOmRatisServer().getLastAppliedTermIndex().getIndex();
     assertThat(followerOM1LastAppliedIndexNew).isGreaterThan(leaderOMSnaphsotIndex);
+
+    // The session index of the restarted OM was built from the installed DB, and the close finds the session there.
+    waitForApplied(followerOM1, leaderOM);
+    assertThat(appendOpenRecord(followerOM1, fsoBucket, sessionId).getAppendSession().isActive()).isTrue();
+    assertThat(committedSummary(followerOM1, fsoBucket, appendKey)).startsWith("owner=" + sessionId)
+        .isEqualTo(committedSummary(leaderOM, fsoBucket, appendKey));
+    appendStream.write("closed".getBytes(UTF_8));
+    appendStream.close();
+    appendClient.close();
+    waitForApplied(followerOM1, leaderOM);
+    assertThat(appendOpenRecord(followerOM1, fsoBucket, sessionId)).isNull();
+    assertThat(committedSummary(followerOM1, fsoBucket, appendKey)).startsWith("owner=null")
+        .isEqualTo(committedSummary(leaderOM, fsoBucket, appendKey));
+  }
+
+  /**
+   * An open append stream keeps allocating blocks, publishing and renewing its lease when leadership is transferred
+   * and when the leader is lost, also when the new leader was down while the session was admitted.
+   */
+  @Test
+  void testAppendAcrossFailover() throws Exception {
+    MiniOzoneHAClusterImpl cluster = getCluster();
+    byte[] afterTransfer = "after transfer".getBytes(UTF_8);
+    byte[] afterLeaderLoss = "after leader loss".getBytes(UTF_8);
+    byte[] beforeClose = "before close".getBytes(UTF_8);
+    OzoneManager firstLeader = cluster.getOMLeader();
+    OzoneManager downAtAdmission = cluster.getOzoneManager(firstLeader.getPeerNodes().get(0).getNodeId());
+    long sessionId;
+    OzoneBucket bucket;
+    String key;
+    byte[] prefix;
+
+    try (OzoneClient appendClient = newAppendClient()) {
+      bucket = createFsoBucket(appendClient, setupBucket().getVolumeName());
+      key = createReplicatedKey(bucket);
+      prefix = readKey(bucket, key);
+      cluster.stopOzoneManager(downAtAdmission.getOMNodeId());
+      try (OzoneOutputStream out = bucket.appendFile(key)) {
+        sessionId = bucket.getFileStatus(key).getKeyInfo().getAppendOwnerSessionId();
+
+        // The OM that missed the admission replays it from the Raft log and becomes the leader. The first block of
+        // the session is allocated there.
+        cluster.restartOzoneManager(downAtAdmission, true);
+        waitForApplied(downAtAdmission, firstLeader);
+        assertThat(appendOpenRecord(downAtAdmission, bucket, sessionId).getAppendSession().isActive()).isTrue();
+        transferLeader(firstLeader, downAtAdmission);
+        out.write(afterTransfer);
+        out.hsync();
+        assertThat(bucket.getKey(key).getDataSize()).isEqualTo(prefix.length + afterTransfer.length);
+        long renewedAt = lastRenewedAt(downAtAdmission, bucket, sessionId);
+        GenericTestUtils.waitFor(() -> lastRenewedAt(downAtAdmission, bucket, sessionId) > renewedAt, 100, 30000);
+        assertThrows(AppendConflictException.class, () -> appendClient.getObjectStore()
+            .getVolume(bucket.getVolumeName()).getBucket(bucket.getName()).appendFile(key));
+
+        cluster.stopOzoneManager(downAtAdmission.getOMNodeId());
+        waitForLeaderToBeReady();
+        out.write(afterLeaderLoss);
+        out.hsync();
+        assertThat(bucket.getKey(key).getDataSize())
+            .isEqualTo(prefix.length + afterTransfer.length + afterLeaderLoss.length);
+        out.write(beforeClose);
+      }
+      assertThat(readKey(bucket, key)).isEqualTo(Bytes.concat(prefix, afterTransfer, afterLeaderLoss, beforeClose));
+    }
+
+    // The OM that missed the second half of the session catches up, and all OMs hold the same closed file.
+    cluster.restartOzoneManager(downAtAdmission, true);
+    OzoneManager leader = cluster.waitForLeaderOM();
+    for (OzoneManager om : cluster.getOzoneManagersList()) {
+      waitForApplied(om, leader);
+      assertThat(appendOpenRecord(om, bucket, sessionId)).isNull();
+      assertThat(committedSummary(om, bucket, key)).startsWith("owner=null")
+          .isEqualTo(committedSummary(leader, bucket, key));
+    }
+  }
+
+  /**
+   * An admission, an hsync, a renewal and a close whose response was lost are retried with the same client ID and
+   * call ID. The retry is answered from the Ratis retry cache, also by a new leader, and is not applied again.
+   */
+  @Test
+  void testAppendRetryCache() throws Exception {
+    MiniOzoneHAClusterImpl cluster = getCluster();
+    enableAppend();
+    OzoneBucket bucket = createFsoBucket(getClient(), setupBucket().getVolumeName());
+    String key = createReplicatedKey(bucket);
+    long prefixLength = bucket.getKey(key).getDataSize();
+    ClientId clientId = ClientId.randomId();
+    OzoneManager omLeader = cluster.getOMLeader();
+    OzoneManagerProtocolProtos.KeyArgs keyArgs = OzoneManagerProtocolProtos.KeyArgs.newBuilder()
+        .setVolumeName(bucket.getVolumeName()).setBucketName(bucket.getName()).setKeyName(key).build();
+
+    // A second admission would be a conflict with the session of the first one.
+    OMRequest appendFile = newRequest(Type.AppendFile, clientId)
+        .setAppendFileRequest(AppendFileRequest.newBuilder().setKeyArgs(keyArgs)).build();
+    AppendFileResponse admitted = submit(omLeader, clientId, 10, appendFile).getAppendFileResponse();
+    long sessionId = admitted.getID();
+    assertThat(submit(omLeader, clientId, 10, appendFile).getAppendFileResponse()).isEqualTo(admitted);
+    assertThat(committedSummary(omLeader, bucket, key)).startsWith("owner=" + sessionId);
+
+    OmKeyLocationInfo block = getObjectStore().getClientProxy().getOzoneManagerClient().allocateBlock(
+        new OmKeyArgs.Builder().setVolumeName(bucket.getVolumeName()).setBucketName(bucket.getName()).setKeyName(key)
+            .setReplicationConfig(bucket.getKey(key).getReplicationConfig()).build(), sessionId, new ExcludeList());
+    block.setLength(100);
+    OzoneManagerProtocolProtos.KeyArgs suffix = keyArgs.toBuilder().setDataSize(prefixLength + block.getLength())
+        .addKeyLocations(block.getProtobuf(ClientVersion.CURRENT_VERSION)).build();
+    OMRequest hsync = newRequest(Type.CommitKey, clientId).setCommitKeyRequest(
+        CommitKeyRequest.newBuilder().setKeyArgs(suffix).setClientID(sessionId).setHsync(true)).build();
+    submit(omLeader, clientId, 11, hsync);
+    String synced = committedSummary(omLeader, bucket, key);
+    submit(omLeader, clientId, 11, hsync);
+    // The summary has the update ID, which every applied commit sets to its transaction index.
+    assertThat(committedSummary(omLeader, bucket, key)).contains("size=" + suffix.getDataSize()).isEqualTo(synced);
+
+    // A renewal that was applied again would carry a later time.
+    OMRequest renew = newRequest(Type.RenewAppendLeases, clientId).setRenewAppendLeasesRequest(
+        RenewAppendLeasesRequest.newBuilder().addSessions(AppendSessionKey.newBuilder()
+            .setVolumeName(bucket.getVolumeName()).setBucketName(bucket.getName()).setSessionId(sessionId))).build();
+    assertThat(submit(omLeader, clientId, 12, renew).getRenewAppendLeasesResponse().getRenewedList())
+        .containsExactly(true);
+    long renewedAt = lastRenewedAt(omLeader, bucket, sessionId);
+    Thread.sleep(10);
+    assertThat(submit(omLeader, clientId, 12, renew).getRenewAppendLeasesResponse().getRenewedList())
+        .containsExactly(true);
+    assertThat(lastRenewedAt(omLeader, bucket, sessionId)).isEqualTo(renewedAt);
+
+    // The other OMs built their retry cache while they applied the log as followers.
+    OzoneManager newLeader = cluster.getOzoneManager(omLeader.getPeerNodes().get(0).getNodeId());
+    transferLeader(omLeader, newLeader);
+    cluster.shutdownOzoneManager(omLeader);
+
+    // A second close would not find the session.
+    OMRequest close = newRequest(Type.CommitKey, clientId).setCommitKeyRequest(
+        CommitKeyRequest.newBuilder().setKeyArgs(suffix).setClientID(sessionId)).build();
+    submit(newLeader, clientId, 13, close);
+    String closed = committedSummary(newLeader, bucket, key);
+    submit(newLeader, clientId, 13, close);
+    // Late retries of the earlier calls neither admit another session nor publish again.
+    assertThat(submit(newLeader, clientId, 10, appendFile).getAppendFileResponse()).isEqualTo(admitted);
+    submit(newLeader, clientId, 11, hsync);
+    assertThat(committedSummary(newLeader, bucket, key)).startsWith("owner=null").isEqualTo(closed);
+    assertThat(appendOpenRecord(newLeader, bucket, sessionId)).isNull();
+  }
+
+  private static OMRequest.Builder newRequest(Type type, ClientId clientId) {
+    return OMRequest.newBuilder().setCmdType(type).setVersion(ClientVersion.CURRENT_VERSION)
+        .setClientId(clientId.toString());
+  }
+
+  /** Submits the request to the OM as the RPC call with the given ID of the client and expects it to succeed. */
+  private static OMResponse submit(OzoneManager om, ClientId clientId, int callId, OMRequest request)
+      throws Exception {
+    Server.getCurCall().set(new Server.Call(callId, 0, null, null,
+        RPC.RpcKind.RPC_BUILTIN, clientId.toByteString().toByteArray()));
+    OMResponse response = om.getOmServerProtocol().processRequest(request);
+    assertThat(response.getSuccess()).as(response.getMessage()).isTrue();
+    return response;
+  }
+
+  /**
+   * The static initializer of a test class runs after the cluster is started, so cluster configuration set there
+   * does not reach the OMs. The append settings are read when a request arrives.
+   */
+  private OzoneConfiguration enableAppend() {
+    OzoneConfiguration clientConf = new OzoneConfiguration(getConf());
+    List<OzoneConfiguration> confs = getCluster().getOzoneManagersList().stream()
+        .map(OzoneManager::getConfiguration).collect(Collectors.toList());
+    confs.add(clientConf);
+    for (OzoneConfiguration c : confs) {
+      c.setBoolean(OzoneConfigKeys.OZONE_HBASE_ENHANCEMENTS_ALLOWED, true);
+      c.setBoolean("ozone.client.hbase.enhancements.allowed", true);
+      c.setBoolean(OzoneConfigKeys.OZONE_FS_HSYNC_ENABLED, true);
+      c.setBoolean(OMConfigKeys.OZONE_OM_APPEND_ENABLED, true);
+    }
+    return clientConf;
+  }
+
+  private OzoneClient newAppendClient() throws IOException {
+    OzoneConfiguration clientConf = enableAppend();
+    clientConf.set("ozone.client.append.lease.renew.interval", "500ms");
+    return OzoneClientFactory.getRpcClient(getOmServiceId(), clientConf);
+  }
+
+  private static OzoneBucket createFsoBucket(OzoneClient client, String volumeName) throws IOException {
+    OzoneVolume volume = client.getObjectStore().getVolume(volumeName);
+    String bucketName = uniqueObjectName("fso");
+    volume.createBucket(bucketName,
+        BucketArgs.newBuilder().setBucketLayout(BucketLayout.FILE_SYSTEM_OPTIMIZED).build());
+    return volume.getBucket(bucketName);
+  }
+
+  /** hsync needs more than one replica. */
+  private static String createReplicatedKey(OzoneBucket bucket) throws IOException {
+    String key = uniqueObjectName("key");
+    try (OzoneOutputStream out = bucket.createKey(key, 0, ReplicationType.RATIS, ReplicationFactor.THREE,
+        new HashMap<>())) {
+      out.write("prefix".getBytes(UTF_8));
+    }
+    return key;
+  }
+
+  private static byte[] readKey(OzoneBucket bucket, String key) throws IOException {
+    try (OzoneInputStream in = bucket.readKey(key)) {
+      return IOUtils.toByteArray(in);
+    }
+  }
+
+  private static void waitForApplied(OzoneManager om, OzoneManager leader) throws Exception {
+    // The leader answers a request before the double buffer flush that advances its last applied index.
+    leader.awaitDoubleBufferFlush();
+    long leaderIndex = leader.getOmRatisServer().getLastAppliedTermIndex().getIndex();
+    GenericTestUtils.waitFor(() -> om.getOmRatisServer().getLastAppliedTermIndex().getIndex() >= leaderIndex,
+        100, 60000);
+  }
+
+  /** @return the open record of an append session as the given OM resolves it, null if the OM has no such session. */
+  private static OmKeyInfo appendOpenRecord(OzoneManager om, OzoneBucket bucket, long sessionId) throws IOException {
+    OMMetadataManager metadataManager = om.getMetadataManager();
+    String dbOpenKey = metadataManager.getAppendSessionOpenKey(bucket.getVolumeName(), bucket.getName(), sessionId);
+    return dbOpenKey == null ? null
+        : metadataManager.getOpenKeyTable(BucketLayout.FILE_SYSTEM_OPTIMIZED).get(dbOpenKey);
+  }
+
+  private static long lastRenewedAt(OzoneManager om, OzoneBucket bucket, long sessionId) {
+    try {
+      return appendOpenRecord(om, bucket, sessionId).getAppendSession().getLastRenewedAt();
+    } catch (IOException e) {
+      throw new UncheckedIOException(e);
+    }
+  }
+
+  /** @return what the OMs must agree on for a committed file in the root of an FSO bucket. */
+  private static String committedSummary(OzoneManager om, OzoneBucket bucket, String key) throws IOException {
+    OMMetadataManager metadataManager = om.getMetadataManager();
+    long bucketId = metadataManager.getBucketId(bucket.getVolumeName(), bucket.getName());
+    OmKeyInfo committed = metadataManager.getKeyTable(BucketLayout.FILE_SYSTEM_OPTIMIZED).get(
+        metadataManager.getOzonePathKey(metadataManager.getVolumeId(bucket.getVolumeName()), bucketId, bucketId, key));
+    return "owner=" + committed.getAppendOwnerSessionId() + " size=" + committed.getDataSize()
+        + " updateID=" + committed.getUpdateID() + " mtime=" + committed.getModificationTime()
+        + " blocks=" + committed.getLatestVersionLocations().getBlocksLatestVersionOnly().stream()
+            .map(location -> location.getBlockID().getContainerBlockID() + ":" + location.getLength())
+            .collect(Collectors.toList());
   }
 
   @Test
