@@ -61,6 +61,17 @@ public final class OmAppendUtil {
   }
 
   /**
+   * Returns the file table DB key of the file that an append session's open record belongs to. It is derived from
+   * the open record, which follows renames, and never from the path of a request.
+   */
+  public static String getDbFileKey(OMMetadataManager omMetadataManager, OmKeyInfo openRecord) throws IOException {
+    String volume = openRecord.getVolumeName();
+    String bucket = openRecord.getBucketName();
+    return omMetadataManager.getOzonePathKey(omMetadataManager.getVolumeId(volume),
+        omMetadataManager.getBucketId(volume, bucket), openRecord.getParentObjectID(), openRecord.getFileName());
+  }
+
+  /**
    * Returns the blocks of an append session's open record that the committed file does not reference. Only these may
    * be handed to block deletion when the session ends: the other blocks of the open record were published by hsync
    * and belong to the committed file.
