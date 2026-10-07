@@ -763,6 +763,20 @@ public class OMKeyCommitRequest extends OMKeyRequest {
       throw new OMException("Append session " + sessionId + " of " + openRecord.getKeyName() + " submitted data size "
           + commitKeyArgs.getDataSize() + " that does not match its blocks", INVALID_REQUEST);
     }
+    final long recoveredSpace = isRecovery && suffix != published
+        ? sumReplicatedLengths(suffix, committed) - sumReplicatedLengths(published, committed) : 0;
+    if (recoveredSpace > 0) {
+      try {
+        checkBucketQuotaInBytes(omMetadataManager, omBucketInfo, recoveredSpace);
+      } catch (OMException e) {
+        // Recovery must end the session, so it closes at the published length. What was found beyond it was never
+        // acknowledged to the writer and is released with the other unpublished blocks.
+        LOG.warn("Recovery of append session {} of {}/{}/{} closes at the published length {}: {}", sessionId,
+            openRecord.getVolumeName(), openRecord.getBucketName(), openRecord.getKeyName(), committed.getDataSize(),
+            e.getMessage());
+        suffix = published;
+      }
+    }
 
     long locationVersion = committedGroup == null ? 0 : committedGroup.getVersion();
     List<OmKeyLocationInfo> newBlocks = new ArrayList<>(prefix);
@@ -795,7 +809,11 @@ public class OMKeyCommitRequest extends OMKeyRequest {
     // ponytail: OmKeyInfo.getReplicatedSize() still applies the EC formula to the whole file, so overwrite, quota
     // repair and the other callers undercount an appended EC file. Summing per block group there is the upgrade.
     long addedSpace = sumBlockLengths(newCommitted) - sumBlockLengths(committed);
-    checkBucketQuotaInBytes(omMetadataManager, omBucketInfo, addedSpace);
+    if (addedSpace > 0) {
+      // A commit that adds nothing (the same publication again, an empty close, a recovery without new data) must
+      // succeed also in a bucket that is over its quota, or the file stays reserved.
+      checkBucketQuotaInBytes(omMetadataManager, omBucketInfo, addedSpace);
+    }
 
     Map<String, RepeatedOmKeyInfo> unusedBlocksToDelete = null;
     if (!isHSync) {
@@ -842,6 +860,12 @@ public class OMKeyCommitRequest extends OMKeyRequest {
       }
     }
     return true;
+  }
+
+  /** Returns what {@link #sumBlockLengths(OmKeyInfo)} counts for the given blocks of the file. */
+  private static long sumReplicatedLengths(List<OmKeyLocationInfo> locations, OmKeyInfo file) {
+    return locations.stream()
+        .mapToLong(location -> QuotaUtil.getReplicatedSize(location.getLength(), file.getReplicationConfig())).sum();
   }
 
   private static long sumLengths(List<OmKeyLocationInfo> locations) {

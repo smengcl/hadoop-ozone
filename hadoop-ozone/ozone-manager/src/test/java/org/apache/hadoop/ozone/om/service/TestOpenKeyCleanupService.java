@@ -436,6 +436,9 @@ class TestOpenKeyCleanupService {
     final String volume = UUID.randomUUID().toString();
     final String bucket = UUID.randomUUID().toString();
     createVolumeAndBucket(volume, bucket, layout);
+    // The bucket is over its space quota. The recovery commit of the lapsed session must not be rejected for that.
+    OMRequestTestUtils.addBucketToOM(omMetadataManager, OmBucketInfo.newBuilder().setVolumeName(volume)
+        .setBucketName(bucket).setBucketLayout(layout).setQuotaInBytes(1).setUsedBytes(2).build());
     final long old = Time.now() - 10L * EXPIRE_THRESHOLD_MS;
     final long future = Time.now() + TimeUnit.HOURS.toMillis(1);
     final String renewing = addAppendSession(volume, bucket, "renewing", 1L,

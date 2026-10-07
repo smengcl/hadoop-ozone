@@ -27,6 +27,7 @@ import static org.apache.hadoop.ozone.protocol.proto.OzoneManagerProtocolProtos.
 import static org.apache.hadoop.ozone.protocol.proto.OzoneManagerProtocolProtos.Status.NOT_A_FILE;
 import static org.apache.hadoop.ozone.protocol.proto.OzoneManagerProtocolProtos.Status.NOT_SUPPORTED_OPERATION;
 import static org.apache.hadoop.ozone.protocol.proto.OzoneManagerProtocolProtos.Status.OK;
+import static org.apache.hadoop.ozone.protocol.proto.OzoneManagerProtocolProtos.Status.QUOTA_EXCEEDED;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.junit.jupiter.api.Assumptions.assumeTrue;
@@ -515,6 +516,82 @@ public class TestOMFileAppendRequest extends OMKeyRequestTests {
     assertThat(openRecord(sessionId)).isNull();
     assertThat(omMetadataManager.getAppendSessionOpenKey(volumeName, bucketName, sessionId)).isNull();
     assertThat(blocksToDelete(response)).containsExactly(suffixBlockId(1));
+  }
+
+  /**
+   * Nobody can publish beyond the space quota of the bucket. Recovery still ends the session: it closes the file at
+   * the published length and releases the blocks that were not published.
+   */
+  @ParameterizedTest
+  @ValueSource(booleans = {true, false})
+  public void testRecoveryCommitOverSpaceQuotaClosesAtPublishedLength(boolean bySessionId) throws Exception {
+    addCommittedFile(1);
+    long sessionId = admit();
+    allocate(sessionId);
+    allocate(sessionId);
+    assertThat(hsync(sessionId, BLOCK_LENGTH + 100, 100).getOMResponse().getStatus()).isEqualTo(OK);
+    long usedBytes = bucketUsedBytes();
+    // Lowered below what is used, so that a commit that adds nothing is over the quota too.
+    String bucketKey = omMetadataManager.getBucketKey(volumeName, bucketName);
+    omMetadataManager.getBucketTable().addCacheEntry(new CacheKey<>(bucketKey), CacheValue.get(++txnId,
+        omMetadataManager.getBucketTable().get(bucketKey).toBuilder().setQuotaInBytes(usedBytes - 1).build()));
+
+    assertThat(hsync(sessionId, BLOCK_LENGTH + 180, 150, 30).getOMResponse().getStatus()).isEqualTo(QUOTA_EXCEEDED);
+    assertThat(close(sessionId, BLOCK_LENGTH + 180, 150, 30).getOMResponse().getStatus()).isEqualTo(QUOTA_EXCEEDED);
+    assertThat(committedFile().getAppendOwnerSessionId()).isEqualTo(sessionId);
+
+    setPhase(sessionId, AppendSessionPhase.APPEND_RECOVERING);
+    OMClientResponse response = commit(bySessionId ? sessionId : 0, false, true, BLOCK_LENGTH + 180, 150, 30);
+
+    assertThat(response.getOMResponse().getStatus()).isEqualTo(OK);
+    OmKeyInfo committed = committedFile();
+    assertThat(committed.getAppendOwnerSessionId()).isNull();
+    assertThat(blockIds(committed)).containsExactly(prefixBlockId(0), suffixBlockId(0));
+    assertThat(committed.getDataSize()).isEqualTo(BLOCK_LENGTH + 100);
+    assertThat(bucketUsedBytes()).isEqualTo(usedBytes);
+    assertThat(openRecord(sessionId)).isNull();
+    assertThat(omMetadataManager.getAppendSessionOpenKey(volumeName, bucketName, sessionId)).isNull();
+    assertThat(blocksToDelete(response)).containsExactly(suffixBlockId(1));
+  }
+
+  /** A commit that adds nothing passes in a bucket that is over its quota, so that the writer can still close. */
+  @Test
+  public void testCommitWithoutNewDataIgnoresSpaceQuota() throws Exception {
+    addCommittedFile(1);
+    long sessionId = admit();
+    allocate(sessionId);
+    assertThat(hsync(sessionId, BLOCK_LENGTH + 100, 100).getOMResponse().getStatus()).isEqualTo(OK);
+    long usedBytes = bucketUsedBytes();
+    String bucketKey = omMetadataManager.getBucketKey(volumeName, bucketName);
+    omMetadataManager.getBucketTable().addCacheEntry(new CacheKey<>(bucketKey), CacheValue.get(++txnId,
+        omMetadataManager.getBucketTable().get(bucketKey).toBuilder().setQuotaInBytes(usedBytes - 1).build()));
+
+    assertThat(hsync(sessionId, BLOCK_LENGTH + 100, 100).getOMResponse().getStatus()).isEqualTo(OK);
+    assertThat(close(sessionId, BLOCK_LENGTH + 100, 100).getOMResponse().getStatus()).isEqualTo(OK);
+
+    assertThat(committedFile().getAppendOwnerSessionId()).isNull();
+    assertThat(bucketUsedBytes()).isEqualTo(usedBytes);
+  }
+
+  /** A recovery commit is charged like any other commit while the bucket has room for what it publishes. */
+  @Test
+  public void testRecoveryCommitWithinSpaceQuotaIsCharged() throws Exception {
+    addCommittedFile(1);
+    long sessionId = admit();
+    allocate(sessionId);
+    assertThat(hsync(sessionId, BLOCK_LENGTH + 100, 100).getOMResponse().getStatus()).isEqualTo(OK);
+    long usedBytes = bucketUsedBytes();
+    long charged = OMKeyRequest.sumBlockLengths(committedFile());
+    String bucketKey = omMetadataManager.getBucketKey(volumeName, bucketName);
+    omMetadataManager.getBucketTable().addCacheEntry(new CacheKey<>(bucketKey), CacheValue.get(++txnId,
+        omMetadataManager.getBucketTable().get(bucketKey).toBuilder().setQuotaInBytes(2 * usedBytes).build()));
+    setPhase(sessionId, AppendSessionPhase.APPEND_RECOVERING);
+
+    assertThat(commit(sessionId, false, true, BLOCK_LENGTH + 150, 150).getOMResponse().getStatus()).isEqualTo(OK);
+
+    OmKeyInfo committed = committedFile();
+    assertThat(committed.getDataSize()).isEqualTo(BLOCK_LENGTH + 150);
+    assertThat(bucketUsedBytes() - usedBytes).isPositive().isEqualTo(OMKeyRequest.sumBlockLengths(committed) - charged);
   }
 
   @Test
