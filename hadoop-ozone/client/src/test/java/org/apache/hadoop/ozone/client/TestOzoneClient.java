@@ -64,12 +64,14 @@ import org.apache.hadoop.hdds.scm.XceiverClientFactory;
 import org.apache.hadoop.ozone.OzoneConfigKeys;
 import org.apache.hadoop.ozone.OzoneConsts;
 import org.apache.hadoop.ozone.client.io.ECKeyOutputStream;
+import org.apache.hadoop.ozone.client.io.OzoneDataStreamOutput;
 import org.apache.hadoop.ozone.client.io.OzoneInputStream;
 import org.apache.hadoop.ozone.client.io.OzoneOutputStream;
 import org.apache.hadoop.ozone.client.rpc.RpcClient;
 import org.apache.hadoop.ozone.om.exceptions.OMException;
 import org.apache.hadoop.ozone.om.exceptions.OMException.ResultCodes;
 import org.apache.hadoop.ozone.om.helpers.ServiceInfoEx;
+import org.apache.hadoop.ozone.om.protocol.S3Auth;
 import org.apache.hadoop.ozone.om.protocolPB.OmTransport;
 import org.apache.hadoop.ozone.protocol.proto.OzoneManagerProtocolProtos.AppendSessionKey;
 import org.apache.hadoop.ozone.protocol.proto.OzoneManagerProtocolProtos.CommitKeyRequest;
@@ -95,6 +97,7 @@ public class TestOzoneClient {
   private ObjectStore store;
   private MockOmTransport omTransport;
   private KeyProvider keyProvider;
+  private boolean ecStreamBuilderFails;
 
   public static <E extends Throwable> void expectOmException(
       OMException.ResultCodes code,
@@ -123,6 +126,14 @@ public class TestOzoneClient {
       @Override
       public KeyProvider getKeyProvider() {
         return keyProvider;
+      }
+
+      @Override
+      public ThreadLocal<S3Auth> getS3CredentialsProvider() {
+        if (ecStreamBuilderFails) {
+          throw new IllegalStateException("EC stream builder fails");
+        }
+        return super.getS3CredentialsProvider();
       }
 
       @Nonnull
@@ -388,6 +399,58 @@ public class TestOzoneClient {
     assertEquals(prefix.length + suffix.length, lastCommit().getKeyArgs().getDataSize());
     assertThat(lastCommit().getKeyArgs().getKeyLocationsList()).hasSize(1);
     assertArrayEquals(ArrayUtils.addAll(prefix, suffix), readKey(bucket, keyName));
+
+    // RATIS streaming does not apply to an EC file: the streaming variant falls back to the EC stream.
+    try (OzoneDataStreamOutput out = bucket.appendStreamFile(keyName)) {
+      assertThat(out.getKeyDataStreamOutput()).isNull();
+      assertThat(((OzoneOutputStream) out.getByteBufStreamOutput()).getOutputStream())
+          .isInstanceOf(ECKeyOutputStream.class);
+      assertEquals(prefix.length + suffix.length, out.getAppendPrefixLength());
+      out.write(prefix);
+    }
+    assertArrayEquals(ArrayUtils.addAll(ArrayUtils.addAll(prefix, suffix), prefix), readKey(bucket, keyName));
+
+    // OM admits the session, then the stream cannot be built: the session is closed, the file is not left reserved.
+    int commits = omTransport.getRequests(Type.CommitKey).size();
+    ecStreamBuilderFails = true;
+    assertThatThrownBy(() -> bucket.appendFile(keyName)).isInstanceOf(IllegalStateException.class);
+    assertThatThrownBy(() -> bucket.appendStreamFile(keyName)).isInstanceOf(IllegalStateException.class);
+    assertThat(omTransport.getRequests(Type.CommitKey)).hasSize(commits + 2);
+    assertThat(lastCommit().getKeyArgs().getKeyLocationsList()).isEmpty();
+    assertEquals(2 * prefix.length + suffix.length, lastCommit().getKeyArgs().getDataSize());
+  }
+
+  @Test
+  public void testAppendStreamFile() throws IOException {
+    OzoneBucket bucket = getOzoneBucket();
+    String keyName = UUID.randomUUID().toString();
+    byte[] prefix = "prefix".getBytes(UTF_8);
+    writeKey(bucket, keyName, prefix);
+    int allocations = omTransport.getRequests(Type.AllocateBlock).size();
+
+    // A RATIS file is written through RATIS streaming. Closing it without data ends the session.
+    try (OzoneDataStreamOutput out = bucket.appendStreamFile(keyName)) {
+      assertThat(out.getKeyDataStreamOutput()).isNotNull();
+      assertEquals(prefix.length, out.getAppendPrefixLength());
+    }
+    assertThat(omTransport.getRequests(Type.CommitKey)).hasSize(2);
+    assertFalse(lastCommit().getHsync());
+    assertEquals(prefix.length, lastCommit().getKeyArgs().getDataSize());
+    assertThat(lastCommit().getKeyArgs().getKeyLocationsList()).isEmpty();
+    assertThat(omTransport.getRequests(Type.AllocateBlock)).hasSize(allocations);
+
+    String gdprKeyName = UUID.randomUUID().toString();
+    try (OzoneOutputStream out = bucket.createKey(gdprKeyName, 0, RatisReplicationConfig.getInstance(THREE),
+        Collections.singletonMap(OzoneConsts.GDPR_FLAG, "true"))) {
+      out.write(prefix);
+    }
+    int commits = omTransport.getRequests(Type.CommitKey).size();
+    assertThatThrownBy(() -> bucket.appendStreamFile(gdprKeyName))
+        .isInstanceOf(IOException.class)
+        .hasMessageContaining("GDPR");
+    // The session OM admitted is closed, the file is not left reserved.
+    assertThat(omTransport.getRequests(Type.CommitKey)).hasSize(commits + 1);
+    assertThat(lastCommit().getKeyArgs().getKeyLocationsList()).isEmpty();
   }
 
   @Test

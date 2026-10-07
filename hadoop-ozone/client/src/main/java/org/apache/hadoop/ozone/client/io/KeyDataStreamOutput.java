@@ -104,6 +104,15 @@ public class KeyDataStreamOutput extends AbstractDataStreamOutput
     return clientID;
   }
 
+  /** @return the file length when this append stream was opened (its start position), 0 if this is not an append. */
+  public long getAppendPrefixLength() {
+    return blockDataStreamOutputEntryPool.getAppendState().getPrefixLength();
+  }
+
+  AppendSessionState getAppendState() {
+    return blockDataStreamOutputEntryPool.getAppendState();
+  }
+
   @VisibleForTesting
   public KeyDataStreamOutput() {
     super(null);

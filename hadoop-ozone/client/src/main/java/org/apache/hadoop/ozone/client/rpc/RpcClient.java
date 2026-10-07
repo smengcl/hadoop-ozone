@@ -57,6 +57,7 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.SynchronousQueue;
 import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
+import java.util.function.BiFunction;
 import java.util.function.Function;
 import java.util.stream.Collectors;
 import javax.crypto.Cipher;
@@ -194,6 +195,7 @@ import org.apache.hadoop.security.token.Token;
 import org.apache.hadoop.util.Time;
 import org.apache.ratis.protocol.ClientId;
 import org.apache.ratis.util.MemoizedSupplier;
+import org.apache.ratis.util.function.CheckedSupplier;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -2536,6 +2538,33 @@ public class RpcClient implements ClientProtocol {
 
   @Override
   public OzoneOutputStream appendFile(String volumeName, String bucketName, String keyName) throws IOException {
+    return createAppendOutputStream(openAppendSession(volumeName, bucketName, keyName));
+  }
+
+  @Override
+  public OzoneDataStreamOutput appendStreamFile(String volumeName, String bucketName, String keyName)
+      throws IOException {
+    final OpenKeySession openKey = openAppendSession(volumeName, bucketName, keyName);
+    final ReplicationConfig replicationConfig = openKey.getKeyInfo().getReplicationConfig();
+    final ByteBufferStreamOutput out;
+    if (replicationConfig.getReplicationType() == HddsProtos.ReplicationType.RATIS) {
+      // ponytail: FileSystem.append does not select this stream when ozone.fs.datastream.enabled is set. Lease recovery
+      // takes the length of an open block from a datanode, which can hold up to 1 MB of that length in memory only
+      // (KeyValueStreamDataChannel). Select it as create does once datanodes write the tail of the stream on sync.
+      out = wrapAppendStream(openKey,
+          () -> newKeyOutputStreamBuilder().setHandler(openKey).setReplicationConfig(replicationConfig).build(),
+          (keyOutputStream, secureOut) -> {
+            appendLeaseRenewer.register(keyOutputStream);
+            return secureOut != null ? secureOut : keyOutputStream;
+          });
+    } else {
+      out = createAppendOutputStream(openKey);
+    }
+    return new OzoneDataStreamOutput(out, out);
+  }
+
+  /** Opens an append session in OM. Its streams hold only blocks allocated by the session, see the callers. */
+  private OpenKeySession openAppendSession(String volumeName, String bucketName, String keyName) throws IOException {
     if (omVersion.compareTo(OzoneManagerVersion.APPEND) < 0) {
       throw new UnsupportedOperationException("Append API requires OM version "
           + OzoneManagerVersion.APPEND + " or later. Current OM version "
@@ -2547,30 +2576,53 @@ public class RpcClient implements ClientProtocol {
         .setKeyName(keyName)
         .build();
     final OpenKeySession openKey = ozoneManagerClient.appendFile(keyArgs);
-    final OmKeyInfo keyInfo = openKey.getKeyInfo();
-    if (keyInfo.getAppendSession() == null) {
+    if (openKey.getKeyInfo().getAppendSession() == null) {
       throw new IOException("OzoneManager did not return an append session for " + keyName);
     }
+    return openKey;
+  }
+
+  private OzoneOutputStream createAppendOutputStream(OpenKeySession openKey) throws IOException {
     // The stream is built from the returned key info (the file's own replication config and encryption info), and
     // holds only blocks allocated by this session: no addPreallocateBlocks, the prefix blocks are never written to.
-    // ponytail: append always writes through KeyOutputStream, also when RATIS streaming is enabled;
-    // add a KeyDataStreamOutput variant if streaming append is needed.
-    final KeyOutputStream keyOutputStream = createKeyOutputStream(openKey).build();
+    return wrapAppendStream(openKey, () -> createKeyOutputStream(openKey).build(), (keyOutputStream, out) -> {
+      appendLeaseRenewer.register(keyOutputStream);
+      return out != null ? out : new OzoneOutputStream(keyOutputStream, OzoneFSUtils.canEnableHsync(conf, true));
+    });
+  }
+
+  /**
+   * Builds the key stream of an append session and adds the encryption wrapper to it.
+   * @param result gets the key stream and the encrypting stream, null for a file that is not encrypted
+   */
+  private <S extends OutputStream, T> T wrapAppendStream(OpenKeySession openKey,
+      CheckedSupplier<S, IOException> keyStream, BiFunction<S, OzoneOutputStream, T> result) throws IOException {
+    final OmKeyInfo keyInfo = openKey.getKeyInfo();
+    S keyOutputStream = null;
     try {
+      keyOutputStream = keyStream.get();
       if (keyInfo.getFileEncryptionInfo() == null
           && Boolean.parseBoolean(keyInfo.getMetadata().get(OzoneConsts.GDPR_FLAG))) {
         // The GDPR cipher stream cannot resume at an offset, so appending would produce an unreadable file.
-        throw new IOException("Append is not supported for GDPR encrypted file " + keyName);
+        throw new IOException("Append is not supported for GDPR encrypted file " + keyInfo.getKeyName());
       }
-      final OzoneOutputStream out = createSecureOutputStream(openKey, keyOutputStream, keyOutputStream);
-      appendLeaseRenewer.register(keyOutputStream);
-      return out != null ? out : new OzoneOutputStream(keyOutputStream, OzoneFSUtils.canEnableHsync(conf, true));
+      // No Syncable: only the GDPR wrapper takes one, and that file is rejected above.
+      return result.apply(keyOutputStream, createSecureOutputStream(openKey, keyOutputStream, null));
     } catch (IOException | RuntimeException e) {
       // OM admitted the session but the caller gets no stream to close: end the session with a zero byte close
       // instead of leaving the file reserved until lease recovery.
       try {
-        keyOutputStream.close();
-      } catch (IOException closeException) {
+        if (keyOutputStream != null) {
+          keyOutputStream.close();
+        } else {
+          // The stream was not built: the same commit, without a stream.
+          ozoneManagerClient.commitKey(new OmKeyArgs.Builder().setVolumeName(keyInfo.getVolumeName())
+              .setBucketName(keyInfo.getBucketName()).setKeyName(keyInfo.getKeyName())
+              .setReplicationConfig(keyInfo.getReplicationConfig())
+              .setDataSize(keyInfo.getAppendSession().getPrefixLength())
+              .setLocationInfoList(Collections.emptyList()).build(), openKey.getId());
+        }
+      } catch (IOException | RuntimeException closeException) {
         e.addSuppressed(closeException);
       }
       throw e;

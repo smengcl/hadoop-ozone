@@ -65,6 +65,7 @@ public class BlockDataStreamOutputEntryPool implements KeyMetadataAware {
   private final ExcludeList excludeList;
   private List<StreamBuffer> bufferList;
   private ContainerBlockID lastUpdatedBlockId = new ContainerBlockID(-1, -1);
+  private final AppendSessionState appendState;
 
   @SuppressWarnings({"parameternumber", "squid:S00107"})
   public BlockDataStreamOutputEntryPool(
@@ -88,6 +89,7 @@ public class BlockDataStreamOutputEntryPool implements KeyMetadataAware {
         .setMultipartUploadPartNumber(partNumber)
         .setSortDatanodesInPipeline(true);
     this.openID = openID;
+    this.appendState = new AppendSessionState(info, openID);
     this.excludeList = createExcludeList();
     this.bufferList = new ArrayList<>();
   }
@@ -131,10 +133,19 @@ public class BlockDataStreamOutputEntryPool implements KeyMetadataAware {
   }
 
   public List<OmKeyLocationInfo> getLocationInfoList()  {
+    return getLocationInfoList(false);
+  }
+
+  private List<OmKeyLocationInfo> getLocationInfoList(boolean closedOnly) {
     List<OmKeyLocationInfo> locationInfoList = new ArrayList<>();
     for (BlockDataStreamOutputEntry streamEntry : streamEntries) {
       long length = streamEntry.getCurrentPosition();
 
+      if (closedOnly && length != 0 && !streamEntry.isClosedCleanly()) {
+        // The open block, or a block that failed: a datanode may still hold its tail in memory only. OM takes a
+        // publication as a prefix of the block list, so the blocks after it wait for the commit as well.
+        break;
+      }
       // Commit only those blocks to OzoneManager which are not empty
       if (length != 0) {
         OmKeyLocationInfo info =
@@ -157,6 +168,7 @@ public class BlockDataStreamOutputEntryPool implements KeyMetadataAware {
   void hsyncKey(long offset) throws IOException {
     if (keyArgs != null) {
       // in test, this could be null
+      appendState.checkLease();
       keyArgs.setDataSize(offset);
       keyArgs.setLocationInfoList(getLocationInfoList());
       // When the key is multipart upload part file upload, we should not
@@ -164,6 +176,24 @@ public class BlockDataStreamOutputEntryPool implements KeyMetadataAware {
       // partial key of a large file.
       if (keyArgs.getIsMultipartKey()) {
         throw new IOException("Hsync is unsupported for multipart keys.");
+      } else if (appendState.isAppend()) {
+        // ponytail: an hsync of a streaming append publishes closed blocks only. A datanode keeps the tail of an open
+        // stream (up to BlockDataStreamOutput.PUT_BLOCK_REQUEST_LENGTH_MAX) in memory until the stream is closed, so
+        // those bytes can be neither read nor recovered yet. Publish every block once datanodes write the tail on sync.
+        // Sent also when no block was closed since the last hsync: OM accepts the same publication again and rejects
+        // the one of a session that was recovered or deleted, which this stream would not notice otherwise.
+        for (BlockDataStreamOutputEntry entry : streamEntries.subList(0, Math.max(0, streamEntries.size() - 1))) {
+          if (entry.getCurrentPosition() != 0 && !entry.isClosedCleanly()) {
+            // Answering with success would promise durability that only close() can give from here on.
+            throw new IOException("Cannot hsync the data after block " + entry.getBlockID()
+                + ", which failed before its datanodes closed it. Only close() publishes that data.");
+          }
+        }
+        final List<OmKeyLocationInfo> closed = getLocationInfoList(true);
+        keyArgs.setLocationInfoList(closed);
+        keyArgs.setDataSize(
+            appendState.getPrefixLength() + closed.stream().mapToLong(OmKeyLocationInfo::getLength).sum());
+        omClient.hsyncKey(buildKeyArgs(), openID);
       } else {
         if (keyArgs.getLocationInfoList().isEmpty()) {
           omClient.hsyncKey(buildKeyArgs(), openID);
@@ -247,7 +277,8 @@ public class BlockDataStreamOutputEntryPool implements KeyMetadataAware {
       // in test, this could be null
       long length = getKeyLength();
       Preconditions.checkArgument(offset == length);
-      keyArgs.setDataSize(length);
+      appendState.checkLease();
+      keyArgs.setDataSize(appendState.getPrefixLength() + length);
       keyArgs.setLocationInfoList(getLocationInfoList());
       // When the key is multipart upload part file upload, we should not
       // commit the key, as this is not an actual key, this is a just a
@@ -273,6 +304,7 @@ public class BlockDataStreamOutputEntryPool implements KeyMetadataAware {
   }
 
   BlockDataStreamOutputEntry allocateBlockIfNeeded() throws IOException {
+    appendState.checkLease();
     BlockDataStreamOutputEntry streamEntry = getCurrentStreamEntry();
     if (streamEntry != null && streamEntry.isClosed()) {
       // a stream entry gets closed either by :
@@ -300,6 +332,11 @@ public class BlockDataStreamOutputEntryPool implements KeyMetadataAware {
     if (streamEntries != null) {
       streamEntries.clear();
     }
+    appendState.cleanup();
+  }
+
+  AppendSessionState getAppendState() {
+    return appendState;
   }
 
   public OmMultipartCommitUploadPartInfo getCommitUploadPartInfo() {

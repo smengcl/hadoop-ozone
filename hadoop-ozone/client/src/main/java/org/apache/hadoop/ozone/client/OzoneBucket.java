@@ -1189,6 +1189,15 @@ public class OzoneBucket extends WithMetadata {
     return proxy.appendFile(volumeName, name, keyName);
   }
 
+  /**
+   * Same as {@link #appendFile(String)}, writing a RATIS file through RATIS streaming.
+   * {@link OzoneDataStreamOutput#hsync()} of the returned stream only flushes, as for {@link #createStreamFile}. The
+   * hsync that publishes to OM is the one of {@link OzoneDataStreamOutput#getByteBufStreamOutput()}.
+   */
+  public OzoneDataStreamOutput appendStreamFile(String keyName) throws IOException {
+    return proxy.appendStreamFile(volumeName, name, keyName);
+  }
+
   public OzoneDataStreamOutput createStreamFile(String keyName, long size,
       ReplicationConfig replicationConfig, boolean overWrite,
       boolean recursive) throws IOException {

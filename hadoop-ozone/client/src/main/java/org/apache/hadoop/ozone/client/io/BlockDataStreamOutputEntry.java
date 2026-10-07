@@ -50,6 +50,7 @@ public final class BlockDataStreamOutputEntry
   private final long length;
   // the current position of this stream 0 <= currentPosition < length
   private long currentPosition;
+  private boolean closedCleanly;
   private final Token<OzoneBlockTokenIdentifier> token;
   private List<StreamBuffer> bufferList;
 
@@ -130,7 +131,9 @@ public final class BlockDataStreamOutputEntry
   @Override
   public void close() throws IOException {
     if (this.byteBufferStreamOutput != null) {
+      final boolean open = !isClosed();
       this.byteBufferStreamOutput.close();
+      closedCleanly |= open;
       // after closing the chunkOutPutStream, blockId would have been
       // reconstructed with updated bcsId
       this.blockID =
@@ -143,6 +146,14 @@ public final class BlockDataStreamOutputEntry
       return  ((BlockDataStreamOutput) byteBufferStreamOutput).isClosed();
     }
     return false;
+  }
+
+  /**
+   * @return true if the datanodes closed the stream of this block with all of its data. isClosed() is also true for
+   * a block that was cleaned up after a failure.
+   */
+  boolean isClosedCleanly() {
+    return closedCleanly;
   }
 
   Collection<DatanodeDetails> getFailedServers() {

@@ -45,7 +45,6 @@ import org.apache.hadoop.ozone.om.helpers.OmKeyLocationInfo;
 import org.apache.hadoop.ozone.om.helpers.OmKeyLocationInfoGroup;
 import org.apache.hadoop.ozone.om.helpers.OmMultipartCommitUploadPartInfo;
 import org.apache.hadoop.ozone.om.protocol.OzoneManagerProtocol;
-import org.apache.hadoop.ozone.protocol.proto.OzoneManagerProtocolProtos.AppendSessionKey;
 import org.apache.hadoop.ozone.util.MetricUtil;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -92,14 +91,7 @@ public class BlockOutputStreamEntryPool implements KeyMetadataAware {
   private final Supplier<ExecutorService> executorServiceSupplier;
   // update blocks on OM
   private ContainerBlockID lastUpdatedBlockId = new ContainerBlockID(-1, -1);
-  // Append session state. The entries of an append stream are the suffix only: OM keeps the prefix blocks and gets
-  // prefixLength + suffix bytes as dataSize. prefixLength is 0 for every other stream.
-  private final boolean append;
-  private final long prefixLength;
-  // Suffix bytes last published to OM by an append hsync.
-  private long publishedSuffixLength;
-  private volatile boolean appendLeaseLost;
-  private volatile Runnable cleanupHook = () -> { };
+  private final AppendSessionState appendState;
 
   public BlockOutputStreamEntryPool(KeyOutputStream.Builder b) {
     this.config = b.getClientConfig();
@@ -107,8 +99,6 @@ public class BlockOutputStreamEntryPool implements KeyMetadataAware {
     currentStreamIndex = 0;
     this.omClient = b.getOmClient();
     final OmKeyInfo info = b.getOpenHandler().getKeyInfo();
-    this.append = info.getAppendSession() != null;
-    this.prefixLength = append ? info.getAppendSession().getPrefixLength() : 0;
     this.keyArgs = new OmKeyArgs.Builder().setVolumeName(info.getVolumeName())
         .setBucketName(info.getBucketName()).setKeyName(info.getKeyName())
         .setReplicationConfig(b.getReplicationConfig())
@@ -117,6 +107,7 @@ public class BlockOutputStreamEntryPool implements KeyMetadataAware {
         .setMultipartUploadID(b.getMultipartUploadID())
         .setMultipartUploadPartNumber(b.getMultipartNumber());
     this.openID = b.getOpenHandler().getId();
+    this.appendState = new AppendSessionState(info, openID);
     this.excludeList = createExcludeList();
 
     this.streamBufferArgs = b.getStreamBufferArgs();
@@ -333,8 +324,8 @@ public class BlockOutputStreamEntryPool implements KeyMetadataAware {
       long length = getKeyLength();
       Preconditions.checkArgument(offset == length,
           "Expected offset: " + offset + " expected len: " + length);
-      checkAppendLease();
-      keyArgs.setDataSize(prefixLength + length);
+      appendState.checkLease();
+      keyArgs.setDataSize(appendState.getPrefixLength() + length);
       keyArgs.setLocationInfoList(getLocationInfoList());
       // When the key is multipart upload part file upload, we should not
       // commit the key, as this is not an actual key, this is a just a
@@ -354,7 +345,7 @@ public class BlockOutputStreamEntryPool implements KeyMetadataAware {
   void hsyncKey(long offset) throws IOException {
     if (keyArgs != null) {
       // in test, this could be null
-      checkAppendLease();
+      appendState.checkLease();
       keyArgs.setDataSize(offset);
       keyArgs.setLocationInfoList(getLocationInfoList());
       // When the key is multipart upload part file upload, we should not
@@ -362,16 +353,9 @@ public class BlockOutputStreamEntryPool implements KeyMetadataAware {
       // partial key of a large file.
       if (keyArgs.getIsMultipartKey()) {
         throw new IOException("Hsync is unsupported for multipart keys.");
-      } else if (append) {
-        // Readers of an appended file only see what OM published, so every advancing hsync goes to OM, also within
-        // the same block. OM checks dataSize against the submitted block lengths, so both come from the same list.
-        final long suffixLength = keyArgs.getLocationInfoList().stream().mapToLong(OmKeyLocationInfo::getLength).sum();
-        if (suffixLength != publishedSuffixLength) {
-          keyArgs.setDataSize(prefixLength + suffixLength);
-          MetricUtil.captureLatencyNs(clientMetrics::addOMHsyncLatency,
-              () -> omClient.hsyncKey(buildKeyArgs(), openID));
-          publishedSuffixLength = suffixLength;
-        }
+      } else if (appendState.isAppend()) {
+        appendState.hsync(keyArgs, () -> MetricUtil.captureLatencyNs(clientMetrics::addOMHsyncLatency,
+            () -> omClient.hsyncKey(buildKeyArgs(), openID)));
       } else {
         if (keyArgs.getLocationInfoList().isEmpty()) {
           MetricUtil.captureLatencyNs(clientMetrics::addOMHsyncLatency,
@@ -406,7 +390,7 @@ public class BlockOutputStreamEntryPool implements KeyMetadataAware {
    * @throws IOException if the block allocation failed.
    */
   synchronized BlockOutputStreamEntry allocateBlockIfNeeded(boolean forRetry) throws IOException {
-    checkAppendLease();
+    appendState.checkLease();
     BlockOutputStreamEntry streamEntry = getCurrentStreamEntry();
     if (streamEntry != null && streamEntry.isClosed()) {
       // a stream entry gets closed either by :
@@ -442,35 +426,11 @@ public class BlockOutputStreamEntryPool implements KeyMetadataAware {
     if (streamEntries != null) {
       streamEntries.clear();
     }
-    cleanupHook.run();
+    appendState.cleanup();
   }
 
-  /** @return the file length when this append session was admitted, 0 if this is not an append stream. */
-  long getPrefixLength() {
-    return prefixLength;
-  }
-
-  AppendSessionKey getAppendSessionKey() {
-    final OmKeyArgs args = keyArgs.build();
-    return AppendSessionKey.newBuilder().setVolumeName(args.getVolumeName())
-        .setBucketName(args.getBucketName()).setSessionId(openID).build();
-  }
-
-  /** The hook runs when the stream is closed or has failed. */
-  void setCleanupHook(Runnable hook) {
-    this.cleanupHook = hook;
-  }
-
-  /** OM no longer has this stream's append session as active: the next write, hsync or close fails. */
-  void markAppendLeaseLost() {
-    appendLeaseLost = true;
-  }
-
-  private void checkAppendLease() throws IOException {
-    if (appendLeaseLost) {
-      throw new IOException("The append lease was lost for key " + getKeyName() + " (session " + openID
-          + "): its lease expired, or the file was recovered or deleted while this stream was open.");
-    }
+  AppendSessionState getAppendState() {
+    return appendState;
   }
 
   public OmMultipartCommitUploadPartInfo getCommitUploadPartInfo() {

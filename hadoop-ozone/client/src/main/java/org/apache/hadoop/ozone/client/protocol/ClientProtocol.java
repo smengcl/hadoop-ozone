@@ -1225,6 +1225,20 @@ public interface ClientProtocol {
    */
   OzoneOutputStream appendFile(String volumeName, String bucketName, String keyName) throws IOException;
 
+  /**
+   * Same as {@link #appendFile(String, String, String)}, writing a RATIS file through RATIS streaming. A file of any
+   * other replication type gets the stream of {@link #appendFile(String, String, String)}.
+   * <p>
+   * A datanode keeps the tail of an open stream in memory until the stream is closed. So an hsync of the streaming
+   * stream publishes closed blocks only, and the last block of a file recovered from a writer that failed with a
+   * block open may not be readable to its end. The filesystem append does not use this method.
+   * <p>
+   * As for the stream of createStreamFile, {@link OzoneDataStreamOutput#hsync()} of the returned stream only flushes
+   * and publishes nothing to OM. That is also what it does for an EC file, where an hsync of the filesystem append
+   * throws. The hsync that publishes is the one of {@link OzoneDataStreamOutput#getByteBufStreamOutput()}.
+   */
+  OzoneDataStreamOutput appendStreamFile(String volumeName, String bucketName, String keyName) throws IOException;
+
   @SuppressWarnings("checkstyle:parameternumber")
   OzoneDataStreamOutput createStreamFile(String volumeName, String bucketName,
       String keyName, long size, ReplicationConfig replicationConfig,

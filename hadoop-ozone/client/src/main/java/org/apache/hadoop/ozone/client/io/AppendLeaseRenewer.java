@@ -44,7 +44,7 @@ public class AppendLeaseRenewer implements Closeable {
 
   private final OzoneManagerProtocol omClient;
   private final Duration interval;
-  private final Map<AppendSessionKey, BlockOutputStreamEntryPool> sessions = new ConcurrentHashMap<>();
+  private final Map<AppendSessionKey, AppendSessionState> sessions = new ConcurrentHashMap<>();
   private Scheduler scheduler;
   private boolean closed;
 
@@ -55,10 +55,18 @@ public class AppendLeaseRenewer implements Closeable {
 
   /** Renews the session of the given append stream until the stream is closed or has failed. */
   public void register(KeyOutputStream stream) {
-    final BlockOutputStreamEntryPool pool = stream.getBlockOutputStreamEntryPool();
-    final AppendSessionKey session = pool.getAppendSessionKey();
-    sessions.put(session, pool);
-    pool.setCleanupHook(() -> sessions.remove(session));
+    register(stream.getBlockOutputStreamEntryPool().getAppendState());
+  }
+
+  /** Renews the session of the given RATIS streaming append stream until the stream is closed or has failed. */
+  public void register(KeyDataStreamOutput stream) {
+    register(stream.getAppendState());
+  }
+
+  private void register(AppendSessionState state) {
+    final AppendSessionKey session = state.getSessionKey();
+    sessions.put(session, state);
+    state.setCleanupHook(() -> sessions.remove(session));
     start();
   }
 
@@ -77,10 +85,10 @@ public class AppendLeaseRenewer implements Closeable {
         for (int i = 0; i < batch.size() && i < renewed.size(); i++) {
           if (!renewed.get(i)) {
             // null if the stream was closed while the request was in flight
-            final BlockOutputStreamEntryPool pool = sessions.remove(batch.get(i));
-            if (pool != null) {
-              LOG.warn("Append lease of key {} (session {}) was lost", pool.getKeyName(), batch.get(i).getSessionId());
-              pool.markAppendLeaseLost();
+            final AppendSessionState state = sessions.remove(batch.get(i));
+            if (state != null) {
+              LOG.warn("Append lease of key {} (session {}) was lost", state.getKeyName(), batch.get(i).getSessionId());
+              state.markLeaseLost();
             }
           }
         }

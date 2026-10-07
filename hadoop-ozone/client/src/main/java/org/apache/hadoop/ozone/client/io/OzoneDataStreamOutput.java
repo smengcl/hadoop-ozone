@@ -119,6 +119,13 @@ public class OzoneDataStreamOutput extends ByteBufferOutputStream
     throw new IllegalStateException("OutputStream is not a KeyDataStreamOutput: " + byteBufferStreamOutput.getClass());
   }
 
+  /** @return the file length when this stream was opened for append, 0 for a newly created file. */
+  public long getAppendPrefixLength() {
+    final KeyDataStreamOutput keyDataStreamOutput = getKeyDataStreamOutput();
+    return keyDataStreamOutput != null ? keyDataStreamOutput.getAppendPrefixLength()
+        : ((OzoneOutputStream) byteBufferStreamOutput).getKeyOutputStream().getAppendPrefixLength();
+  }
+
   public KeyDataStreamOutput getKeyDataStreamOutput() {
     if (byteBufferStreamOutput instanceof KeyDataStreamOutput) {
       return ((KeyDataStreamOutput) byteBufferStreamOutput);

@@ -693,6 +693,12 @@ public class ClientProtocolStub implements ClientProtocol {
   }
 
   @Override
+  public OzoneDataStreamOutput appendStreamFile(String volumeName, String bucketName, String keyName)
+      throws IOException {
+    return null;
+  }
+
+  @Override
   public List<OzoneFileStatus> listStatus(String volumeName, String bucketName,
                                           String keyName, boolean recursive,
                                           String startKey, long numEntries)
