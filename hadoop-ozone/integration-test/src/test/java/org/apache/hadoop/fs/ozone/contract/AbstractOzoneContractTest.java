@@ -20,10 +20,12 @@ package org.apache.hadoop.fs.ozone.contract;
 import static org.apache.hadoop.fs.contract.ContractTestUtils.cleanup;
 import static org.apache.hadoop.ozone.OzoneConsts.OZONE_OFS_URI_SCHEME;
 import static org.apache.hadoop.ozone.om.OMConfigKeys.OZONE_DEFAULT_BUCKET_LAYOUT;
+import static org.apache.hadoop.ozone.om.OMConfigKeys.OZONE_OM_APPEND_ENABLED;
 import static org.assertj.core.api.Assumptions.assumeThat;
 
 import java.io.IOException;
 import org.apache.hadoop.conf.Configuration;
+import org.apache.hadoop.fs.contract.AbstractContractAppendTest;
 import org.apache.hadoop.fs.contract.AbstractContractCreateTest;
 import org.apache.hadoop.fs.contract.AbstractContractDeleteTest;
 import org.apache.hadoop.fs.contract.AbstractContractGetFileStatusTest;
@@ -68,6 +70,7 @@ abstract class AbstractOzoneContractTest extends ClusterForTests<MiniOzoneCluste
   protected OzoneConfiguration createOzoneConfig() {
     OzoneConfiguration conf = createBaseConfiguration();
     conf.addResource(CONTRACT_XML);
+    conf.setBoolean(OZONE_OM_APPEND_ENABLED, true);
     return conf;
   }
 
@@ -76,6 +79,19 @@ abstract class AbstractOzoneContractTest extends ClusterForTests<MiniOzoneCluste
     return MiniOzoneCluster.newBuilder(createOzoneConfig())
         .setNumDatanodes(5)
         .build();
+  }
+
+  @Nested
+  class TestContractAppend extends AbstractContractAppendTest {
+    @Override
+    protected Configuration createConfiguration() {
+      return createOzoneConfig();
+    }
+
+    @Override
+    protected AbstractFSContract createContract(Configuration conf) {
+      return createOzoneContract(conf);
+    }
   }
 
   @Nested

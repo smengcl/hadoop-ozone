@@ -17,6 +17,8 @@
 
 package org.apache.hadoop.fs.ozone.contract;
 
+import static org.apache.hadoop.fs.contract.ContractOptions.FS_CONTRACT_KEY;
+import static org.apache.hadoop.fs.contract.ContractOptions.SUPPORTS_APPEND;
 import static org.apache.hadoop.ozone.om.OMConfigKeys.OZONE_DEFAULT_BUCKET_LAYOUT;
 import static org.apache.hadoop.ozone.om.helpers.BucketLayout.LEGACY;
 
@@ -33,6 +35,8 @@ class TestOzoneContractLegacy extends AbstractOzoneContractTest {
   protected OzoneConfiguration createOzoneConfig() {
     OzoneConfiguration conf = super.createOzoneConfig();
     conf.set(OZONE_DEFAULT_BUCKET_LAYOUT, LEGACY.name());
+    // Append is implemented for FSO buckets only.
+    conf.setBoolean(FS_CONTRACT_KEY + SUPPORTS_APPEND, false);
     return conf;
   }
 
