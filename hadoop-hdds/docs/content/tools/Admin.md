@@ -174,6 +174,22 @@ $ ozone admin om lof --service-id=om-service-test1 --length=3 --prefix=/volumelo
 Note in JSON output mode, field `contToken` won't show up at all in the result if there are no more entries after the batch (i.e. when `hasMore` is `false`).
 
 
+## Abort an open file
+
+The lease abort command removes one open file (key) whose writer is confirmed dead, so that the abandoned writer no longer blocks the path (for example, when an append is refused because of it).
+Only Ozone administrators can run it. Data the writer has not committed is discarded and cannot be recovered.
+
+Identify the open file by its current path, given as `/volume/bucket/key`, and the client ID shown by `ozone admin om list-open-files`. For FSO buckets, `keyName` in the `--json` output is the path at the time the file was opened; if a parent directory was renamed since, use the new path.
+The command asks for confirmation unless `--yes` is given.
+
+```bash
+$ ozone admin om lease abort --service-id=om-service-test1 --path=/volume-lof/buck1/key0 --client-id=111726338148007937
+```
+
+Works for all bucket types. Hsync'ed files (use `ozone admin om lease recover` instead), append sessions and overwrites that carry older key versions (versioning-enabled buckets) are refused. Multipart uploads are not affected; abort the upload itself instead.
+If the writer has committed or closed the file in the meantime, the command fails with `KEY_NOT_FOUND` and changes nothing.
+
+
 ## Snapshot Defragmentation Trigger
 
 The snapshot defrag command triggers the Snapshot Defragmentation Service to run immediately on a specific Ozone Manager node.

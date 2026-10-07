@@ -55,6 +55,7 @@ import org.apache.hadoop.ozone.om.request.bucket.acl.OMBucketSetAclRequest;
 import org.apache.hadoop.ozone.om.request.file.OMRecoverLeaseRequest;
 import org.apache.hadoop.ozone.om.request.key.OMDirectoriesPurgeRequestWithFSO;
 import org.apache.hadoop.ozone.om.request.key.OMKeyPurgeRequest;
+import org.apache.hadoop.ozone.om.request.key.OMOpenKeyAbortRequest;
 import org.apache.hadoop.ozone.om.request.key.OMOpenKeysDeleteRequest;
 import org.apache.hadoop.ozone.om.request.key.acl.OMKeyAddAclRequest;
 import org.apache.hadoop.ozone.om.request.key.acl.OMKeyAddAclRequestWithFSO;
@@ -258,6 +259,9 @@ public final class OzoneManagerRatisUtils {
             omRequest.getDeleteOpenKeysRequest().getBucketLayout());
       }
       return new OMOpenKeysDeleteRequest(omRequest, bktLayout);
+    case AbortOpenKey:
+      return new OMOpenKeyAbortRequest(omRequest, getBucketLayout(ozoneManager.getMetadataManager(),
+          omRequest.getAbortOpenKeyRequest().getVolumeName(), omRequest.getAbortOpenKeyRequest().getBucketName()));
     case RecoverLease:
       volumeName = omRequest.getRecoverLeaseRequest().getVolumeName();
       bucketName = omRequest.getRecoverLeaseRequest().getBucketName();

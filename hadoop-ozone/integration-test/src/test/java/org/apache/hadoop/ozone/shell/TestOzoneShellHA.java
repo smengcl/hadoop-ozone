@@ -946,6 +946,44 @@ public class TestOzoneShellHA {
     }
   }
 
+  @Test
+  public void testAdminCmdLeaseAbort() throws Exception {
+    final String hostPrefix = OZONE_OFS_URI_SCHEME + "://" + omServiceId;
+    FileSystem fs = FileSystem.get(getClientConfForOFS(hostPrefix, cluster.getConf()));
+    final String pathToBucket = "/volume-lease-abort/buck1";
+    final String keyPath = pathToBucket + "/dir1/key1";
+    assertTrue(fs.mkdirs(new Path(hostPrefix + pathToBucket + "/dir1")));
+
+    FSDataOutputStream stream = fs.create(new Path(hostPrefix + keyPath));
+    try {
+      stream.write(1);
+      cluster.getOzoneManager().awaitDoubleBufferFlush();
+
+      String[] lofArgs = new String[] {"om", "lof", "--service-id", omServiceId, "-p", pathToBucket};
+      execute(ozoneAdminShell, lofArgs);
+      String clientId = Arrays.stream(getStdOut().split("\n"))
+          .filter(line -> line.endsWith("/key1"))
+          .findFirst().get().split("\t")[0];
+
+      execute(ozoneAdminShell, new String[] {"om", "lease", "abort", "--service-id", omServiceId,
+          "--path", keyPath, "--client-id", clientId, "--yes"});
+      assertThat(getStdOut()).contains("Aborted open key " + keyPath + " with client ID " + clientId);
+
+      cluster.getOzoneManager().awaitDoubleBufferFlush();
+      execute(ozoneAdminShell, lofArgs);
+      assertThat(getStdOut()).doesNotContain("/key1");
+
+      // The aborted writer is fenced, and there is nothing left to abort.
+      assertThrows(IOException.class, stream::close);
+      assertFalse(fs.exists(new Path(hostPrefix + keyPath)));
+      assertThat(assertThrows(ExecutionException.class, () -> execute(ozoneAdminShell, new String[] {"om", "lease",
+          "abort", "--service-id", omServiceId, "--path", keyPath, "--client-id", clientId, "--yes"})))
+          .hasStackTraceContaining("KEY_NOT_FOUND");
+    } finally {
+      IOUtils.closeQuietly(stream);
+    }
+  }
+
   /**
    * Return stdout as a String, then clears existing output.
    */

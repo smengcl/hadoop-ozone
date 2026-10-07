@@ -26,7 +26,8 @@ import picocli.CommandLine;
     name = "lease",
     description = "Command for all lease related queries.",
     subcommands = {
-        LeaseRecoverer.class
+        LeaseRecoverer.class,
+        OpenKeyAborter.class
     }
 )
 public class LeaseSubCommand {
