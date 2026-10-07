@@ -232,6 +232,28 @@ public interface OMMetadataManager extends DBStoreHAManager, AutoCloseable {
   }
 
   /**
+   * Append session index: looks up the current open table DB key of a live (ACTIVE or RECOVERING) append session.
+   * The index is derived from the open key tables, lives only in memory, and follows the session across renames, so
+   * session requests must resolve their open record through it instead of through the path the writer opened.
+   * Volume and bucket are the resolved (link target) names, as stored in the open record.
+   *
+   * @return the open table DB key, or null if the bucket has no such live append session
+   */
+  String getAppendSessionOpenKey(String volume, String bucket, long sessionId) throws IOException;
+
+  /**
+   * Records or replaces the open table DB key of an append session. Call it from validateAndUpdateCache, together
+   * with the open table cache update, on admission and rename.
+   */
+  void putAppendSession(String volume, String bucket, long sessionId, String dbOpenKey) throws IOException;
+
+  /**
+   * Removes an append session from the index. Call it from validateAndUpdateCache when the session is closed,
+   * recovered or invalidated.
+   */
+  void removeAppendSession(String volume, String bucket, long sessionId) throws IOException;
+
+  /**
    * Given a volume, check if it is empty, i.e there are no buckets inside it.
    *
    * @param volume - Volume name

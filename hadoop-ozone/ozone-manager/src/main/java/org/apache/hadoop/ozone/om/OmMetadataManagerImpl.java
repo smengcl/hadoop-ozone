@@ -102,6 +102,7 @@ import org.apache.hadoop.ozone.om.exceptions.OMException.ResultCodes;
 import org.apache.hadoop.ozone.om.helpers.BucketLayout;
 import org.apache.hadoop.ozone.om.helpers.ListKeysResult;
 import org.apache.hadoop.ozone.om.helpers.ListOpenFilesResult;
+import org.apache.hadoop.ozone.om.helpers.OmAppendSession;
 import org.apache.hadoop.ozone.om.helpers.OmBucketInfo;
 import org.apache.hadoop.ozone.om.helpers.OmDBAccessIdInfo;
 import org.apache.hadoop.ozone.om.helpers.OmDBTenantState;
@@ -134,6 +135,7 @@ import org.apache.hadoop.ozone.om.protocolPB.OzoneManagerProtocolClientSideTrans
 import org.apache.hadoop.ozone.om.request.file.OMFileRequest;
 import org.apache.hadoop.ozone.om.request.util.OMMultipartUploadUtils;
 import org.apache.hadoop.ozone.om.snapshot.SnapshotUtils;
+import org.apache.hadoop.ozone.protocol.proto.OzoneManagerProtocolProtos.AppendSessionPhase;
 import org.apache.hadoop.ozone.protocol.proto.OzoneManagerProtocolProtos.ExpiredMultipartUploadInfo;
 import org.apache.hadoop.ozone.protocol.proto.OzoneManagerProtocolProtos.ExpiredMultipartUploadsBucket;
 import org.apache.hadoop.ozone.protocol.proto.OzoneManagerProtocolProtos.KeyArgs;
@@ -208,6 +210,8 @@ public class OmMetadataManagerImpl implements OMMetadataManager,
   private final Map<String, TableCacheMetrics> tableCacheMetricsMap =
       new HashMap<>();
   private SnapshotChainManager snapshotChainManager;
+  // Append session index: volume/bucket/sessionId -> open table DB key. Null until first use and after stop().
+  private Map<String, String> appendSessionIndex;
   private final OMPerformanceMetrics perfMetrics;
   private final S3Batcher s3Batcher = new S3SecretBatcher();
 
@@ -567,6 +571,59 @@ public class OmMetadataManagerImpl implements OMMetadataManager,
     tableCacheMetricsMap.values().forEach(TableCacheMetrics::unregister);
     // OzoneManagerLock cleanup
     lock.cleanup();
+    synchronized (this) {
+      // The DB may be replaced (checkpoint installation) before the next start, so rebuild on next use.
+      appendSessionIndex = null;
+    }
+  }
+
+  @Override
+  public synchronized String getAppendSessionOpenKey(String volume, String bucket, long sessionId) throws IOException {
+    return appendSessionIndex().get(appendSessionIndexKey(volume, bucket, sessionId));
+  }
+
+  @Override
+  public synchronized void putAppendSession(String volume, String bucket, long sessionId, String dbOpenKey)
+      throws IOException {
+    appendSessionIndex().put(appendSessionIndexKey(volume, bucket, sessionId), dbOpenKey);
+  }
+
+  @Override
+  public synchronized void removeAppendSession(String volume, String bucket, long sessionId) throws IOException {
+    appendSessionIndex().remove(appendSessionIndexKey(volume, bucket, sessionId));
+  }
+
+  private static String appendSessionIndexKey(String volume, String bucket, long sessionId) {
+    return volume + OM_KEY_PREFIX + bucket + OM_KEY_PREFIX + sessionId;
+  }
+
+  /**
+   * Builds the index from the open key tables on first use. Every transaction that creates, moves or removes an
+   * append session goes through the methods above, so a session applied but not yet flushed to the DB is added by
+   * its own transaction right after this scan, and nothing is missed or applied twice.
+   */
+  private Map<String, String> appendSessionIndex() throws IOException {
+    assert Thread.holdsLock(this);
+    if (appendSessionIndex == null) {
+      // ponytail: full scan of both open tables on first use after start. Persist or checkpoint the index if the
+      // open key backlog makes this too slow.
+      Map<String, String> index = new HashMap<>();
+      for (BucketLayout layout : new BucketLayout[] {BucketLayout.FILE_SYSTEM_OPTIMIZED, BucketLayout.LEGACY}) {
+        try (TableIterator<String, ? extends KeyValue<String, OmKeyInfo>> it = getOpenKeyTable(layout).iterator()) {
+          while (it.hasNext()) {
+            KeyValue<String, OmKeyInfo> kv = it.next();
+            OmKeyInfo openKey = kv.getValue();
+            OmAppendSession session = openKey.getAppendSession();
+            if (session != null && session.getPhase() != AppendSessionPhase.APPEND_INVALIDATED) {
+              index.put(appendSessionIndexKey(openKey.getVolumeName(), openKey.getBucketName(),
+                  OMMetadataManager.getClientIDFromOpenKeyDBKey(kv.getKey())), kv.getKey());
+            }
+          }
+        }
+      }
+      appendSessionIndex = index;
+    }
+    return appendSessionIndex;
   }
 
   /**

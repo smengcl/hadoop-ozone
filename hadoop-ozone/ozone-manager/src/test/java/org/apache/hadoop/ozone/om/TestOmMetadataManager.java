@@ -92,6 +92,7 @@ import org.apache.hadoop.ozone.om.exceptions.OMException;
 import org.apache.hadoop.ozone.om.exceptions.OMException.ResultCodes;
 import org.apache.hadoop.ozone.om.helpers.BucketLayout;
 import org.apache.hadoop.ozone.om.helpers.ListOpenFilesResult;
+import org.apache.hadoop.ozone.om.helpers.OmAppendSession;
 import org.apache.hadoop.ozone.om.helpers.OmBucketInfo;
 import org.apache.hadoop.ozone.om.helpers.OmKeyInfo;
 import org.apache.hadoop.ozone.om.helpers.OmKeyLocationInfo;
@@ -105,6 +106,7 @@ import org.apache.hadoop.ozone.om.helpers.OpenKeySession;
 import org.apache.hadoop.ozone.om.helpers.SnapshotInfo;
 import org.apache.hadoop.ozone.om.request.OMRequestTestUtils;
 import org.apache.hadoop.ozone.om.request.util.OMMultipartUploadUtils;
+import org.apache.hadoop.ozone.protocol.proto.OzoneManagerProtocolProtos.AppendSessionPhase;
 import org.apache.hadoop.ozone.protocol.proto.OzoneManagerProtocolProtos.ExpiredMultipartUploadInfo;
 import org.apache.hadoop.ozone.protocol.proto.OzoneManagerProtocolProtos.ExpiredMultipartUploadsBucket;
 import org.apache.hadoop.ozone.protocol.proto.OzoneManagerProtocolProtos.OpenKey;
@@ -1293,6 +1295,31 @@ public class TestOmMetadataManager {
         .flatMap(List::stream)
         .map(ExpiredMultipartUploadInfo::getName)
         .collect(Collectors.toList());
+  }
+
+  @Test
+  public void testAppendSessionIndex() throws Exception {
+    BucketLayout layout = BucketLayout.FILE_SYSTEM_OPTIMIZED;
+    OmKeyInfo.Builder openKey = OMRequestTestUtils.createOmKeyInfo("vol", "bucket", "dir/file",
+        RatisReplicationConfig.getInstance(ONE));
+    // Rows that exist in the DB before the index is first used: one live and one invalidated append session and
+    // one ordinary open key.
+    omMetadataManager.getOpenKeyTable(layout).put("/1/2/3/file/100",
+        openKey.setAppendSession(OmAppendSession.newActive(10, 1, 1000)).build());
+    omMetadataManager.getOpenKeyTable(layout).put("/1/2/3/file/101",
+        openKey.setAppendSession(new OmAppendSession(AppendSessionPhase.APPEND_INVALIDATED, 10, 1, 1, 1)).build());
+    omMetadataManager.getOpenKeyTable(layout).put("/1/2/3/file/102", openKey.setAppendSession(null).build());
+
+    assertEquals("/1/2/3/file/100", omMetadataManager.getAppendSessionOpenKey("vol", "bucket", 100));
+    assertNull(omMetadataManager.getAppendSessionOpenKey("vol", "bucket", 101));
+    assertNull(omMetadataManager.getAppendSessionOpenKey("vol", "bucket", 102));
+    assertNull(omMetadataManager.getAppendSessionOpenKey("vol", "otherbucket", 100));
+
+    // Rename replaces the target, close removes it.
+    omMetadataManager.putAppendSession("vol", "bucket", 100, "/1/2/4/renamed/100");
+    assertEquals("/1/2/4/renamed/100", omMetadataManager.getAppendSessionOpenKey("vol", "bucket", 100));
+    omMetadataManager.removeAppendSession("vol", "bucket", 100);
+    assertNull(omMetadataManager.getAppendSessionOpenKey("vol", "bucket", 100));
   }
 
   private OmKeyInfo addKeysToOM(String volumeName, String bucketName,
