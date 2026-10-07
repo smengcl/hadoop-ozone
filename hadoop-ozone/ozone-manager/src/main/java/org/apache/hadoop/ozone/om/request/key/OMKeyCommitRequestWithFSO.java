@@ -470,6 +470,7 @@ public class OMKeyCommitRequestWithFSO extends OMKeyCommitRequest {
       throw new OMException("Append session " + sessionId + " of " + commitKeyArgs.getKeyName() + " is not active",
           APPEND_SESSION_NOT_FOUND);
     }
+    OmAppendUtil.checkReachable(omMetadataManager, openRecord);
     if (isRecovery && session.isActive()) {
       // The request carries the time, so every OM decides the same way.
       long softLimit = ozoneManager.getConfiguration().getTimeDuration(OZONE_OM_LEASE_SOFT_LIMIT,

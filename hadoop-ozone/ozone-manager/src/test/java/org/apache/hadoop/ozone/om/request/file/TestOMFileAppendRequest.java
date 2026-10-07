@@ -280,6 +280,24 @@ public class TestOMFileAppendRequest extends OMKeyRequestTests {
   }
 
   @Test
+  public void testSessionOfFileUnderDeletedDirectoryIsRejected() throws Exception {
+    addCommittedFile(1);
+    long sessionId = admit();
+    assertThat(allocate(sessionId).getOMResponse().getStatus()).isEqualTo(OK);
+
+    // A recursive delete removes only the top directory row. The session's rows wait for the directory cleanup.
+    long bucketId = omMetadataManager.getBucketId(volumeName, bucketName);
+    omMetadataManager.getDirectoryTable().addCacheEntry(new CacheKey<>(omMetadataManager.getOzonePathKey(
+        omMetadataManager.getVolumeId(volumeName), bucketId, bucketId, "c")), CacheValue.get(++txnId));
+
+    assertThat(allocate(sessionId).getOMResponse().getStatus()).isEqualTo(KEY_NOT_FOUND);
+    assertThat(hsync(sessionId, 2 * BLOCK_LENGTH, BLOCK_LENGTH).getOMResponse().getStatus()).isEqualTo(KEY_NOT_FOUND);
+    assertThat(close(sessionId, 2 * BLOCK_LENGTH, BLOCK_LENGTH).getOMResponse().getStatus()).isEqualTo(KEY_NOT_FOUND);
+    assertThat(blockIds(committedFile())).containsExactly(prefixBlockId(0));
+    assertThat(openRecord(sessionId).getAppendSession().isActive()).isTrue();
+  }
+
+  @Test
   public void testHsyncPublishesPrefixAndSuffix() throws Exception {
     // A location version other than 0 shows that the suffix blocks join the committed version.
     version = 2;

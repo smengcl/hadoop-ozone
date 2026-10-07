@@ -66,6 +66,7 @@ public class OMAllocateBlockRequestWithFSO extends OMAllocateBlockRequest {
       throw new OMException("Append session " + sessionId + " of " + openKeyInfo.getKeyName()
           + " is not active", APPEND_SESSION_NOT_FOUND);
     }
+    OmAppendUtil.checkReachable(omMetadataManager, openKeyInfo);
     return openKeyInfo;
   }
 

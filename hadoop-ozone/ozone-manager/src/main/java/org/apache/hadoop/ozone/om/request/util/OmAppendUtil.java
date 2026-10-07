@@ -162,6 +162,20 @@ public final class OmAppendUtil {
   }
 
   /**
+   * Fails with KEY_NOT_FOUND unless the file of an append session is still {@link #isReachable reachable}. Must be
+   * called under the bucket lock by allocate, hsync, close and recovery completion.
+   */
+  public static void checkReachable(OMMetadataManager omMetadataManager, OmKeyInfo openRecord) throws IOException {
+    String volume = openRecord.getVolumeName();
+    String bucket = openRecord.getBucketName();
+    if (!isReachable(omMetadataManager, omMetadataManager.getVolumeId(volume),
+        omMetadataManager.getBucketId(volume, bucket), openRecord)) {
+      throw new OMException("File of append session was deleted with its directory: " + openRecord.getKeyName(),
+          OMException.ResultCodes.KEY_NOT_FOUND);
+    }
+  }
+
+  /**
    * Returns true if every ancestor directory of an FSO file still exists in the live namespace, that is the file was
    * not removed by a recursive directory delete whose cleanup has not reached it yet. A renamed ancestor keeps its
    * object ID and stays reachable; a deleted ancestor does not come back when its path is created again. Allocate,
