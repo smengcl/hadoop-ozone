@@ -17,9 +17,12 @@
 
 start_docker_env 5
 
-# S3 tests with EC bucket do not depend on security, only need to be run in one of the environments
-# some tests are independent of the bucket type, those are run in other suites
-if [[ "${SECURITY_ENABLED}" != "true" ]]; then
+# S3 tests with EC bucket do not depend on security, the complete suite is only run in unsecure environment.
+# These also create the first container, which the EC-recovery check below expects to be EC.
+if [[ "${SECURITY_ENABLED}" == "true" ]]; then
+  execute_robot_test scm -v BUCKET:erasure s3/objectputget.robot
+else
+  # some tests are independent of the bucket type, those are run in other suites
   execute_robot_test scm -v BUCKET:erasure --exclude no-bucket-type s3
 fi
 
