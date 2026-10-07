@@ -161,7 +161,7 @@ public class OzoneFileSystem extends BasicOzoneFileSystem
     List<OmKeyLocationInfo> keyLocationInfoList = LeaseRecoveryClientDNHandler.getOmKeyLocationInfos(
         leaseKeyInfo, getAdapter(), forceRecovery);
     // recover and commit file
-    long keyLength = keyLocationInfoList.stream().mapToLong(OmKeyLocationInfo::getLength).sum();
+    long keyLength = LeaseRecoveryClientDNHandler.getRecoveredLength(leaseKeyInfo, keyLocationInfoList);
     OmKeyArgs keyArgs = new OmKeyArgs.Builder().setVolumeName(leaseKeyInfo.getKeyInfo().getVolumeName())
         .setBucketName(leaseKeyInfo.getKeyInfo().getBucketName()).setKeyName(leaseKeyInfo.getKeyInfo().getKeyName())
         .setReplicationConfig(leaseKeyInfo.getKeyInfo().getReplicationConfig()).setDataSize(keyLength)

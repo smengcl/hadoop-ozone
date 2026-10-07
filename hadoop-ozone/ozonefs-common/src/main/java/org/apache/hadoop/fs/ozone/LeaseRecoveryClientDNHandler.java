@@ -23,9 +23,12 @@ import static org.apache.hadoop.ozone.OzoneConsts.FORCE_LEASE_RECOVERY_ENV;
 
 import jakarta.annotation.Nonnull;
 import java.io.IOException;
+import java.util.ArrayList;
 import java.util.List;
+import org.apache.hadoop.hdds.protocol.proto.HddsProtos.ReplicationType;
 import org.apache.hadoop.hdds.scm.container.common.helpers.StorageContainerException;
 import org.apache.hadoop.ozone.om.helpers.LeaseKeyInfo;
+import org.apache.hadoop.ozone.om.helpers.OmAppendSession;
 import org.apache.hadoop.ozone.om.helpers.OmKeyLocationInfo;
 import org.apache.hadoop.ozone.om.helpers.OmKeyLocationInfoGroup;
 import org.slf4j.Logger;
@@ -43,6 +46,8 @@ public final class LeaseRecoveryClientDNHandler {
 
   /**
    * Get actual block length from DN for the last/penultimate block and update in KeyLocationInfo.
+   * For a file under an append session only the blocks written by the session (the suffix) are recovered and
+   * returned. OM keeps the blocks the file had before the session (the prefix), they are never finalized here.
    * @param leaseKeyInfo keyInfo received from OM
    * @param adapter client adapter
    * @param forceRecovery whether to do force recovery
@@ -55,6 +60,47 @@ public final class LeaseRecoveryClientDNHandler {
     List<OmKeyLocationInfo> keyLocationInfoList = keyLatestVersionLocations.createLocationList();
     OmKeyLocationInfoGroup openKeyLatestVersionLocations = leaseKeyInfo.getOpenKeyInfo().getLatestVersionLocations();
     List<OmKeyLocationInfo> openKeyLocationInfoList = openKeyLatestVersionLocations.createLocationList();
+
+    OmAppendSession appendSession = leaseKeyInfo.getOpenKeyInfo().getAppendSession();
+    if (appendSession != null) {
+      // The open record holds the suffix only. The published suffix is what hsync added after the prefix blocks.
+      keyLocationInfoList = new ArrayList<>(keyLocationInfoList.subList(
+          Math.min(appendSession.getPrefixBlockCount(), keyLocationInfoList.size()), keyLocationInfoList.size()));
+      if (openKeyLocationInfoList.isEmpty()
+          || leaseKeyInfo.getKeyInfo().getReplicationConfig().getReplicationType() == ReplicationType.EC) {
+        // Nothing was allocated, or EC, which publishes on close only and has no block finalization:
+        // keep what was published.
+        return keyLocationInfoList;
+      }
+      if (keyLocationInfoList.isEmpty()) {
+        return finalizeUnpublishedSuffix(openKeyLocationInfoList, adapter, forceRecovery);
+      }
+      // The cases below do not apply: the open record keeps every block the session allocated, also the ones the
+      // writer abandoned, so its block count says nothing about what is published.
+      // The writer may have written past the last publication in the last published block, and in the blocks
+      // allocated after it.
+      OmKeyLocationInfo lastPublished = keyLocationInfoList.get(keyLocationInfoList.size() - 1);
+      try {
+        lastPublished.setLength(adapter.finalizeBlock(lastPublished));
+      } catch (IOException e) {
+        if (!forceRecovery) {
+          throw e;
+        }
+        LOG.warn("Failed to finalize block. Continue to recover the file since {} is enabled.",
+            FORCE_LEASE_RECOVERY_ENV, e);
+      }
+      int next = openKeyLocationInfoList.size();
+      for (int i = 0; i < openKeyLocationInfoList.size(); i++) {
+        // Not BlockID.equals: the open record keeps the block commit sequence ID of the allocation.
+        if (openKeyLocationInfoList.get(i).getBlockID().getContainerBlockID()
+            .equals(lastPublished.getBlockID().getContainerBlockID())) {
+          next = i + 1;
+        }
+      }
+      keyLocationInfoList.addAll(finalizeUnpublishedSuffix(
+          openKeyLocationInfoList.subList(next, openKeyLocationInfoList.size()), adapter, forceRecovery));
+      return keyLocationInfoList;
+    }
 
     int openKeyLocationSize = openKeyLocationInfoList.size();
     int keyLocationSize = keyLocationInfoList.size();
@@ -117,5 +163,56 @@ public final class LeaseRecoveryClientDNHandler {
       }
     }
     return keyLocationInfoList;
+  }
+
+  /**
+   * OM only knows the allocated lengths of the suffix blocks that no hsync of the append session published.
+   * Finalizes them in allocation order and keeps the leading blocks that have data.
+   */
+  private static List<OmKeyLocationInfo> finalizeUnpublishedSuffix(List<OmKeyLocationInfo> openSuffix,
+      OzoneClientAdapter adapter, boolean forceRecovery) throws IOException {
+    List<OmKeyLocationInfo> recovered = new ArrayList<>();
+    for (OmKeyLocationInfo block : openSuffix) {
+      if (block.getPipeline() == null) {
+        // ponytail: OM returns the pipeline of the last two open blocks only, so with more unpublished blocks none
+        // is recovered and the file ends at its last published byte. Have OM return the pipeline of every
+        // unpublished block to recover them.
+        LOG.warn("Not recovering block {} and the blocks after it, OM returned no pipeline for it", block.getBlockID());
+        break;
+      }
+      long length;
+      try {
+        length = adapter.finalizeBlock(block);
+      } catch (IOException e) {
+        boolean neverWritten = e instanceof StorageContainerException &&
+            (((StorageContainerException) e).getResult() == NO_SUCH_BLOCK
+            || ((StorageContainerException) e).getResult() == CONTAINER_NOT_FOUND);
+        if (!neverWritten) {
+          if (!forceRecovery) {
+            throw e;
+          }
+          LOG.warn("Failed to finalize block. Continue to recover the file since {} is enabled.",
+              FORCE_LEASE_RECOVERY_ENV, e);
+        }
+        break;
+      }
+      if (length == 0) {
+        break;
+      }
+      block.setLength(length);
+      recovered.add(block);
+    }
+    return recovered;
+  }
+
+  /**
+   * @param leaseKeyInfo keyInfo received from OM
+   * @param recoveredLocations result of {@link #getOmKeyLocationInfos}
+   * @return the file length to commit: the recovered blocks, plus the prefix length for an append session
+   */
+  public static long getRecoveredLength(LeaseKeyInfo leaseKeyInfo, List<OmKeyLocationInfo> recoveredLocations) {
+    long length = recoveredLocations.stream().mapToLong(OmKeyLocationInfo::getLength).sum();
+    OmAppendSession appendSession = leaseKeyInfo.getOpenKeyInfo().getAppendSession();
+    return appendSession == null ? length : appendSession.getPrefixLength() + length;
   }
 }
