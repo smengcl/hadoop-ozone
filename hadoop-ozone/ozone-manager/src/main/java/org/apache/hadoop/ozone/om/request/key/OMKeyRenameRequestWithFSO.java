@@ -283,6 +283,12 @@ public class OMKeyRenameRequestWithFSO extends OMKeyRenameRequest {
     OmBucketInfo omBucketInfo = null;
     final String dbFromKey = ommm.getOzonePathKey(volumeId, bucketId,
             fromKeyValue.getParentObjectID(), fromKeyValue.getFileName());
+    // An append session's open record is keyed by the file location, so it has to move with the file.
+    final Long appendSessionId = fromKeyValue.getAppendOwnerSessionId();
+    final String dbFromOpenKey = appendSessionId == null ? null : ommm.getOpenFileName(volumeId, bucketId,
+        fromKeyValue.getParentObjectID(), fromKeyValue.getFileName(), appendSessionId);
+    String dbToOpenKey = null;
+    OmKeyInfo renamedOpenKeyInfo = null;
     String toKeyFileName;
     if (toKeyName.isEmpty()) {
       // if toKeyName is empty we use the source key name.
@@ -345,12 +351,34 @@ public class OMKeyRenameRequestWithFSO extends OMKeyRenameRequest {
 
       keyTable.addCacheEntry(new CacheKey<>(dbToKey),
               CacheValue.get(trxnLogIndex, fromKeyValue));
+
+      if (dbFromOpenKey != null) {
+        Table<String, OmKeyInfo> openFileTable = metadataMgr.getOpenKeyTable(getBucketLayout());
+        OmKeyInfo openKeyInfo = openFileTable.get(dbFromOpenKey);
+        if (openKeyInfo != null) {
+          dbToOpenKey = ommm.getOpenFileName(volumeId, bucketId, fromKeyValue.getParentObjectID(), toKeyFileName,
+              appendSessionId);
+          // Only the location changes. The session, including its lease renewal time, stays as it is.
+          renamedOpenKeyInfo = openKeyInfo.toBuilder()
+              .setKeyName(toKeyName.isEmpty() ? toKeyFileName : toKeyName)
+              .setParentObjectID(fromKeyValue.getParentObjectID())
+              .setUpdateID(trxnLogIndex)
+              .build();
+          openFileTable.addCacheEntry(dbFromOpenKey, trxnLogIndex);
+          openFileTable.addCacheEntry(dbToOpenKey, renamedOpenKeyInfo, trxnLogIndex);
+          ommm.putAppendSession(fromKeyValue.getVolumeName(), fromKeyValue.getBucketName(), appendSessionId,
+              dbToOpenKey);
+        } else {
+          LOG.warn("Potentially inconsistent DB state: append open record not found with dbOpenKey '{}'",
+              dbFromOpenKey);
+        }
+      }
     }
 
     OMClientResponse omClientResponse = new OMKeyRenameResponseWithFSO(
         omResponse.setRenameKeyResponse(RenameKeyResponse.newBuilder()).build(),
         dbFromKey, dbToKey, fromKeyParent, toKeyParent, fromKeyValue,
-        omBucketInfo, isRenameDirectory, getBucketLayout());
+        omBucketInfo, isRenameDirectory, getBucketLayout(), dbFromOpenKey, dbToOpenKey, renamedOpenKeyInfo);
     return omClientResponse;
   }
 

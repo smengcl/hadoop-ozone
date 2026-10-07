@@ -38,6 +38,10 @@ public class OMKeyRenameResponseWithFSO extends OMKeyRenameResponse {
   private OmKeyInfo fromKeyParent;
   private OmKeyInfo toKeyParent;
   private OmBucketInfo bucketInfo;
+  // If not null, the open record of the renamed file's append session, which moves from fromOpenDBKey to toOpenDBKey
+  private OmKeyInfo renamedOpenKeyInfo;
+  private String fromOpenDBKey;
+  private String toOpenDBKey;
 
   @SuppressWarnings("checkstyle:ParameterNumber")
   public OMKeyRenameResponseWithFSO(@Nonnull OMResponse omResponse,
@@ -50,6 +54,20 @@ public class OMKeyRenameResponseWithFSO extends OMKeyRenameResponse {
     this.fromKeyParent = fromKeyParent;
     this.toKeyParent = toKeyParent;
     this.bucketInfo = bucketInfo;
+  }
+
+  @SuppressWarnings("checkstyle:ParameterNumber")
+  public OMKeyRenameResponseWithFSO(@Nonnull OMResponse omResponse,
+      String fromDBKey, String toDBKey, OmKeyInfo fromKeyParent,
+      OmKeyInfo toKeyParent, @Nonnull OmKeyInfo renameKeyInfo,
+      OmBucketInfo bucketInfo,
+      boolean isRenameDirectory, BucketLayout bucketLayout,
+      String fromOpenDBKey, String toOpenDBKey, OmKeyInfo renamedOpenKeyInfo) {
+    this(omResponse, fromDBKey, toDBKey, fromKeyParent, toKeyParent, renameKeyInfo, bucketInfo, isRenameDirectory,
+        bucketLayout);
+    this.fromOpenDBKey = fromOpenDBKey;
+    this.toOpenDBKey = toOpenDBKey;
+    this.renamedOpenKeyInfo = renamedOpenKeyInfo;
   }
 
   /**
@@ -82,6 +100,11 @@ public class OMKeyRenameResponseWithFSO extends OMKeyRenameResponse {
           .deleteWithBatch(batchOperation, getFromKeyName());
       omMetadataManager.getKeyTable(getBucketLayout())
           .putWithBatch(batchOperation, getToKeyName(), getRenameKeyInfo());
+      if (renamedOpenKeyInfo != null) {
+        omMetadataManager.getOpenKeyTable(getBucketLayout()).deleteWithBatch(batchOperation, fromOpenDBKey);
+        omMetadataManager.getOpenKeyTable(getBucketLayout())
+            .putWithBatch(batchOperation, toOpenDBKey, renamedOpenKeyInfo);
+      }
     }
 
     boolean isSnapshotBucket = OMClientRequestUtils.
