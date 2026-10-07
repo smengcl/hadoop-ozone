@@ -114,6 +114,7 @@ import org.apache.hadoop.ozone.client.OzoneVolume;
 import org.apache.hadoop.ozone.client.S3HeadObjectAttributes;
 import org.apache.hadoop.ozone.client.TenantArgs;
 import org.apache.hadoop.ozone.client.VolumeArgs;
+import org.apache.hadoop.ozone.client.io.AppendLeaseRenewer;
 import org.apache.hadoop.ozone.client.io.BlockInputStreamFactory;
 import org.apache.hadoop.ozone.client.io.BlockInputStreamFactoryImpl;
 import org.apache.hadoop.ozone.client.io.BoundedElasticByteBufferPool;
@@ -234,6 +235,7 @@ public class RpcClient implements ClientProtocol {
   private final ContainerClientMetrics.Handle clientMetricsHandle;
   private final ContainerClientMetrics clientMetrics;
   private final MemoizedSupplier<ExecutorService> writeExecutor;
+  private final AppendLeaseRenewer appendLeaseRenewer;
   private volatile OzoneFsServerDefaults serverDefaults;
   private volatile long serverDefaultsLastUpdate;
   private final long serverDefaultsValidityPeriod;
@@ -269,6 +271,7 @@ public class RpcClient implements ClientProtocol {
     this.ozoneManagerClient = TracingUtil.createProxy(
         ozoneManagerProtocolClientSideTranslatorPB,
         OzoneManagerClientProtocol.class, conf);
+    this.appendLeaseRenewer = new AppendLeaseRenewer(ozoneManagerClient, clientConfig.getAppendLeaseRenewInterval());
     if (getThreadLocalS3Auth() != null) {
       this.s3gUgi = UserGroupInformation.createRemoteUser(getThreadLocalS3Auth().getUserPrincipal());
     }
@@ -2083,6 +2086,7 @@ public class RpcClient implements ClientProtocol {
     IOUtils.cleanupWithLogger(LOG,
         () -> shutdownExecutor(ecReconstructExecutor),
         () -> shutdownExecutor(writeExecutor),
+        appendLeaseRenewer,
         ozoneManagerClient,
         xceiverClientManager,
         () -> {
@@ -2559,6 +2563,7 @@ public class RpcClient implements ClientProtocol {
         throw new IOException("Append is not supported for GDPR encrypted file " + keyName);
       }
       final OzoneOutputStream out = createSecureOutputStream(openKey, keyOutputStream, keyOutputStream);
+      appendLeaseRenewer.register(keyOutputStream);
       return out != null ? out : new OzoneOutputStream(keyOutputStream, OzoneFSUtils.canEnableHsync(conf, true));
     } catch (IOException | RuntimeException e) {
       // OM admitted the session but the caller gets no stream to close: end the session with a zero byte close

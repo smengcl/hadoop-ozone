@@ -45,6 +45,7 @@ import org.apache.hadoop.ozone.om.helpers.OmKeyLocationInfo;
 import org.apache.hadoop.ozone.om.helpers.OmKeyLocationInfoGroup;
 import org.apache.hadoop.ozone.om.helpers.OmMultipartCommitUploadPartInfo;
 import org.apache.hadoop.ozone.om.protocol.OzoneManagerProtocol;
+import org.apache.hadoop.ozone.protocol.proto.OzoneManagerProtocolProtos.AppendSessionKey;
 import org.apache.hadoop.ozone.util.MetricUtil;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -97,6 +98,8 @@ public class BlockOutputStreamEntryPool implements KeyMetadataAware {
   private final long prefixLength;
   // Suffix bytes last published to OM by an append hsync.
   private long publishedSuffixLength;
+  private volatile boolean appendLeaseLost;
+  private volatile Runnable cleanupHook = () -> { };
 
   public BlockOutputStreamEntryPool(KeyOutputStream.Builder b) {
     this.config = b.getClientConfig();
@@ -330,6 +333,7 @@ public class BlockOutputStreamEntryPool implements KeyMetadataAware {
       long length = getKeyLength();
       Preconditions.checkArgument(offset == length,
           "Expected offset: " + offset + " expected len: " + length);
+      checkAppendLease();
       keyArgs.setDataSize(prefixLength + length);
       keyArgs.setLocationInfoList(getLocationInfoList());
       // When the key is multipart upload part file upload, we should not
@@ -350,6 +354,7 @@ public class BlockOutputStreamEntryPool implements KeyMetadataAware {
   void hsyncKey(long offset) throws IOException {
     if (keyArgs != null) {
       // in test, this could be null
+      checkAppendLease();
       keyArgs.setDataSize(offset);
       keyArgs.setLocationInfoList(getLocationInfoList());
       // When the key is multipart upload part file upload, we should not
@@ -401,6 +406,7 @@ public class BlockOutputStreamEntryPool implements KeyMetadataAware {
    * @throws IOException if the block allocation failed.
    */
   synchronized BlockOutputStreamEntry allocateBlockIfNeeded(boolean forRetry) throws IOException {
+    checkAppendLease();
     BlockOutputStreamEntry streamEntry = getCurrentStreamEntry();
     if (streamEntry != null && streamEntry.isClosed()) {
       // a stream entry gets closed either by :
@@ -436,11 +442,35 @@ public class BlockOutputStreamEntryPool implements KeyMetadataAware {
     if (streamEntries != null) {
       streamEntries.clear();
     }
+    cleanupHook.run();
   }
 
   /** @return the file length when this append session was admitted, 0 if this is not an append stream. */
   long getPrefixLength() {
     return prefixLength;
+  }
+
+  AppendSessionKey getAppendSessionKey() {
+    final OmKeyArgs args = keyArgs.build();
+    return AppendSessionKey.newBuilder().setVolumeName(args.getVolumeName())
+        .setBucketName(args.getBucketName()).setSessionId(openID).build();
+  }
+
+  /** The hook runs when the stream is closed or has failed. */
+  void setCleanupHook(Runnable hook) {
+    this.cleanupHook = hook;
+  }
+
+  /** OM no longer has this stream's append session as active: the next write, hsync or close fails. */
+  void markAppendLeaseLost() {
+    appendLeaseLost = true;
+  }
+
+  private void checkAppendLease() throws IOException {
+    if (appendLeaseLost) {
+      throw new IOException("The append lease was lost for key " + getKeyName() + " (session " + openID
+          + "): its lease expired, or the file was recovered or deleted while this stream was open.");
+    }
   }
 
   public OmMultipartCommitUploadPartInfo getCommitUploadPartInfo() {

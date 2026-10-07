@@ -18,6 +18,7 @@
 package org.apache.hadoop.ozone.client;
 
 import java.io.IOException;
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.Iterator;
 import java.util.List;
@@ -65,6 +66,7 @@ import org.apache.hadoop.ozone.protocol.proto.OzoneManagerProtocolProtos.LookupK
 import org.apache.hadoop.ozone.protocol.proto.OzoneManagerProtocolProtos.OMRequest;
 import org.apache.hadoop.ozone.protocol.proto.OzoneManagerProtocolProtos.OMResponse;
 import org.apache.hadoop.ozone.protocol.proto.OzoneManagerProtocolProtos.OMResponse.Builder;
+import org.apache.hadoop.ozone.protocol.proto.OzoneManagerProtocolProtos.RenewAppendLeasesResponse;
 import org.apache.hadoop.ozone.protocol.proto.OzoneManagerProtocolProtos.ServiceListRequest;
 import org.apache.hadoop.ozone.protocol.proto.OzoneManagerProtocolProtos.ServiceListResponse;
 import org.apache.hadoop.ozone.protocol.proto.OzoneManagerProtocolProtos.Status;
@@ -95,6 +97,8 @@ public class MockOmTransport implements OmTransport {
   private long lastAppendSessionId;
   // if set, new keys are created with this encryption info
   private FileEncryptionInfoProto fileEncryptionInfo;
+  // answer given for every session in RenewAppendLeases
+  private volatile boolean appendLeasesRenewable = true;
 
   public MockOmTransport(MockBlockAllocator allocator) {
     this.blockAllocator = allocator;
@@ -107,6 +111,10 @@ public class MockOmTransport implements OmTransport {
   /** @return the requests of the given type received so far, in order. */
   public List<OMRequest> getRequests(Type cmdType) {
     return requests.stream().filter(r -> r.getCmdType() == cmdType).collect(Collectors.toList());
+  }
+
+  public void setAppendLeasesRenewable(boolean renewable) {
+    this.appendLeasesRenewable = renewable;
   }
 
   public void setFileEncryptionInfo(FileEncryptionInfoProto fileEncryptionInfo) {
@@ -166,6 +174,10 @@ public class MockOmTransport implements OmTransport {
     case AppendFile:
       return response(payload, r -> r.setAppendFileResponse(
           appendFile(payload.getAppendFileRequest())));
+    case RenewAppendLeases:
+      return response(payload, r -> r.setRenewAppendLeasesResponse(RenewAppendLeasesResponse.newBuilder()
+          .addAllRenewed(Collections.nCopies(payload.getRenewAppendLeasesRequest().getSessionsCount(),
+              appendLeasesRenewable))));
     default:
       throw new IllegalArgumentException(
           "Mock version of om call " + payload.getCmdType()

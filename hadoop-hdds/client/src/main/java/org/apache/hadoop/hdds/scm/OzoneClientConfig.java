@@ -360,6 +360,15 @@ public class OzoneClientConfig {
       description = "Timeout for receiving streaming read responses.")
   private Duration streamReadTimeout = Duration.ofSeconds(10);
 
+  @Config(key = "ozone.client.append.lease.renew.interval",
+      defaultValue = "20s",
+      type = ConfigType.TIME,
+      tags = {ConfigTag.CLIENT},
+      description = "Interval at which a client renews the leases of its open append streams with Ozone Manager." +
+          " Must stay well under ozone.om.lease.soft.limit (60s by default), otherwise the file of a live writer" +
+          " becomes eligible for lease recovery.")
+  private Duration appendLeaseRenewInterval = Duration.ofSeconds(20);
+
   @PostConstruct
   public void validate() {
     Preconditions.checkState(streamBufferSize > 0);
@@ -440,6 +449,16 @@ public class OzoneClientConfig {
               "Resetting to default {}.",
           streamReadTimeout, defaultTimeout);
       streamReadTimeout = defaultTimeout;
+    }
+
+    Duration defaultRenewInterval = Duration.ofSeconds(20);
+    if (appendLeaseRenewInterval == null
+        || appendLeaseRenewInterval.isZero()
+        || appendLeaseRenewInterval.isNegative()) {
+      LOG.warn("Invalid ozone.client.append.lease.renew.interval = {}. " +
+              "Resetting to default {}.",
+          appendLeaseRenewInterval, defaultRenewInterval);
+      appendLeaseRenewInterval = defaultRenewInterval;
     }
   }
 
@@ -709,6 +728,14 @@ public class OzoneClientConfig {
 
   public void setStreamReadTimeout(Duration streamReadTimeout) {
     this.streamReadTimeout = streamReadTimeout;
+  }
+
+  public Duration getAppendLeaseRenewInterval() {
+    return appendLeaseRenewInterval;
+  }
+
+  public void setAppendLeaseRenewInterval(Duration appendLeaseRenewInterval) {
+    this.appendLeaseRenewInterval = appendLeaseRenewInterval;
   }
 
   public boolean isDatastreamPutBlockWithoutRaftEnabled() {

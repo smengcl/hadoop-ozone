@@ -37,6 +37,7 @@ import static org.mockito.Mockito.withSettings;
 
 import jakarta.annotation.Nonnull;
 import java.io.IOException;
+import java.time.Duration;
 import java.time.Instant;
 import java.util.Collections;
 import java.util.HashMap;
@@ -58,6 +59,7 @@ import org.apache.hadoop.hdds.client.ReplicationConfigValidator;
 import org.apache.hadoop.hdds.client.ReplicationType;
 import org.apache.hadoop.hdds.conf.ConfigurationSource;
 import org.apache.hadoop.hdds.conf.OzoneConfiguration;
+import org.apache.hadoop.hdds.scm.OzoneClientConfig;
 import org.apache.hadoop.hdds.scm.XceiverClientFactory;
 import org.apache.hadoop.ozone.OzoneConfigKeys;
 import org.apache.hadoop.ozone.OzoneConsts;
@@ -69,12 +71,14 @@ import org.apache.hadoop.ozone.om.exceptions.OMException;
 import org.apache.hadoop.ozone.om.exceptions.OMException.ResultCodes;
 import org.apache.hadoop.ozone.om.helpers.ServiceInfoEx;
 import org.apache.hadoop.ozone.om.protocolPB.OmTransport;
+import org.apache.hadoop.ozone.protocol.proto.OzoneManagerProtocolProtos.AppendSessionKey;
 import org.apache.hadoop.ozone.protocol.proto.OzoneManagerProtocolProtos.CommitKeyRequest;
 import org.apache.hadoop.ozone.protocol.proto.OzoneManagerProtocolProtos.KeyArgs;
 import org.apache.hadoop.ozone.protocol.proto.OzoneManagerProtocolProtos.KeyLocation;
 import org.apache.hadoop.ozone.protocol.proto.OzoneManagerProtocolProtos.OMRequest;
 import org.apache.hadoop.ozone.protocol.proto.OzoneManagerProtocolProtos.Type;
 import org.apache.hadoop.ozone.protocolPB.OMPBHelper;
+import org.apache.ozone.test.GenericTestUtils;
 import org.apache.ozone.test.LambdaTestUtils.VoidCallable;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -384,6 +388,53 @@ public class TestOzoneClient {
     assertEquals(prefix.length + suffix.length, lastCommit().getKeyArgs().getDataSize());
     assertThat(lastCommit().getKeyArgs().getKeyLocationsList()).hasSize(1);
     assertArrayEquals(ArrayUtils.addAll(prefix, suffix), readKey(bucket, keyName));
+  }
+
+  @Test
+  public void testAppendLeaseRenewedUntilFencedOrClosed() throws Exception {
+    close();
+    OzoneConfiguration config = new OzoneConfiguration();
+    OzoneClientConfig clientConfig = config.getObject(OzoneClientConfig.class);
+    clientConfig.setAppendLeaseRenewInterval(Duration.ofMillis(20));
+    config.setFromObject(clientConfig);
+    createNewClient(config, new SinglePipelineBlockAllocator(config));
+    OzoneBucket bucket = getOzoneBucket();
+    String keyName = UUID.randomUUID().toString();
+    writeKey(bucket, keyName, "prefix".getBytes(UTF_8));
+    // no scheduler before the first append stream
+    assertThat(omTransport.getRequests(Type.RenewAppendLeases)).isEmpty();
+
+    OzoneOutputStream out = bucket.appendFile(keyName);
+    long sessionId = omTransport.getRequests(Type.AppendFile).size();
+    GenericTestUtils.waitFor(() -> omTransport.getRequests(Type.RenewAppendLeases).size() >= 2, 10, 10_000);
+    assertThat(omTransport.getRequests(Type.RenewAppendLeases).get(0).getRenewAppendLeasesRequest().getSessionsList())
+        .containsExactly(AppendSessionKey.newBuilder().setVolumeName(bucket.getVolumeName())
+            .setBucketName(bucket.getName()).setSessionId(sessionId).build());
+    out.write(1);
+
+    // OM answers false: the stream is fenced and no longer renewed.
+    omTransport.setAppendLeasesRenewable(false);
+    GenericTestUtils.waitFor(() -> {
+      try {
+        out.write(1);
+        return false;
+      } catch (IOException e) {
+        assertThat(e).hasMessageContaining("append lease was lost");
+        return true;
+      }
+    }, 10, 10_000);
+    int renewals = omTransport.getRequests(Type.RenewAppendLeases).size();
+    Thread.sleep(100);
+    assertThat(omTransport.getRequests(Type.RenewAppendLeases)).hasSize(renewals);
+
+    // A new stream is renewed until the client is closed.
+    omTransport.setAppendLeasesRenewable(true);
+    bucket.appendFile(keyName);
+    GenericTestUtils.waitFor(() -> omTransport.getRequests(Type.RenewAppendLeases).size() > renewals, 10, 10_000);
+    client.close();
+    int renewalsAtClose = omTransport.getRequests(Type.RenewAppendLeases).size();
+    Thread.sleep(100);
+    assertThat(omTransport.getRequests(Type.RenewAppendLeases)).hasSize(renewalsAtClose);
   }
 
   /** The last commit or hsync of an append must carry the suffix block only and the total file length. */
