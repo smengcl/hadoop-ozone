@@ -36,6 +36,7 @@ import static org.apache.hadoop.ozone.om.OMConfigKeys.OZONE_OM_OPEN_KEY_CLEANUP_
 import static org.apache.hadoop.ozone.om.OMConfigKeys.OZONE_OM_OPEN_KEY_EXPIRE_THRESHOLD;
 import static org.apache.ozone.test.OzoneTestBase.uniqueObjectName;
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -47,14 +48,19 @@ import static org.junit.jupiter.params.provider.Arguments.arguments;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
+import com.google.common.io.ByteStreams;
+import com.google.common.primitives.Bytes;
 import java.io.Closeable;
 import java.io.FileNotFoundException;
 import java.io.IOException;
+import java.io.UncheckedIOException;
+import java.net.URI;
 import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 import java.security.GeneralSecurityException;
 import java.security.PrivilegedExceptionAction;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -71,10 +77,12 @@ import org.apache.hadoop.crypto.CryptoCodec;
 import org.apache.hadoop.crypto.CryptoOutputStream;
 import org.apache.hadoop.crypto.Encryptor;
 import org.apache.hadoop.fs.CommonConfigurationKeysPublic;
+import org.apache.hadoop.fs.CommonPathCapabilities;
 import org.apache.hadoop.fs.FSDataInputStream;
 import org.apache.hadoop.fs.FSDataOutputStream;
 import org.apache.hadoop.fs.FileAlreadyExistsException;
 import org.apache.hadoop.fs.FileSystem;
+import org.apache.hadoop.fs.LeaseRecoverable;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.fs.StreamCapabilities;
 import org.apache.hadoop.hdds.client.DefaultReplicationConfig;
@@ -109,15 +117,18 @@ import org.apache.hadoop.ozone.client.io.OzoneInputStream;
 import org.apache.hadoop.ozone.client.io.OzoneOutputStream;
 import org.apache.hadoop.ozone.container.OzoneTestHelper;
 import org.apache.hadoop.ozone.container.keyvalue.impl.AbstractTestChunkManager;
+import org.apache.hadoop.ozone.om.OMConfigKeys;
 import org.apache.hadoop.ozone.om.OMMetadataManager;
 import org.apache.hadoop.ozone.om.OMMetrics;
 import org.apache.hadoop.ozone.om.OzoneManager;
+import org.apache.hadoop.ozone.om.exceptions.AppendConflictException;
 import org.apache.hadoop.ozone.om.exceptions.OMException;
 import org.apache.hadoop.ozone.om.helpers.BucketLayout;
 import org.apache.hadoop.ozone.om.helpers.OmKeyInfo;
 import org.apache.hadoop.ozone.om.helpers.OmKeyLocationInfo;
 import org.apache.hadoop.ozone.om.helpers.RepeatedOmKeyInfo;
 import org.apache.hadoop.ozone.om.service.OpenKeyCleanupService;
+import org.apache.hadoop.ozone.protocol.proto.OzoneManagerProtocolProtos.AppendWriterKind;
 import org.apache.hadoop.security.UserGroupInformation;
 import org.apache.hadoop.util.Time;
 import org.apache.ozone.test.GenericTestUtils;
@@ -163,6 +174,7 @@ public class TestHSync {
   private static final int SERVICE_INTERVAL = 100;
   private static final int EXPIRE_THRESHOLD_MS = 140;
   private static final int WAL_HEADER_LEN = 83;
+  private static final String APPEND_LEASE_RENEW_INTERVAL = "ozone.client.append.lease.renew.interval";
 
   private static OpenKeyCleanupService openKeyCleanupService;
   private static final int AUTO_THRESHOLD = 0;
@@ -175,6 +187,7 @@ public class TestHSync {
     CONF.setBoolean(OzoneConfigKeys.OZONE_HBASE_ENHANCEMENTS_ALLOWED, true);
     CONF.setBoolean("ozone.client.hbase.enhancements.allowed", true);
     CONF.setBoolean(OzoneConfigKeys.OZONE_FS_HSYNC_ENABLED, true);
+    CONF.setBoolean(OMConfigKeys.OZONE_OM_APPEND_ENABLED, true);
     CONF.setInt(OZONE_SCM_RATIS_PIPELINE_LIMIT, 10);
     // Reduce KeyDeletingService interval
     CONF.setTimeDuration(OZONE_BLOCK_DELETING_SERVICE_INTERVAL, 100, TimeUnit.MILLISECONDS);
@@ -1596,6 +1609,453 @@ public class TestHSync {
       cleanupDeletedTable(ozoneManager);
       cleanupOpenKeyTable(ozoneManager, BUCKET_LAYOUT);
       ozoneManager.getKeyManager().getDeletingService().resume();
+    }
+  }
+
+  @ParameterizedTest
+  @ValueSource(strings = {OZONE_URI_SCHEME, OZONE_OFS_URI_SCHEME})
+  public void testAppend(String scheme) throws Exception {
+    try (FileSystem fs = newFs(scheme); FileSystem reader = newFs(scheme)) {
+      final Path file = newPath(fs);
+      final byte[] prefix = createFile(fs, file, 1000);
+      final byte[] synced = randomBytes(3000);
+      final byte[] rest = randomBytes(500);
+
+      try (FSDataOutputStream out = fs.append(file)) {
+        assertThat(out.getPos()).isEqualTo(prefix.length);
+        out.write(synced);
+        out.hsync();
+        assertThat(out.getPos()).isEqualTo(prefix.length + synced.length);
+        // Another client reads the synced bytes while the appender is still open.
+        assertHsyncedContent(reader, file, prefix, synced);
+        assertThat(((LeaseRecoverable) reader).isFileClosed(file)).isFalse();
+        out.write(rest);
+      }
+
+      assertFileContent(reader, file, prefix, synced, rest);
+      assertThat(((LeaseRecoverable) reader).isFileClosed(file)).isTrue();
+    }
+  }
+
+  @Test
+  public void testAppendAcrossBlocks() throws Exception {
+    try (FileSystem fs = newOfs(); FileSystem reader = newOfs()) {
+      final Path file = newPath(fs);
+      // The prefix is a full block and a partial block. The append does not write to them.
+      byte[] expected = createFile(fs, file, BLOCK_SIZE + 100);
+
+      try (FSDataOutputStream out = fs.append(file)) {
+        // Several hsyncs within each block, and three block boundaries.
+        for (int i = 0; i < 10; i++) {
+          final byte[] data = randomBytes(BLOCK_SIZE / 3 + i);
+          out.write(data);
+          out.hsync();
+          expected = Bytes.concat(expected, data);
+          assertHsyncedContent(reader, file, expected);
+        }
+        // Not synced, crosses one more block boundary.
+        final byte[] data = randomBytes(BLOCK_SIZE);
+        out.write(data);
+        expected = Bytes.concat(expected, data);
+      }
+
+      assertFileContent(reader, file, expected);
+      assertThat(bucket.getKey(file.getName()).getOzoneKeyLocations()).hasSizeGreaterThanOrEqualTo(7);
+    }
+  }
+
+  @Test
+  public void testAppendEmptyFileAndEmptyAppend() throws Exception {
+    try (FileSystem fs = newOfs()) {
+      final Path file = newPath(fs);
+      createFile(fs, file, 0);
+      final byte[] data = randomBytes(100);
+
+      try (FSDataOutputStream out = fs.append(file)) {
+        assertThat(out.getPos()).isZero();
+        out.write(data);
+      }
+      assertFileContent(fs, file, data);
+
+      // An append that writes nothing leaves the file as it was and releases it, with and without hsync.
+      fs.append(file).close();
+      try (FSDataOutputStream out = fs.append(file)) {
+        out.hsync();
+        assertFileContent(fs, file, data);
+      }
+      assertFileContent(fs, file, data);
+      assertThat(((LeaseRecoverable) fs).isFileClosed(file)).isTrue();
+    }
+  }
+
+  @Test
+  public void testAppendConflictWithAppendWriter() throws Exception {
+    // Inside the soft limit the first appender is a live writer.
+    cluster.getOzoneManager().getConfiguration().set(OzoneConfigKeys.OZONE_OM_LEASE_SOFT_LIMIT, "60s");
+    try (FileSystem fs = newOfs(); FileSystem other = newOfs(OzoneConfigKeys.OZONE_FS_APPEND_RECOVERY_TIMEOUT, "0s")) {
+      final Path file = newPath(fs);
+      final byte[] prefix = createFile(fs, file, 100);
+      final byte[] suffix = randomBytes(100);
+
+      try (FSDataOutputStream out = fs.append(file)) {
+        assertThatThrownBy(() -> other.append(file)).isInstanceOfSatisfying(AppendConflictException.class,
+            e -> assertThat(e.getConflict().getWriterKind()).isEqualTo(AppendWriterKind.APPEND_WRITER));
+        assertThatThrownBy(() -> other.create(file, true)).isInstanceOfSatisfying(OMException.class,
+            e -> assertThat(e.getResult()).isEqualTo(OMException.ResultCodes.APPEND_WRITER_CONFLICT));
+        out.write(suffix);
+      }
+
+      assertFileContent(other, file, prefix, suffix);
+    } finally {
+      cluster.getOzoneManager().getConfiguration().set(OzoneConfigKeys.OZONE_OM_LEASE_SOFT_LIMIT, "0s");
+    }
+  }
+
+  @Test
+  public void testAppendConflictWithCreateWriter() throws Exception {
+    // The lease soft limit of this cluster is 0, yet only an append writer is recovered by append.
+    try (FileSystem fs = newOfs()) {
+      final Path file = newPath(fs);
+      final byte[] prefix = createFile(fs, file, 100);
+      final byte[] overwritten = randomBytes(200);
+
+      try (FSDataOutputStream out = fs.create(file, true)) {
+        assertThatThrownBy(() -> fs.append(file)).isInstanceOfSatisfying(AppendConflictException.class,
+            e -> assertThat(e.getConflict().getWriterKind()).isEqualTo(AppendWriterKind.ORDINARY_WRITER));
+        assertFileContent(fs, file, prefix);
+        out.write(overwritten);
+        out.hsync();
+        assertThatThrownBy(() -> fs.append(file)).isInstanceOfSatisfying(AppendConflictException.class,
+            e -> assertThat(e.getConflict().getWriterKind()).isEqualTo(AppendWriterKind.HSYNC_WRITER));
+      }
+
+      fs.append(file).close();
+      assertFileContent(fs, file, overwritten);
+    }
+  }
+
+  @ParameterizedTest
+  @ValueSource(booleans = {false, true})
+  public void testRenameWhileAppending(boolean renameParent) throws Exception {
+    try (FileSystem fs = newOfs()) {
+      final Path dir = newPath(fs);
+      final Path file = new Path(dir, "file");
+      final Path renamedDir = newPath(fs);
+      final Path renamed = renameParent ? new Path(renamedDir, "file") : new Path(dir, "renamed");
+      final byte[] prefix = createFile(fs, file, 100);
+      final byte[] beforeRename = randomBytes(100);
+      // Needs a new block after the rename: OM has to find the session by its ID, not by the path of the request.
+      final byte[] afterRename = randomBytes(BLOCK_SIZE + 100);
+      final byte[] beforeClose = randomBytes(100);
+      final byte[] replacement;
+
+      try (FSDataOutputStream out = fs.append(file)) {
+        out.write(beforeRename);
+        out.hsync();
+        assertThat(renameParent ? fs.rename(dir, renamedDir) : fs.rename(file, renamed)).isTrue();
+        // Another file takes the old path. The appender must not write to it.
+        replacement = createFile(fs, file, 10);
+        out.write(afterRename);
+        out.hsync();
+        assertHsyncedContent(fs, renamed, prefix, beforeRename, afterRename);
+        out.write(beforeClose);
+      }
+
+      assertFileContent(fs, renamed, prefix, beforeRename, afterRename, beforeClose);
+      assertFileContent(fs, file, replacement);
+    }
+  }
+
+  @ParameterizedTest
+  @ValueSource(booleans = {false, true})
+  public void testDeleteWhileAppending(boolean hsync) throws Exception {
+    try (FileSystem fs = newOfs()) {
+      final Path file = newPath(fs);
+      createFile(fs, file, 100);
+      final FSDataOutputStream out = fs.append(file);
+      try {
+        out.write(randomBytes(100));
+        out.hsync();
+        assertThat(fs.delete(file, false)).isTrue();
+
+        out.write(randomBytes(100));
+        assertThatThrownBy(hsync ? out::hsync : out::close).isInstanceOf(IOException.class);
+      } finally {
+        IOUtils.closeQuietly(out);
+      }
+      // The deleted file is not resurrected.
+      assertThat(fs.exists(file)).isFalse();
+    }
+  }
+
+  @Test
+  public void testRecoverLeaseOfAbandonedAppender() throws Exception {
+    try (FileSystem writerFs = newOfs(); FileSystem fs = newOfs()) {
+      final Path file = newPath(fs);
+      final byte[] prefix = createFile(fs, file, 100);
+      final byte[] synced = randomBytes(BLOCK_SIZE + 100);
+      final byte[] more = randomBytes(100);
+      final FSDataOutputStream abandoned = writerFs.append(file);
+      try {
+        abandoned.write(synced);
+        abandoned.hsync();
+        // Stays in the client buffer, so it is lost with the writer.
+        abandoned.write(randomBytes(100));
+        assertThat(((LeaseRecoverable) fs).isFileClosed(file)).isFalse();
+
+        assertThat(((LeaseRecoverable) fs).recoverLease(file)).isTrue();
+
+        assertThat(((LeaseRecoverable) fs).isFileClosed(file)).isTrue();
+        assertFileContent(fs, file, prefix, synced);
+        try (FSDataOutputStream out = fs.append(file)) {
+          assertThat(out.getPos()).isEqualTo(prefix.length + synced.length);
+          out.write(more);
+        }
+        // The fenced writer cannot publish any more.
+        assertThatThrownBy(abandoned::hsync).isInstanceOf(IOException.class);
+      } finally {
+        IOUtils.closeQuietly(abandoned);
+      }
+      assertFileContent(fs, file, prefix, synced, more);
+    }
+  }
+
+  @Test
+  public void testRecoverLeaseOfAbandonedAppenderWithoutHsync() throws Exception {
+    try (FileSystem writerFs = newOfs(); FileSystem fs = newOfs()) {
+      final Path file = newPath(fs);
+      final byte[] prefix = createFile(fs, file, 100);
+      final FSDataOutputStream abandoned = writerFs.append(file);
+      try {
+        // Three blocks that OM knows only as allocated.
+        final byte[] unsynced = randomBytes(2 * BLOCK_SIZE + 100);
+        abandoned.write(unsynced);
+        abandoned.flush();
+        // OM reads the open record from the DB, where blocks have no pipeline.
+        cluster.getOzoneManager().awaitDoubleBufferFlush();
+
+        assertThat(((LeaseRecoverable) fs).recoverLease(file)).isTrue();
+
+        assertThat(((LeaseRecoverable) fs).isFileClosed(file)).isTrue();
+        // Nothing was synced, so the file may end anywhere in the unsynced data, but it holds nothing else.
+        final byte[] recovered = readFile(fs, file);
+        assertThat(recovered).startsWith(prefix).hasSize((int) fs.getFileStatus(file).getLen());
+        assertThat(Bytes.concat(prefix, unsynced)).startsWith(recovered);
+        final byte[] more = randomBytes(100);
+        try (FSDataOutputStream out = fs.append(file)) {
+          out.write(more);
+        }
+        assertFileContent(fs, file, recovered, more);
+      } finally {
+        IOUtils.closeQuietly(abandoned);
+      }
+    }
+  }
+
+  @Test
+  public void testAppendRecoversAbandonedAppender() throws Exception {
+    cluster.getOzoneManager().getConfiguration().set(OzoneConfigKeys.OZONE_OM_LEASE_SOFT_LIMIT, "3s");
+    // The writer never renews its lease, like a client that crashed.
+    try (FileSystem writerFs = newOfs(APPEND_LEASE_RENEW_INTERVAL, "1h"); FileSystem fs = newOfs()) {
+      final Path file = newPath(fs);
+      final byte[] prefix = createFile(fs, file, 100);
+      final byte[] synced = randomBytes(BLOCK_SIZE + 100);
+      final byte[] more = randomBytes(100);
+      final FSDataOutputStream abandoned = writerFs.append(file);
+      try {
+        abandoned.write(synced);
+        abandoned.hsync();
+        assertThatThrownBy(() -> ((LeaseRecoverable) fs).recoverLease(file)).isInstanceOfSatisfying(OMException.class,
+            e -> assertThat(e.getResult()).isEqualTo(OMException.ResultCodes.KEY_UNDER_LEASE_SOFT_LIMIT_PERIOD));
+
+        // Waits for the rest of the soft limit, recovers the lease and appends at the recovered end of the file.
+        try (FSDataOutputStream out = fs.append(file)) {
+          // The recovery commit kept every synced byte, also the ones in the block the writer was still filling.
+          assertThat(out.getPos()).isEqualTo(prefix.length + synced.length);
+          assertFileContent(fs, file, prefix, synced);
+          out.write(more);
+        }
+        assertThat(((LeaseRecoverable) fs).isFileClosed(file)).isTrue();
+
+        abandoned.write(randomBytes(100));
+        assertThatThrownBy(abandoned::hsync).isInstanceOf(IOException.class);
+      } finally {
+        IOUtils.closeQuietly(abandoned);
+      }
+      assertFileContent(fs, file, prefix, synced, more);
+    } finally {
+      cluster.getOzoneManager().getConfiguration().set(OzoneConfigKeys.OZONE_OM_LEASE_SOFT_LIMIT, "0s");
+    }
+  }
+
+  @Test
+  public void testRenewalKeepsIdleAppenderAlive() throws Exception {
+    cluster.getOzoneManager().getConfiguration().set(OzoneConfigKeys.OZONE_OM_LEASE_SOFT_LIMIT, "3s");
+    try (FileSystem writerFs = newOfs(APPEND_LEASE_RENEW_INTERVAL, "500ms"); FileSystem fs = newOfs()) {
+      final Path file = newPath(fs);
+      final byte[] prefix = createFile(fs, file, 100);
+      final byte[] first = randomBytes(100);
+      final byte[] second = randomBytes(100);
+
+      try (FSDataOutputStream out = writerFs.append(file)) {
+        out.write(first);
+        out.hsync();
+        // Idle for longer than the soft limit.
+        Thread.sleep(4000);
+
+        assertThatThrownBy(() -> ((LeaseRecoverable) fs).recoverLease(file)).isInstanceOfSatisfying(OMException.class,
+            e -> assertThat(e.getResult()).isEqualTo(OMException.ResultCodes.KEY_UNDER_LEASE_SOFT_LIMIT_PERIOD));
+        // Waits for the time OM reports, sees that the writer renewed its lease and gives up without recovery.
+        assertThatThrownBy(() -> fs.append(file)).isInstanceOfSatisfying(AppendConflictException.class,
+            e -> assertThat(e.getConflict().getWriterKind()).isEqualTo(AppendWriterKind.APPEND_WRITER));
+
+        out.write(second);
+        out.hsync();
+        assertHsyncedContent(fs, file, prefix, first, second);
+      }
+
+      assertFileContent(fs, file, prefix, first, second);
+    } finally {
+      cluster.getOzoneManager().getConfiguration().set(OzoneConfigKeys.OZONE_OM_LEASE_SOFT_LIMIT, "0s");
+    }
+  }
+
+  @Test
+  public void testAppendECFile() throws Exception {
+    final String ecBucket = uniqueObjectName("ec");
+    DataTestUtil.createBucket(client, bucket.getVolumeName(), BucketArgs.newBuilder()
+        .setBucketLayout(BucketLayout.FILE_SYSTEM_OPTIMIZED)
+        .setDefaultReplicationConfig(new DefaultReplicationConfig(
+            new ECReplicationConfig(3, 2, ECReplicationConfig.EcCodec.RS, (int) OzoneConsts.MB)))
+        .build(), ecBucket);
+    try (FileSystem fs = newOfs(); FileSystem reader = newOfs()) {
+      final Path file = new Path(ofsBucketPath(ecBucket), "file");
+      final byte[] prefix = createFile(fs, file, 1000);
+      final byte[] suffix = randomBytes(2000);
+
+      try (FSDataOutputStream out = fs.append(file)) {
+        assertThat(out.getPos()).isEqualTo(prefix.length);
+        out.write(suffix);
+      }
+
+      assertFileContent(reader, file, prefix, suffix);
+    }
+  }
+
+  @Test
+  public void testSnapshotBeforeAppend() throws Exception {
+    // In its own bucket: a snapshot holds back key deletion in its bucket, which other tests wait for.
+    final String snapshotBucket = uniqueObjectName("snapshot");
+    DataTestUtil.createBucket(client, bucket.getVolumeName(),
+        BucketArgs.newBuilder().setBucketLayout(BucketLayout.FILE_SYSTEM_OPTIMIZED).build(), snapshotBucket);
+    try (FileSystem fs = newOfs()) {
+      final Path file = new Path(ofsBucketPath(snapshotBucket), "file");
+      final byte[] prefix = createFile(fs, file, BLOCK_SIZE / 2);
+      final byte[] suffix = randomBytes(BLOCK_SIZE);
+      final Path fileInSnapshot = new Path(fs.createSnapshot(file.getParent(), "snap"), file.getName());
+
+      try (FSDataOutputStream out = fs.append(file)) {
+        out.write(suffix);
+        out.hsync();
+        assertFileContent(fs, fileInSnapshot, prefix);
+      }
+
+      assertFileContent(fs, file, prefix, suffix);
+      assertFileContent(fs, fileInSnapshot, prefix);
+    }
+  }
+
+  @Test
+  public void testAppendNotSupported() throws Exception {
+    final String legacyBucket = uniqueObjectName("legacy");
+    DataTestUtil.createBucket(client, bucket.getVolumeName(),
+        BucketArgs.newBuilder().setBucketLayout(BucketLayout.LEGACY).build(), legacyBucket);
+    try (FileSystem fs = newOfs()) {
+      final Path file = newPath(fs);
+      final byte[] data = createFile(fs, file, 10);
+      final Path legacyFile = new Path(ofsBucketPath(legacyBucket), "file");
+      final byte[] legacyData = createFile(fs, legacyFile, 10);
+
+      assertThat(fs.hasPathCapability(file, CommonPathCapabilities.FS_APPEND)).isTrue();
+      assertThat(fs.hasPathCapability(legacyFile, CommonPathCapabilities.FS_APPEND)).isFalse();
+      assertThatThrownBy(() -> fs.append(legacyFile)).isInstanceOfSatisfying(OMException.class,
+          e -> assertThat(e.getResult()).isEqualTo(OMException.ResultCodes.APPEND_NOT_SUPPORTED))
+          .hasMessageContaining("does not support append");
+      assertFileContent(fs, legacyFile, legacyData);
+
+      cluster.getOzoneManager().getConfiguration().setBoolean(OMConfigKeys.OZONE_OM_APPEND_ENABLED, false);
+      try {
+        assertThatThrownBy(() -> fs.append(file)).isInstanceOfSatisfying(OMException.class,
+            e -> assertThat(e.getResult()).isEqualTo(OMException.ResultCodes.APPEND_NOT_SUPPORTED))
+            .hasMessageContaining(OMConfigKeys.OZONE_OM_APPEND_ENABLED);
+      } finally {
+        cluster.getOzoneManager().getConfiguration().setBoolean(OMConfigKeys.OZONE_OM_APPEND_ENABLED, true);
+      }
+      assertFileContent(fs, file, data);
+    }
+  }
+
+  /** @return a new file system instance for the test bucket (o3fs) or the cluster (ofs), not from the cache. */
+  private static FileSystem newFs(String scheme, String... overrides) throws IOException {
+    final OzoneConfiguration conf = new OzoneConfiguration(CONF);
+    for (int i = 0; i < overrides.length; i += 2) {
+      conf.set(overrides[i], overrides[i + 1]);
+    }
+    return FileSystem.newInstance(URI.create(OZONE_OFS_URI_SCHEME.equals(scheme)
+        ? String.format("%s://%s/", scheme, CONF.get(OZONE_OM_ADDRESS_KEY))
+        : String.format("%s://%s.%s/", scheme, bucket.getName(), bucket.getVolumeName())), conf);
+  }
+
+  private static FileSystem newOfs(String... overrides) throws IOException {
+    return newFs(OZONE_OFS_URI_SCHEME, overrides);
+  }
+
+  /** @return a path in the test bucket that no test used yet. */
+  private static Path newPath(FileSystem fs) {
+    return new Path(OZONE_OFS_URI_SCHEME.equals(fs.getScheme()) ? ofsBucketPath(bucket.getName()) : OZONE_ROOT,
+        uniqueObjectName("append"));
+  }
+
+  private static String ofsBucketPath(String bucketName) {
+    return OZONE_ROOT + bucket.getVolumeName() + OZONE_URI_DELIMITER + bucketName;
+  }
+
+  private static byte[] randomBytes(int length) {
+    final byte[] data = new byte[length];
+    ThreadLocalRandom.current().nextBytes(data);
+    return data;
+  }
+
+  private static byte[] createFile(FileSystem fs, Path file, int length) throws IOException {
+    final byte[] data = randomBytes(length);
+    try (FSDataOutputStream out = fs.create(file, true)) {
+      out.write(data);
+    }
+    return data;
+  }
+
+  private static void assertFileContent(FileSystem fs, Path file, byte[]... parts) throws Exception {
+    final byte[] expected = Bytes.concat(parts);
+    assertThat(fs.getFileStatus(file).getLen()).isEqualTo(expected.length);
+    assertThat(readFile(fs, file)).hasSize(expected.length).isEqualTo(expected);
+  }
+
+  /** For a file whose writer is still open: an hsync returns before every datanode applied the PutBlock. */
+  private static void assertHsyncedContent(FileSystem fs, Path file, byte[]... parts) throws Exception {
+    final byte[] expected = Bytes.concat(parts);
+    assertThat(fs.getFileStatus(file).getLen()).isEqualTo(expected.length);
+    GenericTestUtils.waitFor(() -> {
+      try {
+        return Arrays.equals(expected, readFile(fs, file));
+      } catch (IOException e) {
+        throw new UncheckedIOException(e);
+      }
+    }, 100, 5000);
+  }
+
+  private static byte[] readFile(FileSystem fs, Path file) throws IOException {
+    try (FSDataInputStream in = fs.open(file)) {
+      return ByteStreams.toByteArray(in);
     }
   }
 

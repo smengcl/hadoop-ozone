@@ -44,6 +44,8 @@ import static org.mockito.Mockito.timeout;
 import static org.mockito.Mockito.verify;
 
 import com.google.common.cache.Cache;
+import com.google.common.io.ByteStreams;
+import com.google.common.primitives.Bytes;
 import java.io.File;
 import java.io.IOException;
 import java.net.URI;
@@ -177,6 +179,7 @@ class TestOzoneAtRestEncryption {
     conf.set(HddsConfigKeys.OZONE_METADATA_DIRS, testDir.getAbsolutePath());
     conf.setBoolean(HddsConfigKeys.HDDS_BLOCK_TOKEN_ENABLED, true);
     conf.set(OZONE_METADATA_DIRS, testDir.getAbsolutePath());
+    conf.setBoolean(OMConfigKeys.OZONE_OM_APPEND_ENABLED, true);
     CertificateClientTestImpl certificateClientTest =
         new CertificateClientTestImpl(conf);
 
@@ -327,6 +330,26 @@ class TestOzoneAtRestEncryption {
 
     createAndVerifyKeyData(linkBucket);
     createAndVerifyStreamKeyData(linkBucket);
+  }
+
+  @Test
+  void testAppendWithEncryption() throws Exception {
+    OzoneBucket bucket = createVolumeAndBucket(UUID.randomUUID().toString(), UUID.randomUUID().toString(),
+        BucketLayout.FILE_SYSTEM_OPTIMIZED);
+    String keyName = UUID.randomUUID().toString();
+    // The prefix does not end on a cipher block boundary, and the suffix crosses a block boundary.
+    byte[] prefix = generateRandomData(BLOCK_SIZE + 37);
+    byte[] suffix = generateRandomData(BLOCK_SIZE + 11);
+    DataTestUtil.createKey(bucket, keyName, ReplicationConfig.fromTypeAndFactor(RATIS, ONE), prefix);
+
+    try (OzoneOutputStream out = bucket.appendFile(keyName)) {
+      out.write(suffix);
+    }
+
+    assertNotNull(bucket.getKey(keyName).getFileEncryptionInfo());
+    try (OzoneInputStream in = bucket.readKey(keyName)) {
+      assertThat(ByteStreams.toByteArray(in)).isEqualTo(Bytes.concat(prefix, suffix));
+    }
   }
 
   static void createAndVerifyStreamKeyData(OzoneBucket bucket)
