@@ -109,14 +109,18 @@ $ ozone admin om lof --service-id=om-service-test1 --length=3 --prefix=/volumelo
 5 total open files (est.). Showing 3 open files (limit 3) under path prefix:
   /volume-lof/buck1
 
-Client ID		Creation time	Hsync'ed	Open File Path
-111726338148007937	1704808626523	No		/volume-lof/buck1/-9223372036854774527/key0
-111726338151415810	1704808626578	No		/volume-lof/buck1/-9223372036854774527/key1
-111726338152071171	1704808626588	No		/volume-lof/buck1/-9223372036854774527/key2
+Client ID		Creation time	Hsync'ed	Writer		Open File Path
+111726338148007937	1704808626523	No		ORDINARY_WRITER	/volume-lof/buck1/-9223372036854774527/key0
+111726338151415810	1704808626578	No		ORDINARY_WRITER	/volume-lof/buck1/-9223372036854774527/key1
+111726338152071171	1704808626588	No		ORDINARY_WRITER	/volume-lof/buck1/-9223372036854774527/key2
 
 To get the next batch of open keys, run:
   ozone admin om lof --service-id=om-service-test1 --length=3 --prefix=/volume-lof/buck1 --start=/-9223372036854775552/-9223372036854775040/-9223372036854774527/key2/111726338152071171
 ```
+
+The `Writer` column is `ORDINARY_WRITER`, `HSYNC_WRITER` or `APPEND_WRITER`. The line of an append session ends with its details, for example `phase=APPEND_ACTIVE prefixLength=4194304 suffixBlocks=1 lastRenewed=2024-01-09T13:57:06.523Z`.
+In JSON output each entry has `writerKind`, and an append session also has `suffixBlockCount` and `keyInfo.appendSession` (phase, prefix length, last renewal time).
+The leftover open key of an append session whose file was deleted (phase `APPEND_INVALIDATED`) is listed only with `--show-deleted`.
 
 - In JSON, list open files (keys) under bucket `/volumelof/buck1` with a batch size of 3:
 

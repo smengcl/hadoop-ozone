@@ -17,6 +17,7 @@
 
 package org.apache.hadoop.ozone.admin.om;
 
+import com.fasterxml.jackson.databind.node.ObjectNode;
 import java.io.IOException;
 import java.time.Instant;
 import java.util.List;
@@ -27,10 +28,14 @@ import org.apache.hadoop.ozone.OzoneConsts;
 import org.apache.hadoop.ozone.OzoneManagerVersion;
 import org.apache.hadoop.ozone.client.rpc.RpcClient;
 import org.apache.hadoop.ozone.om.helpers.ListOpenFilesResult;
+import org.apache.hadoop.ozone.om.helpers.OmAppendSession;
 import org.apache.hadoop.ozone.om.helpers.OmKeyInfo;
+import org.apache.hadoop.ozone.om.helpers.OmKeyLocationInfoGroup;
 import org.apache.hadoop.ozone.om.helpers.OpenKeySession;
 import org.apache.hadoop.ozone.om.helpers.ServiceInfoEx;
 import org.apache.hadoop.ozone.om.protocol.OzoneManagerProtocol;
+import org.apache.hadoop.ozone.protocol.proto.OzoneManagerProtocolProtos.AppendSessionPhase;
+import org.apache.hadoop.ozone.protocol.proto.OzoneManagerProtocolProtos.AppendWriterKind;
 import picocli.CommandLine;
 
 /**
@@ -100,7 +105,7 @@ public class ListOpenFilesSubCommand implements Callable<Void> {
     return null;
   }
 
-  private void execute(OzoneManagerProtocol ozoneManagerClient) throws IOException {
+  void execute(OzoneManagerProtocol ozoneManagerClient) throws IOException {
     ServiceInfoEx serviceInfoEx = ozoneManagerClient.getServiceInfo();
     final OzoneManagerVersion omVersion = RpcClient.getOmVersion(serviceInfoEx);
     if (omVersion.compareTo(OzoneManagerVersion.HBASE_SUPPORT) < 0) {
@@ -113,7 +118,7 @@ public class ListOpenFilesSubCommand implements Callable<Void> {
         ozoneManagerClient.listOpenFiles(pathPrefix, limit, startItem);
 
     if (!showDeleted) {
-      res.getOpenKeys().removeIf(o -> o.getKeyInfo().getMetadata().containsKey(OzoneConsts.DELETED_HSYNC_KEY));
+      res.getOpenKeys().removeIf(o -> isDeleted(o.getKeyInfo()));
     }
     if (!showOverwritten) {
       res.getOpenKeys().removeIf(o -> o.getKeyInfo().getMetadata().containsKey(OzoneConsts.OVERWRITTEN_HSYNC_KEY));
@@ -129,7 +134,17 @@ public class ListOpenFilesSubCommand implements Callable<Void> {
 
   private void printOpenKeysListAsJson(ListOpenFilesResult res)
       throws IOException {
-    System.out.println(JsonUtils.toJsonStringWithDefaultPrettyPrinter(res));
+    ObjectNode root = JsonUtils.createObjectNode(res);
+    // The openKeys array has one node per open key, in the order of the result.
+    for (int i = 0; i < res.getOpenKeys().size(); i++) {
+      OmKeyInfo omKeyInfo = res.getOpenKeys().get(i).getKeyInfo();
+      ObjectNode openKey = (ObjectNode) root.get("openKeys").get(i);
+      openKey.put("writerKind", getWriterKind(omKeyInfo).name());
+      if (omKeyInfo.getAppendSession() != null) {
+        openKey.put("suffixBlockCount", getBlockCount(omKeyInfo));
+      }
+    }
+    System.out.println(JsonUtils.toJsonStringWithDefaultPrettyPrinter(root));
   }
 
   private void printOpenKeysList(ListOpenFilesResult res) {
@@ -173,11 +188,25 @@ public class ListOpenFilesSubCommand implements Callable<Void> {
           }
         }
       } else {
-        line.append(showDeleted ? "No\t\tNo\t\t" : "No\t\t")
-            .append(showOverwritten ? "No\t" : "");
+        line.append("No\t\t");
+        if (showDeleted) {
+          line.append(isDeleted(omKeyInfo) ? "Yes\t\t" : "No\t\t");
+        }
+        if (showOverwritten) {
+          line.append("No\t");
+        }
       }
 
+      line.append(getWriterKind(omKeyInfo)).append('\t');
       line.append(getFullPathFromKeyInfo(omKeyInfo));
+
+      OmAppendSession appendSession = omKeyInfo.getAppendSession();
+      if (appendSession != null) {
+        line.append("\tphase=").append(appendSession.getPhase())
+            .append(" prefixLength=").append(appendSession.getPrefixLength())
+            .append(" suffixBlocks=").append(getBlockCount(omKeyInfo))
+            .append(" lastRenewed=").append(Instant.ofEpochMilli(appendSession.getLastRenewedAt()));
+      }
 
       System.out.println(line);
     }
@@ -225,7 +254,7 @@ public class ListOpenFilesSubCommand implements Callable<Void> {
     if (showOverwritten) {
       sb.append("Overwritten\t");
     }
-    sb.append("Open File Path");
+    sb.append("Writer\t\tOpen File Path");
     return sb.toString();
   }
 
@@ -243,6 +272,26 @@ public class ListOpenFilesSubCommand implements Callable<Void> {
     }
     nextBatchCmd.append(" --start=").append(lastElementFullPath);
     return nextBatchCmd.toString();
+  }
+
+  /** An invalidated append session is what is left of a deleted file, like a deleted hsync'ed key. */
+  private static boolean isDeleted(OmKeyInfo omKeyInfo) {
+    OmAppendSession appendSession = omKeyInfo.getAppendSession();
+    return omKeyInfo.getMetadata().containsKey(OzoneConsts.DELETED_HSYNC_KEY)
+        || (appendSession != null && appendSession.getPhase() == AppendSessionPhase.APPEND_INVALIDATED);
+  }
+
+  private static AppendWriterKind getWriterKind(OmKeyInfo omKeyInfo) {
+    if (omKeyInfo.getAppendSession() != null) {
+      return AppendWriterKind.APPEND_WRITER;
+    }
+    return omKeyInfo.isHsync() ? AppendWriterKind.HSYNC_WRITER : AppendWriterKind.ORDINARY_WRITER;
+  }
+
+  /** For an append session, the open key holds only the blocks allocated by the session (the suffix). */
+  private static long getBlockCount(OmKeyInfo omKeyInfo) {
+    OmKeyLocationInfoGroup locations = omKeyInfo.getLatestVersionLocations();
+    return locations == null ? 0 : locations.getLocationListCount();
   }
 
   private String getFullPathFromKeyInfo(OmKeyInfo oki) {
