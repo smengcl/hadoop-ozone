@@ -29,6 +29,9 @@ public enum OMAction implements AuditAction {
 
   HSYNC,
   RECOVER_LEASE,
+  APPEND_FILE,
+  RENEW_APPEND_LEASES,
+  ABORT_OPEN_KEY,
 
   CREATE_VOLUME,
   CREATE_BUCKET,

@@ -25,6 +25,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.io.IOException;
@@ -40,6 +41,7 @@ import org.apache.hadoop.hdds.client.StandaloneReplicationConfig;
 import org.apache.hadoop.hdds.protocol.proto.HddsProtos.ReplicationFactor;
 import org.apache.hadoop.hdds.scm.pipeline.Pipeline;
 import org.apache.hadoop.hdds.scm.pipeline.PipelineID;
+import org.apache.hadoop.hdds.utils.db.Codec;
 import org.apache.hadoop.ozone.ClientVersion;
 import org.apache.hadoop.ozone.OzoneAcl;
 import org.apache.hadoop.ozone.OzoneConsts;
@@ -114,6 +116,33 @@ public class TestOmKeyInfo {
         (ECReplicationConfig) recovered.getReplicationConfig();
     assertEquals(3, config.getData());
     assertEquals(2, config.getParity());
+  }
+
+  @Test
+  public void appendFieldsSurviveCodecsAndCopy() throws IOException {
+    OmKeyInfo plain = createOmKeyInfo(RatisReplicationConfig.getInstance(ReplicationFactor.THREE));
+    assertNull(plain.getAppendOwnerSessionId());
+    assertNull(plain.getAppendSession());
+    assertFalse(plain.getProtobuf(ClientVersion.CURRENT_VERSION).hasAppendOwnerSessionId());
+    assertFalse(plain.getProtobuf(ClientVersion.CURRENT_VERSION).hasAppendSession());
+
+    OmAppendSession session = OmAppendSession.newActive(123L, 2, 1000L).withRenewal(2000L);
+    OmKeyInfo key = plain.toBuilder().setAppendOwnerSessionId(42L).setAppendSession(session).build();
+
+    for (Codec<OmKeyInfo> codec : Arrays.asList(OmKeyInfo.getKeyTableCodec(), OmKeyInfo.getOpenKeyTableCodec())) {
+      OmKeyInfo decoded = codec.fromPersistedFormat(codec.toPersistedFormat(key));
+      assertEquals(42L, decoded.getAppendOwnerSessionId());
+      assertEquals(session, decoded.getAppendSession());
+    }
+    OmKeyInfo copy = key.copyObject();
+    assertEquals(42L, copy.getAppendOwnerSessionId());
+    assertEquals(session, copy.getAppendSession());
+
+    // A delayed renewal must not move the lease backwards.
+    assertEquals(2000L, session.withRenewal(1500L).getLastRenewedAt());
+    OmKeyInfo released = key.toBuilder().setAppendOwnerSessionId(null).setAppendSession(null).build();
+    assertNull(released.getAppendOwnerSessionId());
+    assertNull(released.getAppendSession());
   }
 
   private OmKeyInfo createOmKeyInfo(ReplicationConfig replicationConfig) {

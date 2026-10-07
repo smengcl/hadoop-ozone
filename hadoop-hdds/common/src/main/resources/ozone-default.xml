@@ -1493,6 +1493,17 @@
   </property>
 
   <property>
+    <name>ozone.om.append.enabled</name>
+    <value>false</value>
+    <tag>OZONE, OM</tag>
+    <description>
+      Whether OM admits new append sessions (FileSystem.append) on existing files. The APPEND layout feature must
+      also be finalized. Setting this to false rejects new append sessions only: sessions that were already admitted
+      can still renew, allocate, hsync, close and be recovered.
+    </description>
+  </property>
+
+  <property>
     <name>ozone.om.lease.hard.limit</name>
     <value>7d</value>
     <tag>OZONE, OM, PERFORMANCE</tag>

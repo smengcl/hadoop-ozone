@@ -172,6 +172,9 @@ enum Type {
   GetCallerIdentity = 156;
   SnapshotCount = 157;
   GetBucketDeletedBytes = 158;
+  AppendFile = 159;
+  RenewAppendLeases = 160;
+  AbortOpenKey = 161;
 }
 
 enum SafeMode {
@@ -339,6 +342,9 @@ message OMRequest {
   optional GetCallerIdentityRequest         getCallerIdentityRequest       = 158;
   optional SnapshotCountRequest snapshotCountRequest = 159;
   optional GetBucketDeletedBytesRequest     getBucketDeletedBytesRequest   = 160;
+  optional AppendFileRequest                appendFileRequest              = 161;
+  optional RenewAppendLeasesRequest         renewAppendLeasesRequest       = 162;
+  optional AbortOpenKeyRequest              abortOpenKeyRequest            = 163;
 }
 
 message OMResponse {
@@ -490,6 +496,9 @@ message OMResponse {
   optional GetCallerIdentityResponse         getCallerIdentityResponse      = 156;
   optional SnapshotCountResponse snapshotCountResponse = 157;
   optional GetBucketDeletedBytesResponse     getBucketDeletedBytesResponse  = 158;
+  optional AppendFileResponse                appendFileResponse             = 159;
+  optional RenewAppendLeasesResponse         renewAppendLeasesResponse      = 160;
+  optional AbortOpenKeyResponse              abortOpenKeyResponse           = 161;
 }
 
 enum Status {
@@ -630,6 +639,12 @@ enum Status {
     UPDATE_ID_NOT_MATCH = 103;
     REVOKED_TOKEN = 104;
     MALFORMED_POLICY_DOCUMENT = 105;
+    // The file has an active writer (append session or ordinary open key), so append cannot acquire it.
+    APPEND_WRITER_CONFLICT = 106;
+    // Append is disabled, not finalized, or not supported for this bucket layout or file.
+    APPEND_NOT_SUPPORTED = 107;
+    // The append session is unknown, fenced by recovery, or invalidated.
+    APPEND_SESSION_NOT_FOUND = 108;
 }
 
 /**
@@ -1247,6 +1262,28 @@ message KeyInfo {
   // This allows a key to be created an committed atomically if the original has not
   // been modified.
     optional uint64 expectedDataGeneration = 22;
+    // Committed record only: session ID (the open key client ID) of the append session that owns this file.
+    optional uint64 appendOwnerSessionId = 23;
+    // Open record only: presence distinguishes an append session from an ordinary create.
+    optional AppendSessionProto appendSession = 24;
+}
+
+enum AppendSessionPhase {
+    // Writer mutations (allocate, renew, hsync, close) are permitted.
+    APPEND_ACTIVE = 1;
+    // The original writer is fenced. Only lease recovery may publish.
+    APPEND_RECOVERING = 2;
+    // The file was deleted. Cleanup only.
+    APPEND_INVALIDATED = 3;
+}
+
+message AppendSessionProto {
+    optional AppendSessionPhase phase = 1;
+    // Length and block count of the committed file when the session was admitted. Immutable.
+    optional uint64 prefixLength = 2;
+    optional uint32 prefixBlockCount = 3;
+    optional uint64 openedAt = 4;
+    optional uint64 lastRenewedAt = 5;
 }
 
 // KeyInfoProtoLight is a lightweight subset of KeyInfo message containing
@@ -1769,6 +1806,68 @@ message ListOpenFilesResponse {
   // result
   repeated uint64 clientID = 4;
   repeated KeyInfo keyInfo = 5;
+}
+
+message AppendFileRequest {
+    required KeyArgs keyArgs = 1;
+    // Session ID. Set in OM HA during preExecute step so all OMs use the same ID.
+    optional uint64 clientID = 2;
+}
+
+message AppendFileResponse {
+    // The new open record: file attributes, appendSession, and an empty block list.
+    optional KeyInfo keyInfo = 1;
+    // Session ID that follow up allocate, hsync, commit and renew requests must carry as clientID.
+    optional uint64 ID = 2;
+    optional uint64 openVersion = 3;
+    // Set together with status APPEND_WRITER_CONFLICT.
+    optional AppendConflictInfo conflict = 4;
+}
+
+enum AppendWriterKind {
+    // Create or overwrite that has not hsync'ed.
+    ORDINARY_WRITER = 1;
+    // Create or overwrite stream that has hsync'ed. Needs explicit lease recovery.
+    HSYNC_WRITER = 2;
+    // Renewable append session. Eligible for automatic recovery once its lease expires.
+    APPEND_WRITER = 3;
+}
+
+message AppendConflictInfo {
+    optional AppendWriterKind writerKind = 1;
+    optional uint64 sessionId = 2;
+    optional AppendSessionPhase phase = 3;
+    optional uint64 lastRenewedAt = 4;
+    // Server computed time until the owner becomes eligible for recovery. 0 if eligible now.
+    optional uint64 remainingMsUntilRecoverable = 5;
+}
+
+message AppendSessionKey {
+    required string volumeName = 1;
+    required string bucketName = 2;
+    required uint64 sessionId = 3;
+}
+
+message RenewAppendLeasesRequest {
+    repeated AppendSessionKey sessions = 1;
+    // Set by the leader in preExecute so replay does not sample another clock.
+    optional uint64 renewalTime = 2;
+}
+
+message RenewAppendLeasesResponse {
+    // One result per requested session, in request order. False if the session is gone or fenced.
+    repeated bool renewed = 1;
+}
+
+message AbortOpenKeyRequest {
+    required string volumeName = 1;
+    required string bucketName = 2;
+    required string keyName = 3;
+    // Identifies the exact open key, as shown by "ozone admin om lof".
+    required uint64 clientID = 4;
+}
+
+message AbortOpenKeyResponse {
 }
 
 message GetBucketDeletedBytesRequest {

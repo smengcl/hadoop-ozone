@@ -66,6 +66,7 @@ import org.apache.hadoop.ozone.om.helpers.TenantStateList;
 import org.apache.hadoop.ozone.om.helpers.TenantUserInfoValue;
 import org.apache.hadoop.ozone.om.helpers.TenantUserList;
 import org.apache.hadoop.ozone.protocol.proto.OzoneManagerProtocolProtos;
+import org.apache.hadoop.ozone.protocol.proto.OzoneManagerProtocolProtos.AppendSessionKey;
 import org.apache.hadoop.ozone.protocol.proto.OzoneManagerProtocolProtos.CancelPrepareResponse;
 import org.apache.hadoop.ozone.protocol.proto.OzoneManagerProtocolProtos.EchoRPCResponse;
 import org.apache.hadoop.ozone.protocol.proto.OzoneManagerProtocolProtos.GetLifecycleServiceStatusResponse;
@@ -1183,6 +1184,41 @@ public interface OzoneManagerProtocol
    * @throws IOException if an error occurs
    */
   LeaseKeyInfo recoverLease(String volumeName, String bucketName, String keyName, boolean force) throws IOException;
+
+  /**
+   * Reopens an existing file for a single appender. The returned session's ID must be passed as clientID to the
+   * follow up allocateBlock, hsyncKey, commitKey and renewAppendLeases calls. Its key info is the new open record:
+   * the file attributes with an empty block list. The writer starts at appendSession.prefixLength and allocates
+   * every block it writes; it never sees, writes to or resends the committed prefix blocks.
+   *
+   * @throws org.apache.hadoop.ozone.om.exceptions.AppendConflictException if the file already has a writer
+   * @throws IOException if the file is missing, is a directory, or append is disabled or unsupported
+   */
+  default OpenKeySession appendFile(OmKeyArgs keyArgs) throws IOException {
+    throw new UnsupportedOperationException("OzoneManager does not require " +
+        "this to be implemented, as write requests use a new approach.");
+  }
+
+  /**
+   * Renews the leases of append sessions owned by this client.
+   *
+   * @return one result per session in request order. False means the session no longer exists or was fenced, so the
+   *     writer must stop.
+   */
+  default List<Boolean> renewAppendLeases(List<AppendSessionKey> sessions) throws IOException {
+    throw new UnsupportedOperationException("OzoneManager does not require " +
+        "this to be implemented, as write requests use a new approach.");
+  }
+
+  /**
+   * Administrator only. Aborts one ordinary (not append, not hsync'ed) open key, identified by its path and the
+   * client ID shown by listOpenFiles. Its blocks are handed to the deletion path and a late allocate or commit from
+   * that writer fails.
+   */
+  default void abortOpenKey(String volumeName, String bucketName, String keyName, long clientID) throws IOException {
+    throw new UnsupportedOperationException("OzoneManager does not require " +
+        "this to be implemented, as write requests use a new approach.");
+  }
 
   /**
    * Update modification time and access time of a file.

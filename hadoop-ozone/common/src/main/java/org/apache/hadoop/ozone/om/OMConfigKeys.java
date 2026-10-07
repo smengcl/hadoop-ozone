@@ -134,6 +134,9 @@ public final class OMConfigKeys {
   public static final String OZONE_OM_LEASE_HARD_LIMIT_DEFAULT =
       "7d";
 
+  public static final String OZONE_OM_APPEND_ENABLED = "ozone.om.append.enabled";
+  public static final boolean OZONE_OM_APPEND_ENABLED_DEFAULT = false;
+
   public static final String OZONE_OM_OPEN_KEY_CLEANUP_LIMIT_PER_TASK =
       "ozone.om.open.key.cleanup.limit.per.task";
   public static final int OZONE_OM_OPEN_KEY_CLEANUP_LIMIT_PER_TASK_DEFAULT =

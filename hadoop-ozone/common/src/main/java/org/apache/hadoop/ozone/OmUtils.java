@@ -340,6 +340,9 @@ public final class OmUtils {
     case DeleteLifecycleConfiguration:
     case SetLifecycleServiceStatus:
     case SaveLifecycleScanState:
+    case AppendFile:
+    case RenewAppendLeases:
+    case AbortOpenKey:
       return false;
     case UnknownCommand:
       return false;
@@ -487,6 +490,9 @@ public final class OmUtils {
     case DeleteLifecycleConfiguration:
     case SetLifecycleServiceStatus:
     case SaveLifecycleScanState:
+    case AppendFile:
+    case RenewAppendLeases:
+    case AbortOpenKey:
     case UnknownCommand:
       return false;
     case EchoRPC:

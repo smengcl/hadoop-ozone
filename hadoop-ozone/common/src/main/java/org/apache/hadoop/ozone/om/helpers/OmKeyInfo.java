@@ -125,6 +125,11 @@ public final class OmKeyInfo extends WithParentObjectId
   // been modified.
   private final Long expectedDataGeneration;
 
+  // Committed record: ID of the append session that owns this file, null if there is no append reservation.
+  private final Long appendOwnerSessionId;
+  // Open record: non-null marks an append session (as opposed to an ordinary create) and holds its lease state.
+  private final OmAppendSession appendSession;
+
   private OmKeyInfo(Builder b) {
     super(b);
     this.volumeName = b.volumeName;
@@ -143,6 +148,8 @@ public final class OmKeyInfo extends WithParentObjectId
     this.ownerName = b.ownerName;
     this.tags = b.tags.build();
     this.expectedDataGeneration = b.expectedDataGeneration;
+    this.appendOwnerSessionId = b.appendOwnerSessionId;
+    this.appendSession = b.appendSession;
   }
 
   /**
@@ -219,6 +226,14 @@ public final class OmKeyInfo extends WithParentObjectId
 
   public Long getExpectedDataGeneration() {
     return expectedDataGeneration;
+  }
+
+  public Long getAppendOwnerSessionId() {
+    return appendOwnerSessionId;
+  }
+
+  public OmAppendSession getAppendSession() {
+    return appendSession;
   }
 
   public String getOwnerName() {
@@ -526,6 +541,8 @@ public final class OmKeyInfo extends WithParentObjectId
     private boolean isFile;
     private final MapBuilder<String, String> tags;
     private Long expectedDataGeneration = null;
+    private Long appendOwnerSessionId = null;
+    private OmAppendSession appendSession = null;
 
     public Builder() {
       this.acls = AclListBuilder.empty();
@@ -548,6 +565,8 @@ public final class OmKeyInfo extends WithParentObjectId
       this.fileChecksum = obj.fileChecksum;
       this.isFile = obj.isFile;
       this.expectedDataGeneration = obj.expectedDataGeneration;
+      this.appendOwnerSessionId = obj.appendOwnerSessionId;
+      this.appendSession = obj.appendSession;
       this.tags = MapBuilder.of(obj.tags);
       obj.keyLocationVersions.forEach(keyLocationVersion ->
           this.omKeyLocationInfoGroups.add(
@@ -719,6 +738,16 @@ public final class OmKeyInfo extends WithParentObjectId
       return this;
     }
 
+    public Builder setAppendOwnerSessionId(Long sessionId) {
+      this.appendOwnerSessionId = sessionId;
+      return this;
+    }
+
+    public Builder setAppendSession(OmAppendSession session) {
+      this.appendSession = session;
+      return this;
+    }
+
     @Override
     protected void validate() {
       super.validate();
@@ -867,6 +896,12 @@ public final class OmKeyInfo extends WithParentObjectId
     if (isOpenKey && expectedDataGeneration != null) {
       kb.setExpectedDataGeneration(expectedDataGeneration);
     }
+    if (appendOwnerSessionId != null) {
+      kb.setAppendOwnerSessionId(appendOwnerSessionId);
+    }
+    if (appendSession != null) {
+      kb.setAppendSession(appendSession.toProtobuf());
+    }
     if (ownerName != null) {
       kb.setOwnerName(ownerName);
     }
@@ -919,6 +954,13 @@ public final class OmKeyInfo extends WithParentObjectId
     }
     if (keyInfo.hasExpectedDataGeneration()) {
       builder.setExpectedDataGeneration(keyInfo.getExpectedDataGeneration());
+    }
+
+    if (keyInfo.hasAppendOwnerSessionId()) {
+      builder.setAppendOwnerSessionId(keyInfo.getAppendOwnerSessionId());
+    }
+    if (keyInfo.hasAppendSession()) {
+      builder.setAppendSession(OmAppendSession.fromProtobuf(keyInfo.getAppendSession()));
     }
 
     if (keyInfo.hasOwnerName()) {

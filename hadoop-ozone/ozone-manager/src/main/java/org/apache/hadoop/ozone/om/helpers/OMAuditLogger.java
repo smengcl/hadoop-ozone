@@ -72,6 +72,9 @@ public final class OMAuditLogger {
     CMD_AUDIT_ACTION_MAP.put(Type.DeleteSnapshot, OMAction.DELETE_SNAPSHOT);
     CMD_AUDIT_ACTION_MAP.put(Type.RenameSnapshot, OMAction.RENAME_SNAPSHOT);
     CMD_AUDIT_ACTION_MAP.put(Type.RecoverLease, OMAction.RECOVER_LEASE);
+    CMD_AUDIT_ACTION_MAP.put(Type.AppendFile, OMAction.APPEND_FILE);
+    CMD_AUDIT_ACTION_MAP.put(Type.RenewAppendLeases, OMAction.RENEW_APPEND_LEASES);
+    CMD_AUDIT_ACTION_MAP.put(Type.AbortOpenKey, OMAction.ABORT_OPEN_KEY);
     CMD_AUDIT_ACTION_MAP.put(Type.CreateDirectory, OMAction.CREATE_DIRECTORY);
     CMD_AUDIT_ACTION_MAP.put(Type.CreateFile, OMAction.CREATE_FILE);
     CMD_AUDIT_ACTION_MAP.put(Type.CreateKey, OMAction.ALLOCATE_KEY);
