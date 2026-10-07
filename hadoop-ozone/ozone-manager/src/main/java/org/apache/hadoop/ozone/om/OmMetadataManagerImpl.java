@@ -134,6 +134,7 @@ import org.apache.hadoop.ozone.om.lock.ReadOnlyHierarchicalResourceLockManager;
 import org.apache.hadoop.ozone.om.protocolPB.OzoneManagerProtocolClientSideTranslatorPB;
 import org.apache.hadoop.ozone.om.request.file.OMFileRequest;
 import org.apache.hadoop.ozone.om.request.util.OMMultipartUploadUtils;
+import org.apache.hadoop.ozone.om.request.util.OmAppendUtil;
 import org.apache.hadoop.ozone.om.snapshot.SnapshotUtils;
 import org.apache.hadoop.ozone.protocol.proto.OzoneManagerProtocolProtos.AppendSessionPhase;
 import org.apache.hadoop.ozone.protocol.proto.OzoneManagerProtocolProtos.ExpiredMultipartUploadInfo;
@@ -1544,6 +1545,15 @@ public class OmMetadataManagerImpl implements OMMetadataManager,
           continue;
         }
 
+        if (openKeyInfo.getAppendSession() != null) {
+          // An append session never takes the branches below: its open record carries the creation time of the
+          // file and only the blocks of the session.
+          if (addExpiredAppendSession(expiredKeys, dbOpenKeyName, dbKeyName, bucketLayout, expiredLeaseTimestamp)) {
+            num++;
+          }
+          continue;
+        }
+
         if (openKeyInfo.getCreationTime() <= expiredCreationTimestamp ||
             openKeyInfo.getModificationTime() <= expiredLeaseTimestamp) {
           final String clientIdString
@@ -1593,6 +1603,47 @@ public class OmMetadataManagerImpl implements OMMetadataManager,
     }
 
     return expiredKeys;
+  }
+
+  /**
+   * Classifies the open record of an append session by its phase and last lease renewal. An invalidated session
+   * holds only private allocations and is deleted whatever its age. A session whose lease passed the hard limit is
+   * finished by a recovery commit, which keeps what the session published.
+   *
+   * @return true if the session was added to {@code expiredKeys}.
+   */
+  private boolean addExpiredAppendSession(ExpiredOpenKeys expiredKeys, String dbOpenKeyName, String dbKeyName,
+      BucketLayout bucketLayout, long expiredLeaseTimestamp) throws IOException {
+    // The iterator reads the DB only. Decide on the applied state: the session may have been renewed, fenced,
+    // invalidated or removed by a transaction that is not flushed yet.
+    final OmKeyInfo openKeyInfo = getOpenKeyTable(bucketLayout).get(dbOpenKeyName);
+    final OmAppendSession session = openKeyInfo == null ? null : openKeyInfo.getAppendSession();
+    if (session == null) {
+      return false;
+    }
+    if (session.getPhase() == AppendSessionPhase.APPEND_INVALIDATED) {
+      expiredKeys.addOpenKey(openKeyInfo, dbOpenKeyName);
+      return true;
+    }
+    if (session.getLastRenewedAt() > expiredLeaseTimestamp) {
+      return false;
+    }
+    final long sessionId = OMMetadataManager.getClientIDFromOpenKeyDBKey(dbOpenKeyName);
+    final OmKeyInfo committed = getKeyTable(bucketLayout).get(dbKeyName);
+    if (!OmAppendUtil.isOwnedBy(committed, sessionId)) {
+      // ponytail: a session whose file left the namespace without invalidating it (recursive delete) is not cleaned
+      // up here. Reclaim its private allocations here if the directory purge path does not invalidate it.
+      return false;
+    }
+    final KeyArgs.Builder keyArgs = KeyArgs.newBuilder()
+        .setVolumeName(openKeyInfo.getVolumeName())
+        .setBucketName(openKeyInfo.getBucketName())
+        .setKeyName(openKeyInfo.getKeyName())
+        .setDataSize(committed.getDataSize())
+        .setModificationTime(Time.now());
+    OzoneManagerProtocolClientSideTranslatorPB.setReplicationConfig(committed.getReplicationConfig(), keyArgs);
+    expiredKeys.addAppendRecoveryKey(keyArgs, sessionId);
+    return true;
   }
 
   @Override

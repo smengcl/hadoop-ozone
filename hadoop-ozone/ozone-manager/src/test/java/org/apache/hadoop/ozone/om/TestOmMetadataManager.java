@@ -84,9 +84,11 @@ import org.apache.hadoop.hdds.conf.OzoneConfiguration;
 import org.apache.hadoop.hdds.protocol.StorageType;
 import org.apache.hadoop.hdds.protocol.proto.HddsProtos;
 import org.apache.hadoop.hdds.utils.TransactionInfo;
+import org.apache.hadoop.hdds.utils.db.Table;
 import org.apache.hadoop.hdds.utils.db.TypedTable;
 import org.apache.hadoop.hdds.utils.db.cache.CacheKey;
 import org.apache.hadoop.hdds.utils.db.cache.CacheValue;
+import org.apache.hadoop.ozone.OzoneConsts;
 import org.apache.hadoop.ozone.om.codec.OMDBDefinition;
 import org.apache.hadoop.ozone.om.exceptions.OMException;
 import org.apache.hadoop.ozone.om.exceptions.OMException.ResultCodes;
@@ -107,8 +109,10 @@ import org.apache.hadoop.ozone.om.helpers.SnapshotInfo;
 import org.apache.hadoop.ozone.om.request.OMRequestTestUtils;
 import org.apache.hadoop.ozone.om.request.util.OMMultipartUploadUtils;
 import org.apache.hadoop.ozone.protocol.proto.OzoneManagerProtocolProtos.AppendSessionPhase;
+import org.apache.hadoop.ozone.protocol.proto.OzoneManagerProtocolProtos.CommitKeyRequest;
 import org.apache.hadoop.ozone.protocol.proto.OzoneManagerProtocolProtos.ExpiredMultipartUploadInfo;
 import org.apache.hadoop.ozone.protocol.proto.OzoneManagerProtocolProtos.ExpiredMultipartUploadsBucket;
+import org.apache.hadoop.ozone.protocol.proto.OzoneManagerProtocolProtos.KeyArgs;
 import org.apache.hadoop.ozone.protocol.proto.OzoneManagerProtocolProtos.OpenKey;
 import org.apache.hadoop.ozone.protocol.proto.OzoneManagerProtocolProtos.OpenKeyBucket;
 import org.apache.hadoop.ozone.protocol.proto.OzoneManagerProtocolProtos.PartKeyInfo;
@@ -1277,6 +1281,98 @@ public class TestOmMetadataManager {
     OmMultipartPartInfo partInfo = OmMultipartPartInfo.from(partName, partNumber, keyInfo);
     omMetadataManager.getMultipartPartsTable().put(
         OmMultipartPartKey.of(uploadId, partNumber), partInfo);
+  }
+
+  /**
+   * Append sessions are classified by phase and last lease renewal, never by the creation or modification time
+   * that their open record copies from the file.
+   */
+  @Test
+  public void testGetExpiredOpenKeysAppendSessions() throws Exception {
+    final BucketLayout layout = BucketLayout.FILE_SYSTEM_OPTIMIZED;
+    final String volumeName = UUID.randomUUID().toString();
+    final String bucketName = UUID.randomUUID().toString();
+    OMRequestTestUtils.addVolumeAndBucketToDB(volumeName, bucketName, omMetadataManager, layout);
+    final Duration expireThreshold = Duration.ofDays(1);
+    final Duration leaseThreshold = Duration.ofHours(1);
+    final long now = Time.now();
+    final long old = now - Duration.ofDays(2).toMillis();
+    final OmAppendSession renewed = new OmAppendSession(AppendSessionPhase.APPEND_ACTIVE, 300, 1, old, now);
+    final OmAppendSession lapsed = new OmAppendSession(AppendSessionPhase.APPEND_ACTIVE, 300, 1, old, old);
+
+    // Old creation and modification time, but the writer keeps renewing.
+    addAppendOpenFile(volumeName, bucketName, "renewing", 1001, old, renewed, true);
+    // The lease is past the hard limit, whether the session is still active or already fenced.
+    addAppendOpenFile(volumeName, bucketName, "lapsed", 1002, old, lapsed, true);
+    addAppendOpenFile(volumeName, bucketName, "recovering", 1003, now,
+        lapsed.withPhase(AppendSessionPhase.APPEND_RECOVERING), true);
+    // The file was deleted. Young and renewed, but only waiting for cleanup.
+    final String invalidated = addAppendOpenFile(volumeName, bucketName, "invalidated", 1004, now,
+        renewed.withPhase(AppendSessionPhase.APPEND_INVALIDATED), false);
+    // The DB rows look lapsed, but a renewal and a close are applied and not flushed yet.
+    final String renewedInCache = addAppendOpenFile(volumeName, bucketName, "renewedInCache", 1005, old, lapsed, true);
+    final Table<String, OmKeyInfo> openTable = omMetadataManager.getOpenKeyTable(layout);
+    openTable.addCacheEntry(new CacheKey<>(renewedInCache), CacheValue.get(1L,
+        openTable.get(renewedInCache).toBuilder().setAppendSession(lapsed.withRenewal(now)).build()));
+    final String closedInCache = addAppendOpenFile(volumeName, bucketName, "closedInCache", 1006, old, lapsed, true);
+    openTable.addCacheEntry(new CacheKey<>(closedInCache), CacheValue.get(1L));
+    // The file no longer carries the reservation.
+    addAppendOpenFile(volumeName, bucketName, "orphan", 1007, old, lapsed, false);
+
+    // Ordinary and hsync open keys behave as before.
+    final OmKeyInfo.Builder ordinary = OMRequestTestUtils.createOmKeyInfo(volumeName, bucketName, "ordinary",
+        RatisReplicationConfig.getInstance(ONE)).setParentObjectID(1L).setCreationTime(old);
+    final String ordinaryKey = OMRequestTestUtils.addFileToKeyTable(true, false, "ordinary", ordinary.build(), 1008,
+        0L, omMetadataManager);
+    final OmKeyInfo hsync = OMRequestTestUtils.createOmKeyInfo(volumeName, bucketName, "hsync",
+            RatisReplicationConfig.getInstance(ONE)).setParentObjectID(1L).setModificationTime(old)
+        .addMetadata(OzoneConsts.HSYNC_CLIENT_ID, "1009").build();
+    OMRequestTestUtils.addFileToKeyTable(false, false, "hsync", hsync, 1009, 0L, omMetadataManager);
+    OMRequestTestUtils.addFileToKeyTable(true, false, "hsync", hsync, 1009, 0L, omMetadataManager);
+
+    final ExpiredOpenKeys expired = omMetadataManager.getExpiredOpenKeys(expireThreshold, 100, layout, leaseThreshold);
+
+    assertThat(getOpenKeyNames(expired.getOpenKeyBuckets())).containsExactlyInAnyOrder(invalidated, ordinaryKey);
+    assertThat(expired.getHsyncKeys()).singleElement()
+        .satisfies(commit -> {
+          assertEquals(1009, commit.getClientID());
+          assertFalse(commit.getRecovery());
+        });
+    assertThat(expired.getAppendRecoveryKeys()).extracting(CommitKeyRequest.Builder::getClientID)
+        .containsExactlyInAnyOrder(1002L, 1003L);
+    for (CommitKeyRequest.Builder commit : expired.getAppendRecoveryKeys()) {
+      assertTrue(commit.getRecovery());
+      final KeyArgs keyArgs = commit.getKeyArgs();
+      assertEquals(volumeName, keyArgs.getVolumeName());
+      assertEquals(bucketName, keyArgs.getBucketName());
+      assertEquals(commit.getClientID() == 1002 ? "lapsed" : "recovering", keyArgs.getKeyName());
+      assertThat(keyArgs.getKeyLocationsList()).isEmpty();
+      assertEquals(300, keyArgs.getDataSize());
+      assertThat(keyArgs.getModificationTime()).isGreaterThanOrEqualTo(now);
+      assertEquals(HddsProtos.ReplicationType.RATIS, keyArgs.getType());
+      assertEquals(ONE, keyArgs.getFactor());
+    }
+
+    // Append sessions count towards the limit.
+    final ExpiredOpenKeys one = omMetadataManager.getExpiredOpenKeys(expireThreshold, 1, layout, leaseThreshold);
+    assertEquals(1, getOpenKeyNames(one.getOpenKeyBuckets()).size() + one.getHsyncKeys().size()
+        + one.getAppendRecoveryKeys().size());
+  }
+
+  /**
+   * Adds the open record of an append session, and the file it reserves if {@code owned}, to the DB only.
+   */
+  private String addAppendOpenFile(String volumeName, String bucketName, String fileName, long sessionId,
+      long fileTime, OmAppendSession session, boolean owned) throws Exception {
+    final OmKeyInfo.Builder file = OMRequestTestUtils.createOmKeyInfo(volumeName, bucketName, fileName,
+            RatisReplicationConfig.getInstance(ONE))
+        .setParentObjectID(1L).setCreationTime(fileTime).setModificationTime(fileTime).setDataSize(300);
+    if (owned) {
+      OMRequestTestUtils.addFileToKeyTable(false, false, fileName, file.setAppendOwnerSessionId(sessionId).build(),
+          sessionId, 0L, omMetadataManager);
+    }
+    return OMRequestTestUtils.addFileToKeyTable(true, false, fileName,
+        file.setAppendOwnerSessionId(null).setAppendSession(session).build(), sessionId, 0L, omMetadataManager);
   }
 
   private List<String> getOpenKeyNames(

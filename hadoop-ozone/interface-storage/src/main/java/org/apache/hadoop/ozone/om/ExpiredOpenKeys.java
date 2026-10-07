@@ -40,6 +40,7 @@ public class ExpiredOpenKeys {
       = new HashMap<>();
   private final List<CommitKeyRequest.Builder> hsyncKeys
       = new ArrayList<>();
+  private final List<CommitKeyRequest.Builder> appendRecoveryKeys = new ArrayList<>();
 
   /** @return non-hsync'ed open keys. */
   public Collection<OpenKeyBucket.Builder> getOpenKeyBuckets() {
@@ -49,6 +50,11 @@ public class ExpiredOpenKeys {
   /** @return hsync'ed open keys. */
   public List<CommitKeyRequest.Builder> getHsyncKeys() {
     return hsyncKeys;
+  }
+
+  /** @return recovery commits for append sessions whose lease passed the hard limit. */
+  public List<CommitKeyRequest.Builder> getAppendRecoveryKeys() {
+    return appendRecoveryKeys;
   }
 
   void addOpenKey(OmKeyInfo info, String dbOpenKeyName) {
@@ -64,5 +70,12 @@ public class ExpiredOpenKeys {
     hsyncKeys.add(CommitKeyRequest.newBuilder()
         .setKeyArgs(keyArgs)
         .setClientID(clientId));
+  }
+
+  void addAppendRecoveryKey(KeyArgs.Builder keyArgs, long sessionId) {
+    appendRecoveryKeys.add(CommitKeyRequest.newBuilder()
+        .setKeyArgs(keyArgs)
+        .setClientID(sessionId)
+        .setRecovery(true));
   }
 }

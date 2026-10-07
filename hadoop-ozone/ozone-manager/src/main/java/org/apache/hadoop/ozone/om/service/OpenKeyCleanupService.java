@@ -238,12 +238,25 @@ public class OpenKeyCleanupService extends BackgroundService {
         });
       }
 
+      // recover append sessions whose lease passed the hard limit
+      final List<CommitKeyRequest.Builder> appendRecoveryKeys = expiredOpenKeys.getAppendRecoveryKeys();
+      final int numAppendKeys = appendRecoveryKeys.size();
+      appendRecoveryKeys.forEach(b -> {
+        final OMResponse response = submitRequest(createCommitKeyRequest(b));
+        if (response != null && !response.getSuccess()) {
+          // It is submitted again on every run until it succeeds or the session is invalidated.
+          LOG.warn("Recovery of append session {} of {}/{}/{} was rejected: {} {}", b.getClientID(),
+              b.getKeyArgs().getVolumeName(), b.getKeyArgs().getBucketName(), b.getKeyArgs().getKeyName(),
+              response.getStatus(), response.getMessage());
+        }
+      });
+
       long timeTaken = Time.monotonicNow() - startTime;
       LOG.info("Number of expired open keys submitted for deletion: {},"
-              + " for commit: {}, cleanupLimit: {}, elapsed time: {}ms",
-          numOpenKeys, numHsyncKeys, cleanupLimitPerTask, timeTaken);
+              + " for commit: {}, for append recovery: {}, cleanupLimit: {}, elapsed time: {}ms",
+          numOpenKeys, numHsyncKeys, numAppendKeys, cleanupLimitPerTask, timeTaken);
       ozoneManager.getPerfMetrics().setOpenKeyCleanupServiceLatencyMs(timeTaken);
-      final int numKeys = numOpenKeys + numHsyncKeys;
+      final int numKeys = numOpenKeys + numHsyncKeys + numAppendKeys;
       submittedOpenKeyCount.addAndGet(numKeys);
       return () -> numKeys;
     }

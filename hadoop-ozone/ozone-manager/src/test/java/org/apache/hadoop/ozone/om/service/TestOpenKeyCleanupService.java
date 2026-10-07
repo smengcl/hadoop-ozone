@@ -20,6 +20,8 @@ package org.apache.hadoop.ozone.om.service;
 import static org.apache.hadoop.ozone.om.OMConfigKeys.OZONE_OM_LEASE_HARD_LIMIT;
 import static org.apache.hadoop.ozone.om.OMConfigKeys.OZONE_OM_OPEN_KEY_CLEANUP_SERVICE_INTERVAL;
 import static org.apache.hadoop.ozone.om.OMConfigKeys.OZONE_OM_OPEN_KEY_EXPIRE_THRESHOLD;
+import static org.apache.hadoop.ozone.protocol.proto.OzoneManagerProtocolProtos.AppendSessionPhase.APPEND_ACTIVE;
+import static org.apache.hadoop.ozone.protocol.proto.OzoneManagerProtocolProtos.AppendSessionPhase.APPEND_INVALIDATED;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.mockito.ArgumentMatchers.anyLong;
@@ -36,6 +38,7 @@ import java.util.UUID;
 import java.util.concurrent.TimeUnit;
 import org.apache.commons.codec.digest.DigestUtils;
 import org.apache.commons.lang3.RandomUtils;
+import org.apache.hadoop.hdds.client.BlockID;
 import org.apache.hadoop.hdds.client.RatisReplicationConfig;
 import org.apache.hadoop.hdds.client.StandaloneReplicationConfig;
 import org.apache.hadoop.hdds.conf.OzoneConfiguration;
@@ -57,15 +60,20 @@ import org.apache.hadoop.ozone.om.OMMetrics;
 import org.apache.hadoop.ozone.om.OmTestManagers;
 import org.apache.hadoop.ozone.om.OzoneManager;
 import org.apache.hadoop.ozone.om.helpers.BucketLayout;
+import org.apache.hadoop.ozone.om.helpers.OmAppendSession;
 import org.apache.hadoop.ozone.om.helpers.OmBucketInfo;
 import org.apache.hadoop.ozone.om.helpers.OmKeyArgs;
 import org.apache.hadoop.ozone.om.helpers.OmKeyInfo;
+import org.apache.hadoop.ozone.om.helpers.OmKeyLocationInfo;
+import org.apache.hadoop.ozone.om.helpers.OmKeyLocationInfoGroup;
 import org.apache.hadoop.ozone.om.helpers.OmMultipartInfo;
 import org.apache.hadoop.ozone.om.helpers.OmVolumeArgs;
 import org.apache.hadoop.ozone.om.helpers.OpenKeySession;
+import org.apache.hadoop.ozone.om.helpers.RepeatedOmKeyInfo;
 import org.apache.hadoop.ozone.om.protocol.OzoneManagerProtocol;
 import org.apache.hadoop.ozone.om.request.OMRequestTestUtils;
 import org.apache.hadoop.security.UserGroupInformation;
+import org.apache.hadoop.util.Time;
 import org.apache.ozone.test.GenericTestUtils;
 import org.apache.ratis.util.ExitUtils;
 import org.junit.jupiter.api.AfterAll;
@@ -410,6 +418,105 @@ class TestOpenKeyCleanupService {
     waitForOpenKeyCleanup(false, BucketLayout.DEFAULT);
     waitForOpenKeyCleanup(false, BucketLayout.FILE_SYSTEM_OPTIMIZED);
     assertAtLeast(numOpenKeysCleaned + partCount, metrics.getNumOpenKeysCleaned());
+  }
+
+  /**
+   * A renewing append session survives although its open record is as old as the file. A session whose lease passed
+   * the hard limit gets a recovery commit. The open record of a deleted file is deleted together with its blocks.
+   */
+  @Test
+  public void testCleanupAppendSessions() throws Exception {
+    OpenKeyCleanupService openKeyCleanupService = (OpenKeyCleanupService) keyManager.getOpenKeyCleanupService();
+    openKeyCleanupService.suspend();
+    // wait for submitted tasks to complete
+    Thread.sleep(SERVICE_INTERVAL);
+
+    final BucketLayout layout = BucketLayout.FILE_SYSTEM_OPTIMIZED;
+    final String volume = UUID.randomUUID().toString();
+    final String bucket = UUID.randomUUID().toString();
+    createVolumeAndBucket(volume, bucket, layout);
+    final long old = Time.now() - 10L * EXPIRE_THRESHOLD_MS;
+    final long future = Time.now() + TimeUnit.HOURS.toMillis(1);
+    final String renewing = addAppendSession(volume, bucket, "renewing", 1L,
+        new OmAppendSession(APPEND_ACTIVE, 0, 0, old, future), old, true);
+    final String lapsed = addAppendSession(volume, bucket, "lapsed", 2L,
+        new OmAppendSession(APPEND_ACTIVE, 0, 0, old, old), old, true);
+    final String invalidated = addAppendSession(volume, bucket, "invalidated", 3L,
+        new OmAppendSession(APPEND_INVALIDATED, 0, 0, future, future), Time.now(), false);
+    final Table<String, OmKeyInfo> openTable = omMetadataManager.getOpenKeyTable(layout);
+    final OmKeyInfo invalidatedInfo = openTable.get(invalidated);
+
+    final ExpiredOpenKeys expired = keyManager.getExpiredOpenKeys(EXPIRE_THRESHOLD, 100, layout, EXPIRE_THRESHOLD);
+    assertThat(expired.getOpenKeyBuckets()).flatExtracting(b -> b.getKeysList())
+        .extracting(k -> k.getName()).contains(invalidated).doesNotContain(renewing, lapsed);
+    assertThat(expired.getAppendRecoveryKeys()).singleElement()
+        .satisfies(commit -> {
+          assertEquals(2L, commit.getClientID());
+          assertThat(commit.getRecovery()).isTrue();
+          assertEquals("lapsed", commit.getKeyArgs().getKeyName());
+        });
+
+    final long submitted = openKeyCleanupService.getSubmittedOpenKeyCount();
+    openKeyCleanupService.resume();
+
+    final String deletedKey = omMetadataManager.getOzoneDeletePathKey(invalidatedInfo.getObjectID(), invalidated);
+    GenericTestUtils.waitFor(() -> {
+      try {
+        return openTable.get(invalidated) == null && omMetadataManager.getDeletedTable().get(deletedKey) != null
+            && openTable.get(lapsed) == null
+            && openKeyCleanupService.getSubmittedOpenKeyCount() >= submitted + 2;
+      } catch (IOException e) {
+        throw new UncheckedIOException(e);
+      }
+    }, SERVICE_INTERVAL, WAIT_TIME);
+    openKeyCleanupService.suspend();
+    Thread.sleep(SERVICE_INTERVAL);
+
+    final RepeatedOmKeyInfo deleted = omMetadataManager.getDeletedTable().get(deletedKey);
+    assertThat(deleted.getOmKeyInfoList()).singleElement()
+        .satisfies(info -> assertThat(info.getLatestVersionLocations().createLocationList())
+            .extracting(OmKeyLocationInfo::getBlockID).containsExactly(new BlockID(3L, 3L)));
+    // The lapsed session was closed by the recovery commit: the file keeps its block and is no longer reserved.
+    final OmKeyInfo recovered = omMetadataManager.getKeyTable(layout).get(lapsed.substring(0, lapsed.lastIndexOf('/')));
+    assertThat(recovered.getAppendOwnerSessionId()).isNull();
+    assertThat(recovered.getLatestVersionLocations().createLocationList())
+        .extracting(OmKeyLocationInfo::getBlockID).containsExactly(new BlockID(2L, 2L));
+    assertThat(omMetadataManager.getAppendSessionOpenKey(volume, bucket, 2L)).isNull();
+    assertEquals(APPEND_ACTIVE, openTable.get(renewing).getAppendSession().getPhase());
+    assertEquals(future, openTable.get(renewing).getAppendSession().getLastRenewedAt());
+
+    // Do not leave sessions behind for the other tests of this class.
+    for (String openKey : new String[] {renewing, lapsed}) {
+      openTable.delete(openKey);
+      omMetadataManager.getKeyTable(layout).delete(openKey.substring(0, openKey.lastIndexOf('/')));
+    }
+    omMetadataManager.removeAppendSession(volume, bucket, 1L);
+    omMetadataManager.removeAppendSession(volume, bucket, 2L);
+    openKeyCleanupService.resume();
+  }
+
+  /**
+   * Adds the open record of an append session with one block, and the file it reserves if {@code owned}, to the DB.
+   */
+  private String addAppendSession(String volume, String bucket, String fileName, long sessionId,
+      OmAppendSession session, long fileTime, boolean owned) throws Exception {
+    final OmKeyLocationInfo block = new OmKeyLocationInfo.Builder()
+        .setBlockID(new BlockID(sessionId, sessionId)).setLength(100).build();
+    final OmKeyInfo.Builder file = OMRequestTestUtils.createOmKeyInfo(volume, bucket, fileName,
+            RatisReplicationConfig.getInstance(HddsProtos.ReplicationFactor.ONE),
+            new OmKeyLocationInfoGroup(0L, Collections.singletonList(block)))
+        .setParentObjectID(omMetadataManager.getBucketId(volume, bucket))
+        .setCreationTime(fileTime).setModificationTime(fileTime);
+    if (owned) {
+      OMRequestTestUtils.addFileToKeyTable(false, false, fileName, file.setAppendOwnerSessionId(sessionId).build(),
+          sessionId, 0L, omMetadataManager);
+    }
+    final String openKey = OMRequestTestUtils.addFileToKeyTable(true, false, fileName,
+        file.setAppendOwnerSessionId(null).setAppendSession(session).build(), sessionId, 0L, omMetadataManager);
+    if (session.getPhase() != APPEND_INVALIDATED) {
+      omMetadataManager.putAppendSession(volume, bucket, sessionId, openKey);
+    }
+    return openKey;
   }
 
   private static void assertAtLeast(long expectedMinimum, long actual) {
