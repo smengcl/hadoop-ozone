@@ -2938,7 +2938,25 @@
       </build>
     </profile>
     <profile>
+      <!-- only classes directly in the om package, its subpackages are in test-omsub and test-snapshot -->
       <id>test-om</id>
+      <build>
+        <plugins>
+          <plugin>
+            <groupId>org.apache.maven.plugins</groupId>
+            <artifactId>maven-surefire-plugin</artifactId>
+            <configuration>
+              <includes>
+                <include>org.apache.hadoop.ozone.om.Test*</include>
+              </includes>
+              <excludedGroups>${unstable-test-groups}</excludedGroups>
+            </configuration>
+          </plugin>
+        </plugins>
+      </build>
+    </profile>
+    <profile>
+      <id>test-omsub</id>
       <build>
         <plugins>
           <plugin>
@@ -2949,6 +2967,7 @@
                 <include>org.apache.hadoop.ozone.om.**</include>
               </includes>
               <excludes>
+                <exclude>org.apache.hadoop.ozone.om.Test*</exclude>
                 <exclude>org.apache.hadoop.ozone.om.snapshot.**</exclude>
                 <!-- default excludes -->
                 <exclude>**/*$*</exclude>
@@ -3005,10 +3024,29 @@
                 <include>org.apache.hadoop.hdds.**</include>
               </includes>
               <excludes>
+                <exclude>org.apache.hadoop.hdds.scm.Test*</exclude>
                 <exclude>org.apache.hadoop.hdds.scm.container.**</exclude>
                 <!-- default excludes -->
                 <exclude>**/*$*</exclude>
               </excludes>
+              <excludedGroups>${unstable-test-groups}</excludedGroups>
+            </configuration>
+          </plugin>
+        </plugins>
+      </build>
+    </profile>
+    <profile>
+      <!-- only classes directly in the scm package, its subpackages are in test-hdds and test-container -->
+      <id>test-scm</id>
+      <build>
+        <plugins>
+          <plugin>
+            <groupId>org.apache.maven.plugins</groupId>
+            <artifactId>maven-surefire-plugin</artifactId>
+            <configuration>
+              <includes>
+                <include>org.apache.hadoop.hdds.scm.Test*</include>
+              </includes>
               <excludedGroups>${unstable-test-groups}</excludedGroups>
             </configuration>
           </plugin>
