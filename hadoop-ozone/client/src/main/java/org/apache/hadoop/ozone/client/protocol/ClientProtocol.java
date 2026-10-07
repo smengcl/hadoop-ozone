@@ -1210,6 +1210,21 @@ public interface ClientProtocol {
       String keyName, long size, ReplicationConfig replicationConfig,
       boolean overWrite, boolean recursive) throws IOException;
 
+  /**
+   * Reopens an existing file for appending. The stream starts at the current end of the file, see
+   * {@link org.apache.hadoop.ozone.client.io.KeyOutputStream#getAppendPrefixLength()}, and keeps the file's own
+   * replication config and encryption info.
+   *
+   * @param volumeName Volume name
+   * @param bucketName Bucket name
+   * @param keyName    Absolute path of the file to append to
+   * @return Output stream for writing to the end of the file
+   * @throws OMException if the file does not exist, is a directory, already has a writer,
+   *                     or append is disabled or not supported for the bucket
+   * @throws IOException if the file cannot be appended to by this client
+   */
+  OzoneOutputStream appendFile(String volumeName, String bucketName, String keyName) throws IOException;
+
   @SuppressWarnings("checkstyle:parameternumber")
   OzoneDataStreamOutput createStreamFile(String volumeName, String bucketName,
       String keyName, long size, ReplicationConfig replicationConfig,

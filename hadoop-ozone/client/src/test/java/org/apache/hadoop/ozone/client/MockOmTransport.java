@@ -20,8 +20,11 @@ package org.apache.hadoop.ozone.client;
 import java.io.IOException;
 import java.util.HashMap;
 import java.util.Iterator;
+import java.util.List;
 import java.util.Map;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.function.Function;
+import java.util.stream.Collectors;
 import org.apache.hadoop.hdds.client.DefaultReplicationConfig;
 import org.apache.hadoop.hdds.client.ReplicationConfig;
 import org.apache.hadoop.hdds.conf.OzoneConfiguration;
@@ -30,6 +33,10 @@ import org.apache.hadoop.hdds.scm.container.common.helpers.ExcludeList;
 import org.apache.hadoop.io.Text;
 import org.apache.hadoop.ozone.om.protocolPB.OmTransport;
 import org.apache.hadoop.ozone.protocol.proto.OzoneManagerProtocolProtos;
+import org.apache.hadoop.ozone.protocol.proto.OzoneManagerProtocolProtos.AppendFileRequest;
+import org.apache.hadoop.ozone.protocol.proto.OzoneManagerProtocolProtos.AppendFileResponse;
+import org.apache.hadoop.ozone.protocol.proto.OzoneManagerProtocolProtos.AppendSessionPhase;
+import org.apache.hadoop.ozone.protocol.proto.OzoneManagerProtocolProtos.AppendSessionProto;
 import org.apache.hadoop.ozone.protocol.proto.OzoneManagerProtocolProtos.BucketInfo;
 import org.apache.hadoop.ozone.protocol.proto.OzoneManagerProtocolProtos.CommitKeyRequest;
 import org.apache.hadoop.ozone.protocol.proto.OzoneManagerProtocolProtos.CommitKeyResponse;
@@ -41,6 +48,7 @@ import org.apache.hadoop.ozone.protocol.proto.OzoneManagerProtocolProtos.CreateV
 import org.apache.hadoop.ozone.protocol.proto.OzoneManagerProtocolProtos.CreateVolumeResponse;
 import org.apache.hadoop.ozone.protocol.proto.OzoneManagerProtocolProtos.DeleteVolumeRequest;
 import org.apache.hadoop.ozone.protocol.proto.OzoneManagerProtocolProtos.DeleteVolumeResponse;
+import org.apache.hadoop.ozone.protocol.proto.OzoneManagerProtocolProtos.FileEncryptionInfoProto;
 import org.apache.hadoop.ozone.protocol.proto.OzoneManagerProtocolProtos.GetKeyInfoRequest;
 import org.apache.hadoop.ozone.protocol.proto.OzoneManagerProtocolProtos.GetKeyInfoResponse;
 import org.apache.hadoop.ozone.protocol.proto.OzoneManagerProtocolProtos.InfoBucketRequest;
@@ -60,6 +68,7 @@ import org.apache.hadoop.ozone.protocol.proto.OzoneManagerProtocolProtos.OMRespo
 import org.apache.hadoop.ozone.protocol.proto.OzoneManagerProtocolProtos.ServiceListRequest;
 import org.apache.hadoop.ozone.protocol.proto.OzoneManagerProtocolProtos.ServiceListResponse;
 import org.apache.hadoop.ozone.protocol.proto.OzoneManagerProtocolProtos.Status;
+import org.apache.hadoop.ozone.protocol.proto.OzoneManagerProtocolProtos.Type;
 import org.apache.hadoop.ozone.protocol.proto.OzoneManagerProtocolProtos.VolumeInfo;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -82,6 +91,10 @@ public class MockOmTransport implements OmTransport {
   //volumename -> bucketname -> keyName -> keys
   private Map<String, Map<String, Map<String, KeyInfo>>> keys =
       new HashMap<>();
+  private final List<OMRequest> requests = new CopyOnWriteArrayList<>();
+  private long lastAppendSessionId;
+  // if set, new keys are created with this encryption info
+  private FileEncryptionInfoProto fileEncryptionInfo;
 
   public MockOmTransport(MockBlockAllocator allocator) {
     this.blockAllocator = allocator;
@@ -91,8 +104,18 @@ public class MockOmTransport implements OmTransport {
     this(new SinglePipelineBlockAllocator(new OzoneConfiguration()));
   }
 
+  /** @return the requests of the given type received so far, in order. */
+  public List<OMRequest> getRequests(Type cmdType) {
+    return requests.stream().filter(r -> r.getCmdType() == cmdType).collect(Collectors.toList());
+  }
+
+  public void setFileEncryptionInfo(FileEncryptionInfoProto fileEncryptionInfo) {
+    this.fileEncryptionInfo = fileEncryptionInfo;
+  }
+
   @Override
   public OMResponse submitRequest(OMRequest payload) throws IOException {
+    requests.add(payload);
     switch (payload.getCmdType()) {
     case CreateVolume:
       return response(payload,
@@ -140,6 +163,9 @@ public class MockOmTransport implements OmTransport {
     case GetKeyInfo:
       return response(payload, r -> r.setGetKeyInfoResponse(
           getKeyInfo(payload.getGetKeyInfoRequest())));
+    case AppendFile:
+      return response(payload, r -> r.setAppendFileResponse(
+          appendFile(payload.getAppendFileRequest())));
     default:
       throw new IllegalArgumentException(
           "Mock version of om call " + payload.getCmdType()
@@ -208,6 +234,28 @@ public class MockOmTransport implements OmTransport {
     return "commit";
   }
 
+  /**
+   * Admits an append session. The returned key info carries the committed (prefix) blocks, which an append writer
+   * must neither write to nor send back.
+   */
+  private AppendFileResponse appendFile(AppendFileRequest request) {
+    final KeyArgs keyArgs = request.getKeyArgs();
+    final KeyInfo committed = keys.get(keyArgs.getVolumeName()).get(keyArgs.getBucketName())
+        .get(keyArgs.getKeyName());
+    if (committed == null) {
+      throw new MockOmException(Status.KEY_NOT_FOUND);
+    }
+    final KeyInfo openKey = committed.toBuilder()
+        .setAppendSession(AppendSessionProto.newBuilder()
+            .setPhase(AppendSessionPhase.APPEND_ACTIVE)
+            .setPrefixLength(committed.getDataSize())
+            .setPrefixBlockCount(committed.getKeyLocationList(0).getKeyLocationsCount()))
+        .build();
+    openKeys.get(keyArgs.getVolumeName()).get(keyArgs.getBucketName()).put(keyArgs.getKeyName(), openKey);
+    return AppendFileResponse.newBuilder().setKeyInfo(openKey).setID(++lastAppendSessionId).setOpenVersion(0L)
+        .build();
+  }
+
   private CommitKeyResponse commitKey(CommitKeyRequest commitKeyRequest) {
     final KeyArgs keyArgs = commitKeyRequest.getKeyArgs();
     final KeyInfo openKey =
@@ -232,8 +280,18 @@ public class MockOmTransport implements OmTransport {
             .setCreationTime(openKey.getCreationTime())
             .setModificationTime(openKey.getModificationTime())
             .setDataSize(keyArgs.getDataSize()).setLatestVersion(0L)
-            .addKeyLocationList(KeyLocationList.newBuilder()
-                .addAllKeyLocations(keyArgs.getKeyLocationsList()));
+            .addAllMetadata(openKey.getMetadataList());
+    final KeyLocationList.Builder locations = KeyLocationList.newBuilder();
+    if (openKey.hasAppendSession()) {
+      // append: OM keeps the prefix blocks, the writer sends the suffix only
+      locations.addAllKeyLocations(keys.get(keyArgs.getVolumeName()).get(keyArgs.getBucketName())
+          .get(keyArgs.getKeyName()).getKeyLocationList(0).getKeyLocationsList()
+          .subList(0, openKey.getAppendSession().getPrefixBlockCount()));
+    }
+    committedKeyInfoWithLocations.addKeyLocationList(locations.addAllKeyLocations(keyArgs.getKeyLocationsList()));
+    if (openKey.hasFileEncryptionInfo()) {
+      committedKeyInfoWithLocations.setFileEncryptionInfo(openKey.getFileEncryptionInfo());
+    }
     // Just inherit replication config details from open Key
     if (openKey.hasEcReplicationConfig()) {
       committedKeyInfoWithLocations
@@ -259,11 +317,16 @@ public class MockOmTransport implements OmTransport {
             .setBucketName(keyArgs.getBucketName())
             .setKeyName(keyArgs.getKeyName()).setCreationTime(now)
             .setModificationTime(now).setDataSize(keyArgs.getDataSize())
+            .addAllMetadata(keyArgs.getMetadataList())
             .setLatestVersion(0L).addKeyLocationList(
             KeyLocationList.newBuilder().addAllKeyLocations(
                 blockAllocator.allocateBlock(createKeyRequest.getKeyArgs(),
                     new ExcludeList()))
                 .build());
+
+    if (fileEncryptionInfo != null) {
+      keyInfoBuilder.setFileEncryptionInfo(fileEncryptionInfo);
+    }
 
     if (keyArgs.getType() == HddsProtos.ReplicationType.NONE) {
       // 1. Client did not pass replication config.

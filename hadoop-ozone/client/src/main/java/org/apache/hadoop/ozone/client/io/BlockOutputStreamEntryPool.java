@@ -91,6 +91,12 @@ public class BlockOutputStreamEntryPool implements KeyMetadataAware {
   private final Supplier<ExecutorService> executorServiceSupplier;
   // update blocks on OM
   private ContainerBlockID lastUpdatedBlockId = new ContainerBlockID(-1, -1);
+  // Append session state. The entries of an append stream are the suffix only: OM keeps the prefix blocks and gets
+  // prefixLength + suffix bytes as dataSize. prefixLength is 0 for every other stream.
+  private final boolean append;
+  private final long prefixLength;
+  // Suffix bytes last published to OM by an append hsync.
+  private long publishedSuffixLength;
 
   public BlockOutputStreamEntryPool(KeyOutputStream.Builder b) {
     this.config = b.getClientConfig();
@@ -98,6 +104,8 @@ public class BlockOutputStreamEntryPool implements KeyMetadataAware {
     currentStreamIndex = 0;
     this.omClient = b.getOmClient();
     final OmKeyInfo info = b.getOpenHandler().getKeyInfo();
+    this.append = info.getAppendSession() != null;
+    this.prefixLength = append ? info.getAppendSession().getPrefixLength() : 0;
     this.keyArgs = new OmKeyArgs.Builder().setVolumeName(info.getVolumeName())
         .setBucketName(info.getBucketName()).setKeyName(info.getKeyName())
         .setReplicationConfig(b.getReplicationConfig())
@@ -322,7 +330,7 @@ public class BlockOutputStreamEntryPool implements KeyMetadataAware {
       long length = getKeyLength();
       Preconditions.checkArgument(offset == length,
           "Expected offset: " + offset + " expected len: " + length);
-      keyArgs.setDataSize(length);
+      keyArgs.setDataSize(prefixLength + length);
       keyArgs.setLocationInfoList(getLocationInfoList());
       // When the key is multipart upload part file upload, we should not
       // commit the key, as this is not an actual key, this is a just a
@@ -349,6 +357,16 @@ public class BlockOutputStreamEntryPool implements KeyMetadataAware {
       // partial key of a large file.
       if (keyArgs.getIsMultipartKey()) {
         throw new IOException("Hsync is unsupported for multipart keys.");
+      } else if (append) {
+        // Readers of an appended file only see what OM published, so every advancing hsync goes to OM, also within
+        // the same block. OM checks dataSize against the submitted block lengths, so both come from the same list.
+        final long suffixLength = keyArgs.getLocationInfoList().stream().mapToLong(OmKeyLocationInfo::getLength).sum();
+        if (suffixLength != publishedSuffixLength) {
+          keyArgs.setDataSize(prefixLength + suffixLength);
+          MetricUtil.captureLatencyNs(clientMetrics::addOMHsyncLatency,
+              () -> omClient.hsyncKey(buildKeyArgs(), openID));
+          publishedSuffixLength = suffixLength;
+        }
       } else {
         if (keyArgs.getLocationInfoList().isEmpty()) {
           MetricUtil.captureLatencyNs(clientMetrics::addOMHsyncLatency,
@@ -418,6 +436,11 @@ public class BlockOutputStreamEntryPool implements KeyMetadataAware {
     if (streamEntries != null) {
       streamEntries.clear();
     }
+  }
+
+  /** @return the file length when this append session was admitted, 0 if this is not an append stream. */
+  long getPrefixLength() {
+    return prefixLength;
   }
 
   public OmMultipartCommitUploadPartInfo getCommitUploadPartInfo() {

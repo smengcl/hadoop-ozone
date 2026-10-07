@@ -141,6 +141,7 @@ import org.apache.hadoop.ozone.om.helpers.DeleteTenantState;
 import org.apache.hadoop.ozone.om.helpers.ErrorInfo;
 import org.apache.hadoop.ozone.om.helpers.KeyInfoWithVolumeContext;
 import org.apache.hadoop.ozone.om.helpers.LeaseKeyInfo;
+import org.apache.hadoop.ozone.om.helpers.OmAppendSession;
 import org.apache.hadoop.ozone.om.helpers.OmBucketArgs;
 import org.apache.hadoop.ozone.om.helpers.OmBucketInfo;
 import org.apache.hadoop.ozone.om.helpers.OmDeleteKeys;
@@ -2529,6 +2530,48 @@ public class RpcClient implements ClientProtocol {
     return createOutputStream(keySession);
   }
 
+  @Override
+  public OzoneOutputStream appendFile(String volumeName, String bucketName, String keyName) throws IOException {
+    if (omVersion.compareTo(OzoneManagerVersion.APPEND) < 0) {
+      throw new UnsupportedOperationException("Append API requires OM version "
+          + OzoneManagerVersion.APPEND + " or later. Current OM version "
+          + omVersion);
+    }
+    OmKeyArgs keyArgs = new OmKeyArgs.Builder()
+        .setVolumeName(volumeName)
+        .setBucketName(bucketName)
+        .setKeyName(keyName)
+        .build();
+    final OpenKeySession openKey = ozoneManagerClient.appendFile(keyArgs);
+    final OmKeyInfo keyInfo = openKey.getKeyInfo();
+    if (keyInfo.getAppendSession() == null) {
+      throw new IOException("OzoneManager did not return an append session for " + keyName);
+    }
+    // The stream is built from the returned key info (the file's own replication config and encryption info), and
+    // holds only blocks allocated by this session: no addPreallocateBlocks, the prefix blocks are never written to.
+    // ponytail: append always writes through KeyOutputStream, also when RATIS streaming is enabled;
+    // add a KeyDataStreamOutput variant if streaming append is needed.
+    final KeyOutputStream keyOutputStream = createKeyOutputStream(openKey).build();
+    try {
+      if (keyInfo.getFileEncryptionInfo() == null
+          && Boolean.parseBoolean(keyInfo.getMetadata().get(OzoneConsts.GDPR_FLAG))) {
+        // The GDPR cipher stream cannot resume at an offset, so appending would produce an unreadable file.
+        throw new IOException("Append is not supported for GDPR encrypted file " + keyName);
+      }
+      final OzoneOutputStream out = createSecureOutputStream(openKey, keyOutputStream, keyOutputStream);
+      return out != null ? out : new OzoneOutputStream(keyOutputStream, OzoneFSUtils.canEnableHsync(conf, true));
+    } catch (IOException | RuntimeException e) {
+      // OM admitted the session but the caller gets no stream to close: end the session with a zero byte close
+      // instead of leaving the file reserved until lease recovery.
+      try {
+        keyOutputStream.close();
+      } catch (IOException closeException) {
+        e.addSuppressed(closeException);
+      }
+      throw e;
+    }
+  }
+
   private OmKeyArgs prepareOmKeyArgs(String volumeName, String bucketName,
       String keyName, String listPrefix) {
     final OmKeyArgs.Builder builder = new OmKeyArgs.Builder()
@@ -2795,10 +2838,12 @@ public class RpcClient implements ClientProtocol {
         openKey.getKeyInfo().getFileEncryptionInfo();
     if (feInfo != null) {
       KeyProvider.KeyVersion decrypted = getDEK(feInfo);
+      // An append stream resumes the cipher stream at the end of the existing file.
+      final OmAppendSession appendSession = openKey.getKeyInfo().getAppendSession();
       final CryptoOutputStream cryptoOut =
           new CryptoOutputStream(keyOutputStream,
               OzoneKMSUtil.getCryptoCodec(conf, feInfo),
-              decrypted.getMaterial(), feInfo.getIV());
+              decrypted.getMaterial(), feInfo.getIV(), appendSession == null ? 0 : appendSession.getPrefixLength());
       return new OzoneOutputStream(cryptoOut, enableHsync);
     } else {
       try {

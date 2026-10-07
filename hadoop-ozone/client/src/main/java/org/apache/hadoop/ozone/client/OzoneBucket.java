@@ -1178,6 +1178,17 @@ public class OzoneBucket extends WithMetadata {
             overWrite, recursive);
   }
 
+  /**
+   * OzoneFS api to reopen an existing file for appending.
+   *
+   * @param keyName Key name
+   * @throws OMException if the file does not exist, is a directory, already has a writer,
+   *                     or append is disabled or not supported for the bucket
+   */
+  public OzoneOutputStream appendFile(String keyName) throws IOException {
+    return proxy.appendFile(volumeName, name, keyName);
+  }
+
   public OzoneDataStreamOutput createStreamFile(String keyName, long size,
       ReplicationConfig replicationConfig, boolean overWrite,
       boolean recursive) throws IOException {

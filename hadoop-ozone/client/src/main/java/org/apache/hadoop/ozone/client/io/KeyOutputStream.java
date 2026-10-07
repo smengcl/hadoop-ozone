@@ -148,6 +148,11 @@ public class KeyOutputStream extends OutputStream
     return blockOutputStreamEntryPool;
   }
 
+  /** @return the file length when this append stream was opened (its start position), 0 if this is not an append. */
+  public long getAppendPrefixLength() {
+    return blockOutputStreamEntryPool.getPrefixLength();
+  }
+
   @VisibleForTesting
   public List<BlockOutputStreamEntry> getStreamEntries() {
     return blockOutputStreamEntryPool.getStreamEntries();
