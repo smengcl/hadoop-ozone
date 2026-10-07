@@ -52,6 +52,7 @@ import org.apache.hadoop.ozone.om.request.bucket.OMBucketSetPropertyRequest;
 import org.apache.hadoop.ozone.om.request.bucket.acl.OMBucketAddAclRequest;
 import org.apache.hadoop.ozone.om.request.bucket.acl.OMBucketRemoveAclRequest;
 import org.apache.hadoop.ozone.om.request.bucket.acl.OMBucketSetAclRequest;
+import org.apache.hadoop.ozone.om.request.file.OMFileAppendRequest;
 import org.apache.hadoop.ozone.om.request.file.OMRecoverLeaseRequest;
 import org.apache.hadoop.ozone.om.request.key.OMDirectoriesPurgeRequestWithFSO;
 import org.apache.hadoop.ozone.om.request.key.OMKeyPurgeRequest;
@@ -273,6 +274,14 @@ public final class OzoneManagerRatisUtils {
                 "It does not support lease recovery");
       }
       return new OMRecoverLeaseRequest(omRequest);
+    case AppendFile:
+      keyArgs = omRequest.getAppendFileRequest().getKeyArgs();
+      if (getBucketLayout(ozoneManager.getMetadataManager(), keyArgs.getVolumeName(), keyArgs.getBucketName())
+          != BucketLayout.FILE_SYSTEM_OPTIMIZED) {
+        throw new OMException("Bucket " + keyArgs.getBucketName() + " is not FSO layout. It does not support append",
+            OMException.ResultCodes.APPEND_NOT_SUPPORTED);
+      }
+      return new OMFileAppendRequest(omRequest);
     /*
      * Key requests that can have multiple variants based on the bucket layout
      * should be created using {@link BucketLayoutAwareOMKeyRequestFactory}.

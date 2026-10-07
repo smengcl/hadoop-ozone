@@ -213,6 +213,8 @@ public class OMMetrics implements OmMetadataReaderMetrics {
   private @Metric MutableCounterLong numDeleteObjectTaggingFails;
 
   private @Metric MutableCounterLong numRecoverLeaseFails;
+  private @Metric MutableCounterLong numAppendFile;
+  private @Metric MutableCounterLong numAppendFileFails;
 
   // Metrics for total amount of data written
   private @Metric MutableCounterLong totalDataCommitted;
@@ -1672,6 +1674,16 @@ public class OMMetrics implements OmMetadataReaderMetrics {
 
   public void incNumRecoverLeaseFails() {
     numRecoverLeaseFails.incr();
+  }
+
+  public void incNumAppendFile() {
+    numKeyOps.incr();
+    numFSOps.incr();
+    numAppendFile.incr();
+  }
+
+  public void incNumAppendFileFails() {
+    numAppendFileFails.incr();
   }
 
   public void addRatisEvent(String event) {
