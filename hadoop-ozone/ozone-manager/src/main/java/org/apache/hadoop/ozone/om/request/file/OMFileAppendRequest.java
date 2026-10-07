@@ -31,11 +31,11 @@ import static org.apache.hadoop.ozone.om.upgrade.OMLayoutFeature.APPEND;
 
 import java.io.IOException;
 import java.nio.file.InvalidPathException;
+import java.security.SecureRandom;
 import java.util.Collections;
 import java.util.Iterator;
 import java.util.Map;
 import java.util.concurrent.TimeUnit;
-import org.apache.hadoop.hdds.utils.UniqueId;
 import org.apache.hadoop.hdds.utils.db.Table;
 import org.apache.hadoop.hdds.utils.db.cache.CacheKey;
 import org.apache.hadoop.hdds.utils.db.cache.CacheValue;
@@ -52,6 +52,7 @@ import org.apache.hadoop.ozone.om.helpers.OmFSOFile;
 import org.apache.hadoop.ozone.om.helpers.OmKeyInfo;
 import org.apache.hadoop.ozone.om.helpers.OmKeyLocationInfoGroup;
 import org.apache.hadoop.ozone.om.request.key.OMKeyRequest;
+import org.apache.hadoop.ozone.om.request.util.OmAppendUtil;
 import org.apache.hadoop.ozone.om.request.util.OmResponseUtil;
 import org.apache.hadoop.ozone.om.response.OMClientResponse;
 import org.apache.hadoop.ozone.om.response.file.OMFileAppendResponse;
@@ -76,6 +77,7 @@ import org.slf4j.LoggerFactory;
  */
 public class OMFileAppendRequest extends OMKeyRequest {
   private static final Logger LOG = LoggerFactory.getLogger(OMFileAppendRequest.class);
+  private static final SecureRandom SESSION_ID_GENERATOR = new SecureRandom();
 
   /** Describes the writer that blocks admission. Set together with an APPEND_WRITER_CONFLICT failure. */
   private AppendConflictInfo conflict;
@@ -101,10 +103,24 @@ public class OMFileAppendRequest extends OMKeyRequest {
     KeyArgs resolvedArgs = resolveBucketAndCheckKeyAcls(
         keyArgs.toBuilder().setKeyName(keyPath).setModificationTime(Time.now()).build(),
         ozoneManager, IAccessAuthorizer.ACLType.WRITE);
+    OmAppendUtil.checkNativeFileAcls(ozoneManager, this, resolvedArgs.getVolumeName(), resolvedArgs.getBucketName(),
+        keyPath);
 
     return request.toBuilder()
-        .setAppendFileRequest(appendFileRequest.toBuilder().setKeyArgs(resolvedArgs).setClientID(UniqueId.next()))
+        .setAppendFileRequest(appendFileRequest.toBuilder().setKeyArgs(resolvedArgs).setClientID(newSessionId()))
         .build();
+  }
+
+  /**
+   * Session IDs must not be predictable: allocate, hsync and close are resolved through the session index by ID, and a
+   * request that names the ID of a session before its admission is applied would be authorized by its own path.
+   */
+  private static long newSessionId() {
+    long id;
+    do {
+      id = SESSION_ID_GENERATOR.nextLong() & Long.MAX_VALUE;
+    } while (id == 0);
+    return id;
   }
 
   @Override

@@ -18,6 +18,7 @@
 package org.apache.hadoop.ozone.om.request.util;
 
 import static org.apache.hadoop.ozone.OzoneConsts.OM_KEY_PREFIX;
+import static org.apache.hadoop.ozone.om.lock.OzoneManagerLock.LeveledResource.BUCKET_LOCK;
 
 import java.io.IOException;
 import java.util.Collections;
@@ -33,14 +34,24 @@ import org.apache.hadoop.hdds.utils.db.Table;
 import org.apache.hadoop.hdds.utils.db.cache.CacheKey;
 import org.apache.hadoop.hdds.utils.db.cache.CacheValue;
 import org.apache.hadoop.ozone.om.OMMetadataManager;
+import org.apache.hadoop.ozone.om.OzoneAclUtils;
+import org.apache.hadoop.ozone.om.OzoneManager;
 import org.apache.hadoop.ozone.om.exceptions.OMException;
 import org.apache.hadoop.ozone.om.helpers.BucketLayout;
 import org.apache.hadoop.ozone.om.helpers.OmDirectoryInfo;
 import org.apache.hadoop.ozone.om.helpers.OmKeyInfo;
 import org.apache.hadoop.ozone.om.helpers.OmKeyLocationInfo;
 import org.apache.hadoop.ozone.om.helpers.OmKeyLocationInfoGroup;
+import org.apache.hadoop.ozone.om.helpers.OzoneAclUtil;
+import org.apache.hadoop.ozone.om.helpers.OzoneFileStatus;
+import org.apache.hadoop.ozone.om.request.OMClientRequest;
 import org.apache.hadoop.ozone.om.request.file.OMFileRequest;
 import org.apache.hadoop.ozone.protocol.proto.OzoneManagerProtocolProtos.AppendSessionPhase;
+import org.apache.hadoop.ozone.security.acl.IAccessAuthorizer;
+import org.apache.hadoop.ozone.security.acl.IAccessAuthorizer.ACLType;
+import org.apache.hadoop.ozone.security.acl.OzoneObj;
+import org.apache.hadoop.ozone.security.acl.RequestContext;
+import org.apache.hadoop.security.UserGroupInformation;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -164,14 +175,114 @@ public final class OmAppendUtil {
   /**
    * Fails with KEY_NOT_FOUND unless the file of an append session is still {@link #isReachable reachable}. Must be
    * called under the bucket lock by allocate, hsync, close and recovery completion.
+   *
+   * @return the {@link #getCurrentKeyName current path} of the file
    */
-  public static void checkReachable(OMMetadataManager omMetadataManager, OmKeyInfo openRecord) throws IOException {
+  public static String checkReachable(OMMetadataManager omMetadataManager, OmKeyInfo openRecord) throws IOException {
     String volume = openRecord.getVolumeName();
     String bucket = openRecord.getBucketName();
-    if (!isReachable(omMetadataManager, omMetadataManager.getVolumeId(volume),
-        omMetadataManager.getBucketId(volume, bucket), openRecord)) {
+    String keyName = getCurrentKeyName(omMetadataManager, omMetadataManager.getVolumeId(volume),
+        omMetadataManager.getBucketId(volume, bucket), openRecord);
+    if (keyName == null) {
       throw new OMException("File of append session was deleted with its directory: " + openRecord.getKeyName(),
           OMException.ResultCodes.KEY_NOT_FOUND);
+    }
+    return keyName;
+  }
+
+  /**
+   * Authorizes a request that names an append session: checks WRITE on the file that the session's open record
+   * belongs to now, whatever path the request carries. For the leader's preExecute, like the other ACL checks.
+   *
+   * @return false if ACLs are disabled or the bucket has no such session. The caller then authorizes the request by
+   *     its path, as for an ordinary writer.
+   */
+  public static boolean checkSessionAcls(OzoneManager ozoneManager, OMClientRequest request, String volume,
+      String bucket, long sessionId) throws IOException {
+    OMMetadataManager omMetadataManager = ozoneManager.getMetadataManager();
+    // The request of an ordinary writer ends here, after one lookup in memory.
+    if (!ozoneManager.getAclsEnabled()
+        || omMetadataManager.getAppendSessionOpenKey(volume, bucket, sessionId) == null) {
+      return false;
+    }
+    boolean isNative = ozoneManager.getAccessAuthorizer().isNative();
+    String keyName;
+    OmKeyInfo committed;
+    omMetadataManager.getLock().acquireReadLock(BUCKET_LOCK, volume, bucket);
+    try {
+      // Looked up again: a rename moves the open record under the bucket lock.
+      String dbOpenKey = omMetadataManager.getAppendSessionOpenKey(volume, bucket, sessionId);
+      if (dbOpenKey == null) {
+        return false;
+      }
+      OmKeyInfo openRecord = omMetadataManager.getOpenKeyTable(BucketLayout.FILE_SYSTEM_OPTIMIZED).get(dbOpenKey);
+      if (openRecord == null) {
+        // Must not fall back to the path of the request, which validateAndUpdateCache ignores for an indexed session.
+        throw new OMException("Append session " + sessionId + " is not active",
+            OMException.ResultCodes.APPEND_SESSION_NOT_FOUND);
+      }
+      // ponytail: once an ancestor directory was renamed this scans the directories of the bucket for every allocate,
+      // hsync, close and renewal of the session, in addition to the scan in validateAndUpdateCache. Same upgrade path
+      // as in getCurrentKeyName.
+      keyName = checkReachable(omMetadataManager, openRecord);
+      committed = !isNative ? null : omMetadataManager.getKeyTable(BucketLayout.FILE_SYSTEM_OPTIMIZED)
+          .get(getDbFileKey(omMetadataManager, openRecord));
+    } finally {
+      omMetadataManager.getLock().releaseReadLock(BUCKET_LOCK, volume, bucket);
+    }
+    request.checkAcls(ozoneManager, OzoneObj.ResourceType.KEY, OzoneObj.StoreType.OZONE, ACLType.WRITE, volume, bucket,
+        keyName);
+    if (committed != null) {
+      checkFileAcls(ozoneManager, request, committed);
+    }
+    return true;
+  }
+
+  /**
+   * Checks WRITE in the ACLs of the committed file at a path if the native authorizer is in use, for append
+   * admission. A missing file passes, as admission fails for it. The caller must make the regular WRITE check as well.
+   */
+  public static void checkNativeFileAcls(OzoneManager ozoneManager, OMClientRequest request, String volume,
+      String bucket, String keyName) throws IOException {
+    if (!ozoneManager.getAclsEnabled() || !ozoneManager.getAccessAuthorizer().isNative()) {
+      return;
+    }
+    OMMetadataManager omMetadataManager = ozoneManager.getMetadataManager();
+    OzoneFileStatus status;
+    omMetadataManager.getLock().acquireReadLock(BUCKET_LOCK, volume, bucket);
+    try {
+      status = OMFileRequest.getOMKeyInfoIfExists(omMetadataManager, volume, bucket, keyName, 0,
+          ozoneManager.getDefaultReplicationConfig());
+    } finally {
+      omMetadataManager.getLock().releaseReadLock(BUCKET_LOCK, volume, bucket);
+    }
+    if (status != null && status.isFile()) {
+      checkFileAcls(ozoneManager, request, status.getKeyInfo());
+    }
+  }
+
+  /**
+   * Checks WRITE in the ACLs of a committed file for the native authorizer. Its key level check looks for WRITE only
+   * in the open key table and grants access when it finds nothing there (see KeyManagerImpl#checkAccess), which is the
+   * case for every committed FSO file. Admins and the owners of the volume and the bucket pass, as they do in
+   * OzoneNativeAuthorizer. This only narrows the regular WRITE check, which covers the volume, bucket and prefix ACLs.
+   */
+  private static void checkFileAcls(OzoneManager ozoneManager, OMClientRequest request, OmKeyInfo committed)
+      throws IOException {
+    UserGroupInformation user = request.createUGIForApi();
+    String volume = committed.getVolumeName();
+    String bucket = committed.getBucketName();
+    if (ozoneManager.isAdmin(user)
+        || OzoneAclUtils.isOwner(user, ozoneManager.getVolumeOwner(volume, ACLType.WRITE, OzoneObj.ResourceType.KEY))
+        || OzoneAclUtils.isOwner(user,
+            ozoneManager.getBucketOwner(volume, bucket, ACLType.WRITE, OzoneObj.ResourceType.KEY))) {
+      return;
+    }
+    RequestContext context = RequestContext.newBuilder().setClientUgi(user)
+        .setAclType(IAccessAuthorizer.ACLIdentityType.USER).setAclRights(ACLType.WRITE).build();
+    if (!OzoneAclUtil.checkAclRights(committed.getAcls(), context)) {
+      throw new OMException("User " + user.getShortUserName() + " doesn't have WRITE permission to append to file "
+          + committed.getKeyName() + " in " + volume + "/" + bucket, OMException.ResultCodes.PERMISSION_DENIED);
     }
   }
 
@@ -187,12 +298,22 @@ public final class OmAppendUtil {
    */
   public static boolean isReachable(OMMetadataManager omMetadataManager, long volumeId, long bucketId,
       OmKeyInfo openOrCommittedRecord) throws IOException {
+    return getCurrentKeyName(omMetadataManager, volumeId, bucketId, openOrCommittedRecord) != null;
+  }
+
+  /**
+   * Returns the path that an FSO file has now, or null if it is not {@link #isReachable reachable}. The key name of
+   * an open record follows a rename of the file but not a rename of an ancestor directory, so it must not be used to
+   * authorize a request. Must be called under the bucket lock.
+   */
+  public static String getCurrentKeyName(OMMetadataManager omMetadataManager, long volumeId, long bucketId,
+      OmKeyInfo openOrCommittedRecord) throws IOException {
     long parentId = openOrCommittedRecord.getParentObjectID();
     try {
       // The path the record remembers still leads to the same parent directory: all ancestors are alive.
       if (OMFileRequest.getParentID(volumeId, bucketId, openOrCommittedRecord.getKeyName(), omMetadataManager)
           == parentId) {
-        return true;
+        return openOrCommittedRecord.getKeyName();
       }
     } catch (OMException e) {
       LOG.debug("Path {} does not resolve, an ancestor was renamed or deleted: {}",
@@ -214,28 +335,30 @@ public final class OmAppendUtil {
         cached.put(entry.getKey().getCacheKey(), entry.getValue().getCacheValue());
       }
     }
-    Map<Long, Long> parentOfDir = new HashMap<>();
+    Map<Long, OmDirectoryInfo> dirById = new HashMap<>();
     for (OmDirectoryInfo dir : cached.values()) {
       if (dir != null) {
-        parentOfDir.put(dir.getObjectID(), dir.getParentObjectID());
+        dirById.put(dir.getObjectID(), dir);
       }
     }
     try (Table.KeyValueIterator<String, OmDirectoryInfo> iterator = dirTable.iterator(bucketPrefix)) {
       while (iterator.hasNext()) {
         Table.KeyValue<String, OmDirectoryInfo> row = iterator.next();
         if (!cached.containsKey(row.getKey())) {
-          parentOfDir.put(row.getValue().getObjectID(), row.getValue().getParentObjectID());
+          dirById.put(row.getValue().getObjectID(), row.getValue());
         }
       }
     }
+    String keyName = openOrCommittedRecord.getFileName();
     while (parentId != bucketId) {
       // remove() instead of get() so that corrupt metadata with a cycle ends the walk.
-      Long grandParentId = parentOfDir.remove(parentId);
-      if (grandParentId == null) {
-        return false;
+      OmDirectoryInfo parent = dirById.remove(parentId);
+      if (parent == null) {
+        return null;
       }
-      parentId = grandParentId;
+      keyName = parent.getName() + OM_KEY_PREFIX + keyName;
+      parentId = parent.getParentObjectID();
     }
-    return true;
+    return keyName;
   }
 }

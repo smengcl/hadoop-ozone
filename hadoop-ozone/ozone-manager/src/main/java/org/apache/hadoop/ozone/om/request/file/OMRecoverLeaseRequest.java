@@ -53,6 +53,7 @@ import org.apache.hadoop.ozone.om.helpers.OmKeyInfo;
 import org.apache.hadoop.ozone.om.helpers.OmKeyLocationInfo;
 import org.apache.hadoop.ozone.om.helpers.OmKeyLocationInfoGroup;
 import org.apache.hadoop.ozone.om.request.key.OMKeyRequest;
+import org.apache.hadoop.ozone.om.request.util.OmAppendUtil;
 import org.apache.hadoop.ozone.om.request.util.OmResponseUtil;
 import org.apache.hadoop.ozone.om.response.OMClientResponse;
 import org.apache.hadoop.ozone.om.response.file.OMRecoverLeaseResponse;
@@ -113,6 +114,8 @@ public class OMRecoverLeaseRequest extends OMKeyRequest {
         recoverLeaseRequest.getBucketName(),
         recoverLeaseRequest.getKeyName(),
         IAccessAuthorizer.ACLType.WRITE, OzoneObj.ResourceType.KEY);
+    OmAppendUtil.checkNativeFileAcls(ozoneManager, this, recoverLeaseRequest.getVolumeName(),
+        recoverLeaseRequest.getBucketName(), normalizedKeyPath);
 
     return request.toBuilder()
         .setRecoverLeaseRequest(

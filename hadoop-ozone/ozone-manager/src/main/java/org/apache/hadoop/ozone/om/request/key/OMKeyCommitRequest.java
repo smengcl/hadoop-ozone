@@ -69,7 +69,6 @@ import org.apache.hadoop.ozone.protocol.proto.OzoneManagerProtocolProtos.OMReque
 import org.apache.hadoop.ozone.protocol.proto.OzoneManagerProtocolProtos.OMResponse;
 import org.apache.hadoop.ozone.protocol.proto.OzoneManagerProtocolProtos.Type;
 import org.apache.hadoop.ozone.request.validation.RequestProcessingPhase;
-import org.apache.hadoop.ozone.security.acl.IAccessAuthorizer;
 import org.apache.hadoop.util.Time;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -128,8 +127,7 @@ public class OMKeyCommitRequest extends OMKeyRequest {
             .setKeyName(keyPath);
 
     KeyArgs resolvedKeyArgs =
-        resolveBucketAndCheckOpenKeyAcls(newKeyArgs.build(), ozoneManager,
-            IAccessAuthorizer.ACLType.WRITE, commitKeyRequest.getClientID());
+        resolveBucketAndCheckSessionAcls(newKeyArgs.build(), ozoneManager, commitKeyRequest.getClientID(), isRecovery);
 
     return request.toBuilder()
         .setCommitKeyRequest(commitKeyRequest.toBuilder()

@@ -61,7 +61,6 @@ import org.apache.hadoop.ozone.protocol.proto.OzoneManagerProtocolProtos.OMRespo
 import org.apache.hadoop.ozone.protocol.proto.OzoneManagerProtocolProtos.Type;
 import org.apache.hadoop.ozone.protocol.proto.OzoneManagerProtocolProtos.UserInfo;
 import org.apache.hadoop.ozone.request.validation.RequestProcessingPhase;
-import org.apache.hadoop.ozone.security.acl.IAccessAuthorizer.ACLType;
 import org.apache.hadoop.util.Time;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -116,8 +115,7 @@ public class OMAllocateBlockRequest extends OMKeyRequest {
         keyArgs.toBuilder().setModificationTime(Time.now()).setKeyName(keyPath);
 
     KeyArgs resolvedKeyArgs =
-        resolveBucketAndCheckOpenKeyAcls(newKeyArgs.build(), ozoneManager,
-            ACLType.WRITE, allocateBlockRequest.getClientID());
+        resolveBucketAndCheckSessionAcls(newKeyArgs.build(), ozoneManager, allocateBlockRequest.getClientID(), false);
 
     AllocateBlockRequest.Builder newAllocatedBlockRequest =
         AllocateBlockRequest.newBuilder()

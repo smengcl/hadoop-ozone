@@ -179,7 +179,7 @@ public final class OzoneAclUtils {
     return parentAclRight;
   }
 
-  private static boolean isOwner(UserGroupInformation callerUgi,
+  public static boolean isOwner(UserGroupInformation callerUgi,
       String ownerName) {
     return ownerName != null && ownerName.equals(callerUgi.getShortUserName());
   }

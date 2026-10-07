@@ -29,10 +29,12 @@ import org.apache.hadoop.ozone.audit.OMAction;
 import org.apache.hadoop.ozone.om.OMMetadataManager;
 import org.apache.hadoop.ozone.om.OzoneManager;
 import org.apache.hadoop.ozone.om.ResolvedBucket;
+import org.apache.hadoop.ozone.om.exceptions.OMException;
 import org.apache.hadoop.ozone.om.execution.flowcontrol.ExecutionContext;
 import org.apache.hadoop.ozone.om.helpers.BucketLayout;
 import org.apache.hadoop.ozone.om.helpers.OmKeyInfo;
 import org.apache.hadoop.ozone.om.request.OMClientRequest;
+import org.apache.hadoop.ozone.om.request.util.OmAppendUtil;
 import org.apache.hadoop.ozone.om.request.util.OmResponseUtil;
 import org.apache.hadoop.ozone.om.response.OMClientResponse;
 import org.apache.hadoop.ozone.om.response.file.OMAppendLeaseRenewResponse;
@@ -51,6 +53,8 @@ import org.slf4j.LoggerFactory;
  */
 public class OMAppendLeaseRenewRequest extends OMClientRequest {
   private static final Logger LOG = LoggerFactory.getLogger(OMAppendLeaseRenewRequest.class);
+  /** Every session costs an ACL check and a bucket lock. The client renewer sends at most 256 per request. */
+  public static final int MAX_SESSIONS_PER_REQUEST = 1024;
 
   public OMAppendLeaseRenewRequest(OMRequest omRequest) {
     super(omRequest);
@@ -59,23 +63,46 @@ public class OMAppendLeaseRenewRequest extends OMClientRequest {
   @Override
   public OMRequest preExecute(OzoneManager ozoneManager) throws IOException {
     final OMRequest request = super.preExecute(ozoneManager);
+    if (request.getRenewAppendLeasesRequest().getSessionsCount() > MAX_SESSIONS_PER_REQUEST) {
+      throw new OMException("Cannot renew more than " + MAX_SESSIONS_PER_REQUEST + " append leases in one request",
+          OMException.ResultCodes.INVALID_REQUEST);
+    }
     RenewAppendLeasesRequest.Builder renewRequest = request.getRenewAppendLeasesRequest().toBuilder()
         .setRenewalTime(Time.now());
-    // Sessions are indexed by the bucket that holds the file, not by a link to it.
+    // A session that is listed more than once is authorized once: a check can scan the directories of its bucket.
+    Map<AppendSessionKey, Boolean> renewable = new HashMap<>();
     for (int i = 0; i < renewRequest.getSessionsCount(); i++) {
       AppendSessionKey session = renewRequest.getSessions(i);
+      // The leader decides which sessions the caller may renew, and every OM has to apply the same decision. A session
+      // that is not to be renewed is therefore forwarded with ID 0, which no session has, and is answered with false.
+      AppendSessionKey.Builder forwarded = session.toBuilder().setSessionId(0);
       try {
+        // Sessions are indexed by the bucket that holds the file, not by a link to it.
         ResolvedBucket bucket = ozoneManager.resolveBucketLink(
             Pair.of(session.getVolumeName(), session.getBucketName()), this);
-        renewRequest.setSessions(i, session.toBuilder()
-            .setVolumeName(bucket.realVolume()).setBucketName(bucket.realBucket()));
+        AppendSessionKey resolved = session.toBuilder()
+            .setVolumeName(bucket.realVolume()).setBucketName(bucket.realBucket()).build();
+        if (renewable.computeIfAbsent(resolved, key -> mayRenew(ozoneManager, key))) {
+          forwarded = resolved.toBuilder();
+        }
       } catch (IOException e) {
-        // The session is answered with false, as its bucket has no such session.
-        LOG.debug("Cannot resolve bucket {}/{} of append session {}", session.getVolumeName(),
-            session.getBucketName(), session.getSessionId(), e);
+        LOG.debug("Not renewing append session {} of bucket {}/{}", session.getSessionId(), session.getVolumeName(),
+            session.getBucketName(), e);
       }
+      renewRequest.setSessions(i, forwarded);
     }
     return request.toBuilder().setRenewAppendLeasesRequest(renewRequest).build();
+  }
+
+  private boolean mayRenew(OzoneManager ozoneManager, AppendSessionKey session) {
+    try {
+      return !ozoneManager.getAclsEnabled() || OmAppendUtil.checkSessionAcls(ozoneManager, this,
+          session.getVolumeName(), session.getBucketName(), session.getSessionId());
+    } catch (IOException e) {
+      LOG.debug("Not renewing append session {} of bucket {}/{}", session.getSessionId(), session.getVolumeName(),
+          session.getBucketName(), e);
+      return false;
+    }
   }
 
   @Override

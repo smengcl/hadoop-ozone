@@ -96,6 +96,7 @@ import org.apache.hadoop.ozone.om.lock.OzoneLockStrategy;
 import org.apache.hadoop.ozone.om.request.OMClientRequest;
 import org.apache.hadoop.ozone.om.request.OMClientRequestUtils;
 import org.apache.hadoop.ozone.om.request.file.OMFileRequest;
+import org.apache.hadoop.ozone.om.request.util.OmAppendUtil;
 import org.apache.hadoop.ozone.protocol.proto.OzoneManagerProtocolProtos.KeyArgs;
 import org.apache.hadoop.ozone.protocol.proto.OzoneManagerProtocolProtos.OMRequest;
 import org.apache.hadoop.ozone.protocol.proto.OzoneManagerProtocolProtos.UserInfo;
@@ -182,6 +183,31 @@ public abstract class OMKeyRequest extends OMClientRequest {
     checkKeyAclsInOpenKeyTable(ozoneManager, resolvedArgs.getVolumeName(),
         resolvedArgs.getBucketName(), keyArgs.getKeyName(),
         aclType, clientId);
+    return resolvedArgs;
+  }
+
+  /**
+   * Like {@link #resolveBucketAndCheckOpenKeyAcls} with WRITE, for the requests that validateAndUpdateCache resolves
+   * through the append session index. Such a request is authorized against the file of its session, as the path it
+   * carries does not decide which file it changes.
+   *
+   * @param recovery true for a recovery commit. Unless it names an append session, it ends the writer of the committed
+   *     file at its path, so the ACLs of that file are checked as for {@link OmAppendUtil#checkNativeFileAcls append}.
+   */
+  protected KeyArgs resolveBucketAndCheckSessionAcls(KeyArgs keyArgs, OzoneManager ozoneManager, long clientId,
+      boolean recovery) throws IOException {
+    KeyArgs resolvedArgs = resolveBucketLink(ozoneManager, keyArgs);
+    // A request that names the ID of a session whose admission is applied only after this check is authorized by its
+    // path, and validateAndUpdateCache then finds the session. This is why session IDs are random.
+    if (!OmAppendUtil.checkSessionAcls(ozoneManager, this, resolvedArgs.getVolumeName(), resolvedArgs.getBucketName(),
+        clientId)) {
+      checkKeyAclsInOpenKeyTable(ozoneManager, resolvedArgs.getVolumeName(), resolvedArgs.getBucketName(),
+          keyArgs.getKeyName(), IAccessAuthorizer.ACLType.WRITE, clientId);
+      if (recovery && getBucketLayout().isFileSystemOptimized()) {
+        OmAppendUtil.checkNativeFileAcls(ozoneManager, this, resolvedArgs.getVolumeName(),
+            resolvedArgs.getBucketName(), keyArgs.getKeyName());
+      }
+    }
     return resolvedArgs;
   }
 
