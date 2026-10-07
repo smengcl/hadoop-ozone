@@ -52,6 +52,7 @@ import org.apache.hadoop.ozone.om.request.bucket.OMBucketSetPropertyRequest;
 import org.apache.hadoop.ozone.om.request.bucket.acl.OMBucketAddAclRequest;
 import org.apache.hadoop.ozone.om.request.bucket.acl.OMBucketRemoveAclRequest;
 import org.apache.hadoop.ozone.om.request.bucket.acl.OMBucketSetAclRequest;
+import org.apache.hadoop.ozone.om.request.file.OMAppendLeaseRenewRequest;
 import org.apache.hadoop.ozone.om.request.file.OMFileAppendRequest;
 import org.apache.hadoop.ozone.om.request.file.OMRecoverLeaseRequest;
 import org.apache.hadoop.ozone.om.request.key.OMDirectoriesPurgeRequestWithFSO;
@@ -282,6 +283,8 @@ public final class OzoneManagerRatisUtils {
             OMException.ResultCodes.APPEND_NOT_SUPPORTED);
       }
       return new OMFileAppendRequest(omRequest);
+    case RenewAppendLeases:
+      return new OMAppendLeaseRenewRequest(omRequest);
     /*
      * Key requests that can have multiple variants based on the bucket layout
      * should be created using {@link BucketLayoutAwareOMKeyRequestFactory}.

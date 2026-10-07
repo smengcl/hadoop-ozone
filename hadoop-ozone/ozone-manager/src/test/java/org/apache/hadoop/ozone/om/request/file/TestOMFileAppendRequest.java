@@ -27,14 +27,20 @@ import static org.apache.hadoop.ozone.protocol.proto.OzoneManagerProtocolProtos.
 import static org.apache.hadoop.ozone.protocol.proto.OzoneManagerProtocolProtos.Status.OK;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.when;
 
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
+import org.apache.commons.lang3.tuple.Pair;
 import org.apache.hadoop.hdds.client.BlockID;
 import org.apache.hadoop.hdds.client.RatisReplicationConfig;
 import org.apache.hadoop.hdds.utils.db.BatchOperation;
+import org.apache.hadoop.hdds.utils.db.Table;
 import org.apache.hadoop.hdds.utils.db.cache.CacheKey;
 import org.apache.hadoop.hdds.utils.db.cache.CacheValue;
 import org.apache.hadoop.ozone.OzoneAcl;
@@ -48,6 +54,7 @@ import org.apache.hadoop.ozone.om.helpers.OmKeyInfo;
 import org.apache.hadoop.ozone.om.helpers.OmKeyLocationInfo;
 import org.apache.hadoop.ozone.om.helpers.OmKeyLocationInfoGroup;
 import org.apache.hadoop.ozone.om.helpers.RepeatedOmKeyInfo;
+import org.apache.hadoop.ozone.om.request.OMClientRequest;
 import org.apache.hadoop.ozone.om.request.OMRequestTestUtils;
 import org.apache.hadoop.ozone.om.request.key.OMAllocateBlockRequestWithFSO;
 import org.apache.hadoop.ozone.om.request.key.OMKeyCommitRequestWithFSO;
@@ -60,6 +67,7 @@ import org.apache.hadoop.ozone.protocol.proto.OzoneManagerProtocolProtos.Allocat
 import org.apache.hadoop.ozone.protocol.proto.OzoneManagerProtocolProtos.AppendConflictInfo;
 import org.apache.hadoop.ozone.protocol.proto.OzoneManagerProtocolProtos.AppendFileRequest;
 import org.apache.hadoop.ozone.protocol.proto.OzoneManagerProtocolProtos.AppendFileResponse;
+import org.apache.hadoop.ozone.protocol.proto.OzoneManagerProtocolProtos.AppendSessionKey;
 import org.apache.hadoop.ozone.protocol.proto.OzoneManagerProtocolProtos.AppendSessionPhase;
 import org.apache.hadoop.ozone.protocol.proto.OzoneManagerProtocolProtos.AppendWriterKind;
 import org.apache.hadoop.ozone.protocol.proto.OzoneManagerProtocolProtos.CommitKeyRequest;
@@ -69,6 +77,7 @@ import org.apache.hadoop.ozone.protocol.proto.OzoneManagerProtocolProtos.KeyArgs
 import org.apache.hadoop.ozone.protocol.proto.OzoneManagerProtocolProtos.KeyLocation;
 import org.apache.hadoop.ozone.protocol.proto.OzoneManagerProtocolProtos.OMRequest;
 import org.apache.hadoop.ozone.protocol.proto.OzoneManagerProtocolProtos.OMResponse;
+import org.apache.hadoop.ozone.protocol.proto.OzoneManagerProtocolProtos.RenewAppendLeasesRequest;
 import org.apache.hadoop.ozone.protocol.proto.OzoneManagerProtocolProtos.Type;
 import org.apache.hadoop.security.UserGroupInformation;
 import org.junit.jupiter.api.BeforeEach;
@@ -512,6 +521,50 @@ public class TestOMFileAppendRequest extends OMKeyRequestTests {
     assertThat(blockIds(committed)).isEqualTo(blockIds(before));
   }
 
+  @Test
+  public void testRenewAppendLeases() throws Exception {
+    OmKeyInfo before = addCommittedFile(1);
+    long active = admit();
+    long admittedAt = openRecord(active).getAppendSession().getLastRenewedAt();
+    // A session of another file in another bucket, and one that lease recovery has fenced.
+    String otherBucket = UUID.randomUUID().toString();
+    OMRequestTestUtils.addVolumeAndBucketToDB(volumeName, otherBucket, omMetadataManager, getBucketLayout());
+    OmKeyInfo otherOpen = openRecord(active).toBuilder().setBucketName(otherBucket).build();
+    String dbOtherOpenKey = "/other/open/key/7";
+    omMetadataManager.getOpenKeyTable(getBucketLayout()).put(dbOtherOpenKey, otherOpen);
+    omMetadataManager.putAppendSession(volumeName, otherBucket, 7, dbOtherOpenKey);
+    OmKeyInfo fencedOpen = otherOpen.toBuilder()
+        .setAppendSession(otherOpen.getAppendSession().withPhase(AppendSessionPhase.APPEND_RECOVERING)).build();
+    String dbFencedOpenKey = "/other/open/key/8";
+    omMetadataManager.getOpenKeyTable(getBucketLayout()).put(dbFencedOpenKey, fencedOpen);
+    omMetadataManager.putAppendSession(volumeName, otherBucket, 8, dbFencedOpenKey);
+    when(ozoneManager.resolveBucketLink(eq(Pair.of(volumeName, "nobucket")), any(OMClientRequest.class)))
+        .thenThrow(new OMException("Bucket not found", OMException.ResultCodes.BUCKET_NOT_FOUND));
+
+    OMClientResponse response = renew(admittedAt + 1000, sessionKey(bucketName, active), sessionKey(bucketName, 404),
+        sessionKey(otherBucket, 7), sessionKey(otherBucket, 8), sessionKey("nobucket", active));
+
+    assertThat(response.getOMResponse().getStatus()).isEqualTo(OK);
+    assertThat(response.getOMResponse().getRenewAppendLeasesResponse().getRenewedList())
+        .containsExactly(true, false, true, false, false);
+    flush(response);
+    Table<String, OmKeyInfo> openKeyTable = omMetadataManager.getOpenKeyTable(getBucketLayout());
+    OmAppendSession renewed = openKeyTable.getSkipCache(dbOpenKey(active)).getAppendSession();
+    assertThat(renewed.getLastRenewedAt()).isEqualTo(admittedAt + 1000);
+    assertThat(renewed.getOpenedAt()).isEqualTo(admittedAt);
+    assertThat(openKeyTable.getSkipCache(dbOtherOpenKey).getAppendSession().getLastRenewedAt())
+        .isEqualTo(admittedAt + 1000);
+    assertThat(openKeyTable.getSkipCache(dbFencedOpenKey).getAppendSession().getLastRenewedAt())
+        .isEqualTo(admittedAt);
+    // The file itself is not touched.
+    assertThat(committedFile().getModificationTime()).isEqualTo(before.getModificationTime());
+
+    // A delayed renewal does not shorten the lease.
+    assertThat(renew(admittedAt + 500, sessionKey(bucketName, active)).getOMResponse()
+        .getRenewAppendLeasesResponse().getRenewedList()).containsExactly(true);
+    assertThat(openRecord(active).getAppendSession().getLastRenewedAt()).isEqualTo(admittedAt + 1000);
+  }
+
   private static AppendConflictInfo assertConflict(OMClientResponse response, AppendWriterKind kind) {
     OMResponse omResponse = response.getOMResponse();
     assertThat(omResponse.getStatus()).isEqualTo(APPEND_WRITER_CONFLICT);
@@ -529,6 +582,26 @@ public class TestOMFileAppendRequest extends OMKeyRequestTests {
         .build();
     request = new OMFileAppendRequest(request).preExecute(ozoneManager);
     return new OMFileAppendRequest(request).validateAndUpdateCache(ozoneManager, ++txnId);
+  }
+
+  private AppendSessionKey sessionKey(String bucket, long sessionId) {
+    return AppendSessionKey.newBuilder().setVolumeName(volumeName).setBucketName(bucket).setSessionId(sessionId)
+        .build();
+  }
+
+  /** Applies a renewal that the leader stamped with the given time. */
+  private OMClientResponse renew(long renewalTime, AppendSessionKey... sessions) throws Exception {
+    OMRequest request = OMRequest.newBuilder()
+        .setCmdType(Type.RenewAppendLeases)
+        .setClientId(UUID.randomUUID().toString())
+        .setRenewAppendLeasesRequest(RenewAppendLeasesRequest.newBuilder().addAllSessions(Arrays.asList(sessions)))
+        .build();
+    request = new OMAppendLeaseRenewRequest(request).preExecute(ozoneManager);
+    assertThat(request.getRenewAppendLeasesRequest().getRenewalTime()).isPositive();
+    request = request.toBuilder()
+        .setRenewAppendLeasesRequest(request.getRenewAppendLeasesRequest().toBuilder().setRenewalTime(renewalTime))
+        .build();
+    return new OMAppendLeaseRenewRequest(request).validateAndUpdateCache(ozoneManager, ++txnId);
   }
 
   private long admit() throws Exception {
