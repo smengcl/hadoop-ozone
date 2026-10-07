@@ -18,6 +18,7 @@
 package org.apache.hadoop.ozone.om.request;
 
 import static org.apache.hadoop.ozone.om.request.file.OMFileRequest.getOmKeyInfo;
+import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.Mockito.any;
 import static org.mockito.Mockito.doCallRealMethod;
 import static org.mockito.Mockito.when;
@@ -29,6 +30,7 @@ import java.security.DigestInputStream;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collections;
 import java.util.List;
 import java.util.Map;
@@ -47,6 +49,7 @@ import org.apache.hadoop.hdds.protocol.proto.HddsProtos;
 import org.apache.hadoop.hdds.protocol.proto.HddsProtos.KeyValue;
 import org.apache.hadoop.hdds.scm.pipeline.Pipeline;
 import org.apache.hadoop.hdds.scm.pipeline.PipelineID;
+import org.apache.hadoop.hdds.utils.db.Table;
 import org.apache.hadoop.hdds.utils.db.cache.CacheKey;
 import org.apache.hadoop.hdds.utils.db.cache.CacheValue;
 import org.apache.hadoop.ozone.ClientVersion;
@@ -59,6 +62,7 @@ import org.apache.hadoop.ozone.om.OzoneManager;
 import org.apache.hadoop.ozone.om.exceptions.OMException;
 import org.apache.hadoop.ozone.om.helpers.BucketLayout;
 import org.apache.hadoop.ozone.om.helpers.KeyValueUtil;
+import org.apache.hadoop.ozone.om.helpers.OmAppendSession;
 import org.apache.hadoop.ozone.om.helpers.OmBucketInfo;
 import org.apache.hadoop.ozone.om.helpers.OmDirectoryInfo;
 import org.apache.hadoop.ozone.om.helpers.OmKeyInfo;
@@ -72,6 +76,7 @@ import org.apache.hadoop.ozone.om.helpers.RepeatedOmKeyInfo;
 import org.apache.hadoop.ozone.om.helpers.SnapshotInfo;
 import org.apache.hadoop.ozone.protocol.proto.OzoneManagerProtocolProtos;
 import org.apache.hadoop.ozone.protocol.proto.OzoneManagerProtocolProtos.AddAclRequest;
+import org.apache.hadoop.ozone.protocol.proto.OzoneManagerProtocolProtos.AppendSessionPhase;
 import org.apache.hadoop.ozone.protocol.proto.OzoneManagerProtocolProtos.BucketInfo;
 import org.apache.hadoop.ozone.protocol.proto.OzoneManagerProtocolProtos.CreateTenantRequest;
 import org.apache.hadoop.ozone.protocol.proto.OzoneManagerProtocolProtos.DeleteTenantRequest;
@@ -1593,6 +1598,69 @@ public final class OMRequestTestUtils {
           .put(ozoneDBKey, omKeyInfo);
     }
     return ozoneDBKey;
+  }
+
+  /**
+   * Adds an FSO file that is owned by an ACTIVE append session, the way append admission and an hsync leave it: the
+   * committed file has the owner and the blocks 1 (prefix) and 2 (suffix published by hsync), the session's open
+   * record has the suffix blocks 2 and 3 (3 was allocated but not published yet), and the append session index
+   * points at the open record. Blocks are in container 1, 100 bytes each, named by their local ID.
+   *
+   * @param file the file with its full path as key name, its parent object ID and object ID
+   * @return the open file table DB key of the session
+   */
+  public static String addFileWithAppendSession(OmKeyInfo file, long sessionId, OMMetadataManager omMetadataManager)
+      throws Exception {
+    List<OmKeyLocationInfo> blocks = new ArrayList<>();
+    for (long localId = 1; localId <= 3; localId++) {
+      blocks.add(new OmKeyLocationInfo.Builder().setBlockID(new BlockID(1L, localId)).setLength(100).build());
+    }
+    OmKeyInfo committed = file.toBuilder()
+        .setKeyName(file.getFileName())
+        .setOmKeyLocationInfos(Collections.singletonList(new OmKeyLocationInfoGroup(0, blocks.subList(0, 2))))
+        .setDataSize(200)
+        .setAppendOwnerSessionId(sessionId)
+        .build();
+    OmKeyInfo open = file.toBuilder()
+        .setOmKeyLocationInfos(Collections.singletonList(new OmKeyLocationInfoGroup(0, blocks.subList(1, 3))))
+        .setDataSize(100)
+        .setAppendSession(OmAppendSession.newActive(100, 1, Time.now()))
+        .build();
+    addFileToKeyTable(false, false, file.getFileName(), committed, -1, 50, omMetadataManager);
+    String dbOpenKey = addFileToKeyTable(true, false, file.getFileName(), open, sessionId, 50, omMetadataManager);
+    omMetadataManager.putAppendSession(file.getVolumeName(), file.getBucketName(), sessionId, dbOpenKey);
+    return dbOpenKey;
+  }
+
+  /** Returns the local IDs of the blocks in the latest version of the given record. */
+  public static List<Long> getBlockLocalIds(OmKeyInfo keyInfo) {
+    return keyInfo.getLatestVersionLocations().createLocationList().stream()
+        .map(OmKeyLocationInfo::getLocalID).collect(Collectors.toList());
+  }
+
+  /**
+   * Verifies what the delete of a file added by {@link #addFileWithAppendSession} leaves behind once its response is
+   * applied to the DB: no index entry, the open record INVALIDATED and reduced to the unpublished block 3 under the
+   * same open file table DB key in cache and DB, and a deleted table entry with the published blocks and no owner.
+   */
+  public static void assertAppendSessionInvalidated(OmKeyInfo file, long sessionId, String dbOpenKey,
+      OMMetadataManager omMetadataManager) throws IOException {
+    String volume = file.getVolumeName();
+    String bucket = file.getBucketName();
+    Table<String, OmKeyInfo> openFileTable = omMetadataManager.getOpenKeyTable(BucketLayout.FILE_SYSTEM_OPTIMIZED);
+    assertThat(omMetadataManager.getAppendSessionOpenKey(volume, bucket, sessionId)).isNull();
+    for (OmKeyInfo open : Arrays.asList(openFileTable.get(dbOpenKey), openFileTable.getSkipCache(dbOpenKey))) {
+      assertThat(open.getAppendSession().getPhase()).isEqualTo(AppendSessionPhase.APPEND_INVALIDATED);
+      assertThat(getBlockLocalIds(open)).containsExactly(3L);
+    }
+    assertThat(omMetadataManager.countRowsInTable(openFileTable)).isEqualTo(1);
+    String deletedKey = omMetadataManager.getOzoneDeletePathKey(file.getObjectID(),
+        omMetadataManager.getOzoneKey(volume, bucket, file.getKeyName()));
+    assertThat(omMetadataManager.getDeletedTable().getSkipCache(deletedKey).getOmKeyInfoList()).singleElement()
+        .satisfies(deleted -> {
+          assertThat(deleted.getAppendOwnerSessionId()).isNull();
+          assertThat(getBlockLocalIds(deleted)).containsExactly(1L, 2L);
+        });
   }
 
   /**

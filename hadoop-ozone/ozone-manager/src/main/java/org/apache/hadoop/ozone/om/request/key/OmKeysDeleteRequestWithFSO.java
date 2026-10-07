@@ -40,6 +40,7 @@ import org.apache.hadoop.ozone.om.helpers.OmKeyInfo;
 import org.apache.hadoop.ozone.om.helpers.OmLifecycleScanState;
 import org.apache.hadoop.ozone.om.helpers.OzoneFileStatus;
 import org.apache.hadoop.ozone.om.request.file.OMFileRequest;
+import org.apache.hadoop.ozone.om.request.util.OmAppendUtil;
 import org.apache.hadoop.ozone.om.response.OMClientResponse;
 import org.apache.hadoop.ozone.om.response.key.OMKeysDeleteResponseWithFSO;
 import org.apache.hadoop.ozone.protocol.proto.OzoneManagerProtocolProtos;
@@ -110,8 +111,15 @@ public class OmKeysDeleteRequestWithFSO extends OMKeysDeleteRequest {
           .addCacheEntry(new CacheKey<>(dbKey),
               CacheValue.get(trxnLogIndex));
       emptyKeys += OmKeyInfo.isKeyEmpty(omKeyInfo) ? 1 : 0;
+      // If omKeyInfo has an append owner, invalidate its session. The deleted record must not keep the owner.
+      final Pair<String, OmKeyInfo> invalidatedAppend =
+          OmAppendUtil.invalidateSessionOfDeletedFile(omMetadataManager, omKeyInfo, trxnLogIndex);
+      if (invalidatedAppend != null) {
+        openKeyInfoMap.put(invalidatedAppend.getKey(), invalidatedAppend.getValue());
+      }
       final OmKeyInfo updatedOmKeyInfo = omKeyInfo.toBuilder()
           .setUpdateID(trxnLogIndex)
+          .setAppendOwnerSessionId(null)
           .build();
       quotaReleased += sumBlockLengths(updatedOmKeyInfo);
       omKeyInfoList.set(i, updatedOmKeyInfo);

@@ -27,10 +27,12 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.Mockito.when;
 
 import java.io.IOException;
+import java.util.Collections;
 import java.util.Iterator;
 import java.util.NoSuchElementException;
 import java.util.UUID;
 import org.apache.hadoop.hdds.client.RatisReplicationConfig;
+import org.apache.hadoop.hdds.utils.db.BatchOperation;
 import org.apache.hadoop.ozone.om.OzonePrefixPathImpl;
 import org.apache.hadoop.ozone.om.exceptions.OMException;
 import org.apache.hadoop.ozone.om.helpers.BucketLayout;
@@ -39,6 +41,7 @@ import org.apache.hadoop.ozone.om.helpers.OmDirectoryInfo;
 import org.apache.hadoop.ozone.om.helpers.OmKeyInfo;
 import org.apache.hadoop.ozone.om.helpers.OzoneFileStatus;
 import org.apache.hadoop.ozone.om.request.OMRequestTestUtils;
+import org.apache.hadoop.ozone.om.request.util.OmAppendUtil;
 import org.apache.hadoop.ozone.om.response.OMClientResponse;
 import org.apache.hadoop.ozone.protocol.proto.OzoneManagerProtocolProtos;
 import org.apache.hadoop.ozone.protocol.proto.OzoneManagerProtocolProtos.DeleteKeyRequest;
@@ -262,6 +265,79 @@ public class TestOMKeyDeleteRequestWithFSO extends TestOMKeyDeleteRequest {
 
     assertEquals(OzoneManagerProtocolProtos.Status.OK, response.getOMResponse().getStatus());
     assertNull(omMetadataManager.getDirectoryTable().get(dirName));
+  }
+
+  @Test
+  public void testDeleteFileWithAppendSession() throws Exception {
+    long sessionId = 4321L;
+    OmKeyInfo file = addVolumeBucketAndFileForAppend();
+    String dbOpenKey = OMRequestTestUtils.addFileWithAppendSession(file, sessionId, omMetadataManager);
+
+    OMClientResponse response = deleteAndApplyToDB(FILE_KEY, false);
+
+    assertEquals(OzoneManagerProtocolProtos.Status.OK, response.getOMResponse().getStatus());
+    OMRequestTestUtils.assertAppendSessionInvalidated(file, sessionId, dbOpenKey, omMetadataManager);
+  }
+
+  @Test
+  public void testAppendSessionUnreachableAfterAncestorDelete() throws Exception {
+    long sessionId = 4321L;
+    OmKeyInfo file = addVolumeBucketAndFileForAppend();
+    String dbOpenKey = OMRequestTestUtils.addFileWithAppendSession(file, sessionId, omMetadataManager);
+    long volumeId = omMetadataManager.getVolumeId(volumeName);
+    long bucketId = omMetadataManager.getBucketId(volumeName, bucketName);
+    OmKeyInfo open = omMetadataManager.getOpenKeyTable(getBucketLayout()).get(dbOpenKey);
+    // The committed row has only the leaf name, so its ancestors are found by object ID.
+    OmKeyInfo committed = omMetadataManager.getKeyTable(getBucketLayout()).get(
+        omMetadataManager.getOzonePathKey(volumeId, bucketId, file.getParentObjectID(), FILE_NAME));
+    assertEquals(FILE_NAME, committed.getKeyName());
+    assertTrue(OmAppendUtil.isReachable(omMetadataManager, volumeId, bucketId, open));
+    assertTrue(OmAppendUtil.isReachable(omMetadataManager, volumeId, bucketId, committed));
+
+    when(ozoneManager.getDefaultReplicationConfig()).thenReturn(RatisReplicationConfig.getInstance(ONE));
+    OMRequest deleteRequest = doPreExecute(createDeleteKeyRequest("c", true));
+    OMClientResponse response = getOmKeyDeleteRequest(deleteRequest).validateAndUpdateCache(ozoneManager, 100L);
+    assertEquals(OzoneManagerProtocolProtos.Status.OK, response.getOMResponse().getStatus());
+
+    // The recursive delete only removed the top directory. The session's rows wait for the directory cleanup, but
+    // the file is unreachable as soon as the delete is applied to the cache.
+    assertEquals(dbOpenKey, omMetadataManager.getAppendSessionOpenKey(volumeName, bucketName, sessionId));
+    assertTrue(omMetadataManager.getOpenKeyTable(getBucketLayout()).get(dbOpenKey).getAppendSession().isActive());
+    assertFalse(OmAppendUtil.isReachable(omMetadataManager, volumeId, bucketId, open));
+    assertFalse(OmAppendUtil.isReachable(omMetadataManager, volumeId, bucketId, committed));
+
+    try (BatchOperation batchOperation = omMetadataManager.getStore().initBatchOperation()) {
+      response.checkAndUpdateDB(omMetadataManager, batchOperation);
+      omMetadataManager.getStore().commitBatchOperation(batchOperation);
+    }
+    omMetadataManager.getDirectoryTable().cleanupCache(Collections.singletonList(100L));
+    assertFalse(OmAppendUtil.isReachable(omMetadataManager, volumeId, bucketId, open));
+
+    // A new directory at the old path has another object ID and does not make the old file reachable again.
+    OMRequestTestUtils.addDirKeyToDirTable(true, OMRequestTestUtils.createOmDirectoryInfo("c", bucketId + 1000,
+        bucketId), volumeName, bucketName, 101L, omMetadataManager);
+    assertFalse(OmAppendUtil.isReachable(omMetadataManager, volumeId, bucketId, open));
+    assertFalse(OmAppendUtil.isReachable(omMetadataManager, volumeId, bucketId, committed));
+  }
+
+  private OmKeyInfo addVolumeBucketAndFileForAppend() throws Exception {
+    OMRequestTestUtils.addVolumeAndBucketToDB(volumeName, bucketName, omMetadataManager, getBucketLayout());
+    long parentId = OMRequestTestUtils.addParentsToDirTable(volumeName, bucketName, PARENT_DIR, omMetadataManager);
+    return OMRequestTestUtils.createOmKeyInfo(volumeName, bucketName, FILE_KEY, RatisReplicationConfig.getInstance(ONE))
+        .setObjectID(parentId + 1L)
+        .setParentObjectID(parentId)
+        .setUpdateID(50L)
+        .build();
+  }
+
+  private OMClientResponse deleteAndApplyToDB(String keyPath, boolean recursive) throws Exception {
+    OMRequest deleteRequest = doPreExecute(createDeleteKeyRequest(keyPath, recursive));
+    OMClientResponse response = getOmKeyDeleteRequest(deleteRequest).validateAndUpdateCache(ozoneManager, 100L);
+    try (BatchOperation batchOperation = omMetadataManager.getStore().initBatchOperation()) {
+      response.checkAndUpdateDB(omMetadataManager, batchOperation);
+      omMetadataManager.getStore().commitBatchOperation(batchOperation);
+    }
+    return response;
   }
 
   private OMRequest createDeleteKeyRequest(String keyPath, boolean recursive) {

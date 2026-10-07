@@ -151,6 +151,10 @@ public class OMDirectoriesPurgeResponseWithFSO extends OmKeyResponse {
       for (OzoneManagerProtocolProtos.KeyInfo key : deletedSubFilesList) {
         OmKeyInfo keyInfo = OmKeyInfo.getFromProtobuf(key)
             .withCommittedKeyDeletedFlag(true);
+        if (keyInfo.getAppendOwnerSessionId() != null) {
+          // The deleted record must not keep the append owner.
+          keyInfo = keyInfo.toBuilder().setAppendOwnerSessionId(null).build();
+        }
         String ozoneDbKey = keySpaceOmMetadataManager.getOzonePathKey(volumeId,
             bucketId, keyInfo.getParentObjectID(), keyInfo.getFileName());
         keySpaceOmMetadataManager.getKeyTable(getBucketLayout())

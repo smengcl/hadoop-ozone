@@ -20,15 +20,18 @@ package org.apache.hadoop.ozone.om.request.key;
 import static org.apache.hadoop.hdds.protocol.proto.HddsProtos.ReplicationFactor.ONE;
 import static org.apache.hadoop.ozone.protocol.proto.OzoneManagerProtocolProtos.Status;
 import static org.apache.hadoop.ozone.protocol.proto.OzoneManagerProtocolProtos.Type.DeleteKeys;
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.mockito.Mockito.when;
 
 import java.util.ArrayList;
 import java.util.List;
 import java.util.UUID;
 import org.apache.hadoop.hdds.client.RatisReplicationConfig;
+import org.apache.hadoop.hdds.utils.db.BatchOperation;
 import org.apache.hadoop.ozone.om.helpers.BucketLayout;
 import org.apache.hadoop.ozone.om.helpers.OmKeyInfo;
 import org.apache.hadoop.ozone.om.request.OMRequestTestUtils;
+import org.apache.hadoop.ozone.om.response.OMClientResponse;
 import org.apache.hadoop.ozone.protocol.proto.OzoneManagerProtocolProtos;
 import org.apache.hadoop.ozone.protocol.proto.OzoneManagerProtocolProtos.DeleteKeyArgs;
 import org.apache.hadoop.ozone.protocol.proto.OzoneManagerProtocolProtos.DeleteKeysRequest;
@@ -99,6 +102,34 @@ public class TestOMKeysDeleteRequestWithFSO extends TestOMKeysDeleteRequest {
     OmKeysDeleteRequestWithFSO omKeysDeleteRequest =
         new OmKeysDeleteRequestWithFSO(omRequest, getBucketLayout());
     checkDeleteKeysResponse(omKeysDeleteRequest);
+  }
+
+  @Test
+  public void testDeleteFileWithAppendSession() throws Exception {
+    long sessionId = 4321L;
+    OMRequestTestUtils.addVolumeAndBucketToDB(volumeName, bucketName, omMetadataManager, getBucketLayout());
+    long parentId = OMRequestTestUtils.addParentsToDirTable(volumeName, bucketName, "dir", omMetadataManager);
+    OmKeyInfo file = OMRequestTestUtils.createOmKeyInfo(volumeName, bucketName, "dir/file",
+            RatisReplicationConfig.getInstance(ONE))
+        .setObjectID(parentId + 1L)
+        .setParentObjectID(parentId)
+        .setUpdateID(50L)
+        .build();
+    String dbOpenKey = OMRequestTestUtils.addFileWithAppendSession(file, sessionId, omMetadataManager);
+
+    OMRequest request = OMRequest.newBuilder()
+        .setClientId(UUID.randomUUID().toString()).setCmdType(DeleteKeys)
+        .setDeleteKeysRequest(DeleteKeysRequest.newBuilder().setDeleteKeys(DeleteKeyArgs.newBuilder()
+            .setBucketName(bucketName).setVolumeName(volumeName).addKeys(file.getKeyName())))
+        .build();
+    OMClientResponse response = getOmKeysDeleteRequest(request).validateAndUpdateCache(ozoneManager, 100L);
+    try (BatchOperation batchOperation = omMetadataManager.getStore().initBatchOperation()) {
+      response.checkAndUpdateDB(omMetadataManager, batchOperation);
+      omMetadataManager.getStore().commitBatchOperation(batchOperation);
+    }
+
+    assertEquals(Status.OK, response.getOMResponse().getStatus());
+    OMRequestTestUtils.assertAppendSessionInvalidated(file, sessionId, dbOpenKey, omMetadataManager);
   }
 
   @Override

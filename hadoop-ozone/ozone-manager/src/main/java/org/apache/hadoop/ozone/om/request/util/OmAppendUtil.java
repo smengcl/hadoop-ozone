@@ -17,20 +17,39 @@
 
 package org.apache.hadoop.ozone.om.request.util;
 
+import static org.apache.hadoop.ozone.OzoneConsts.OM_KEY_PREFIX;
+
+import java.io.IOException;
 import java.util.Collections;
+import java.util.HashMap;
+import java.util.Iterator;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import java.util.stream.Collectors;
+import org.apache.commons.lang3.tuple.Pair;
 import org.apache.hadoop.hdds.client.ContainerBlockID;
+import org.apache.hadoop.hdds.utils.db.Table;
+import org.apache.hadoop.hdds.utils.db.cache.CacheKey;
+import org.apache.hadoop.hdds.utils.db.cache.CacheValue;
+import org.apache.hadoop.ozone.om.OMMetadataManager;
+import org.apache.hadoop.ozone.om.exceptions.OMException;
+import org.apache.hadoop.ozone.om.helpers.BucketLayout;
+import org.apache.hadoop.ozone.om.helpers.OmDirectoryInfo;
 import org.apache.hadoop.ozone.om.helpers.OmKeyInfo;
 import org.apache.hadoop.ozone.om.helpers.OmKeyLocationInfo;
 import org.apache.hadoop.ozone.om.helpers.OmKeyLocationInfoGroup;
+import org.apache.hadoop.ozone.om.request.file.OMFileRequest;
 import org.apache.hadoop.ozone.protocol.proto.OzoneManagerProtocolProtos.AppendSessionPhase;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /**
  * Helper methods shared by the OM requests that handle append sessions.
  */
 public final class OmAppendUtil {
+
+  private static final Logger LOG = LoggerFactory.getLogger(OmAppendUtil.class);
 
   private OmAppendUtil() {
   }
@@ -79,5 +98,108 @@ public final class OmAppendUtil {
         .setAppendSession(openRecord.getAppendSession().withPhase(AppendSessionPhase.APPEND_INVALIDATED))
         .setUpdateID(trxnLogIndex)
         .build();
+  }
+
+  /**
+   * Invalidates the append session that owns an FSO file which is being deleted: replaces the session's open record
+   * in the open file table cache by its {@link #invalidate invalidated} form and removes the session from the append
+   * session index. Must be called under the bucket write lock, before the deleted record loses its owner. The caller
+   * must persist the returned record under the returned open file table DB key.
+   *
+   * @param committed the deleted file with its file name and parent object ID
+   * @return the open file table DB key and the invalidated open record, or null if nothing has to be persisted (no
+   *     append owner, or no live open record of that session)
+   */
+  public static Pair<String, OmKeyInfo> invalidateSessionOfDeletedFile(OMMetadataManager omMetadataManager,
+      OmKeyInfo committed, long trxnLogIndex) throws IOException {
+    Long sessionId = committed.getAppendOwnerSessionId();
+    if (sessionId == null) {
+      return null;
+    }
+    String volume = committed.getVolumeName();
+    String bucket = committed.getBucketName();
+    String dbOpenKey = omMetadataManager.getAppendSessionOpenKey(volume, bucket, sessionId);
+    if (dbOpenKey == null) {
+      dbOpenKey = omMetadataManager.getOpenFileName(omMetadataManager.getVolumeId(volume),
+          omMetadataManager.getBucketId(volume, bucket), committed.getParentObjectID(), committed.getFileName(),
+          sessionId);
+    }
+    Table<String, OmKeyInfo> openFileTable = omMetadataManager.getOpenKeyTable(BucketLayout.FILE_SYSTEM_OPTIMIZED);
+    OmKeyInfo openRecord = openFileTable.get(dbOpenKey);
+    omMetadataManager.removeAppendSession(volume, bucket, sessionId);
+    if (openRecord == null || openRecord.getAppendSession() == null) {
+      LOG.warn("Potentially inconsistent DB state: append open record not found with dbOpenKey '{}'", dbOpenKey);
+      return null;
+    }
+    if (openRecord.getAppendSession().getPhase() == AppendSessionPhase.APPEND_INVALIDATED) {
+      return null;
+    }
+    OmKeyInfo invalidated = invalidate(openRecord, committed, trxnLogIndex);
+    openFileTable.addCacheEntry(dbOpenKey, invalidated, trxnLogIndex);
+    return Pair.of(dbOpenKey, invalidated);
+  }
+
+  /**
+   * Returns true if every ancestor directory of an FSO file still exists in the live namespace, that is the file was
+   * not removed by a recursive directory delete whose cleanup has not reached it yet. A renamed ancestor keeps its
+   * object ID and stays reachable; a deleted ancestor does not come back when its path is created again. Allocate,
+   * hsync, close and recovery of an append session must fail when this returns false, even though the session's rows
+   * still exist. Must be called under the bucket lock.
+   *
+   * @param openOrCommittedRecord a record of the file with its parent object ID. Its key name is only a hint: the
+   *     full path of an open record makes the check cheap as long as no ancestor was renamed.
+   */
+  public static boolean isReachable(OMMetadataManager omMetadataManager, long volumeId, long bucketId,
+      OmKeyInfo openOrCommittedRecord) throws IOException {
+    long parentId = openOrCommittedRecord.getParentObjectID();
+    try {
+      // The path the record remembers still leads to the same parent directory: all ancestors are alive.
+      if (OMFileRequest.getParentID(volumeId, bucketId, openOrCommittedRecord.getKeyName(), omMetadataManager)
+          == parentId) {
+        return true;
+      }
+    } catch (OMException e) {
+      LOG.debug("Path {} does not resolve, an ancestor was renamed or deleted: {}",
+          openOrCommittedRecord.getKeyName(), e.getMessage());
+    }
+    // ponytail: directory rows are keyed by (parent ID, name), so there is no lookup by object ID. Once the remembered
+    // path is stale (ancestor renamed or deleted) every check scans all directory rows of the bucket. Refresh the open
+    // record's key name on directory rename or keep an object ID to directory key index if this shows up in hsync
+    // latency.
+    Table<String, OmDirectoryInfo> dirTable = omMetadataManager.getDirectoryTable();
+    String bucketPrefix = OM_KEY_PREFIX + volumeId + OM_KEY_PREFIX + bucketId + OM_KEY_PREFIX;
+    // Copy the cache first, tombstones included: the double buffer evicts flushed entries without the bucket lock, so
+    // an entry checked during the DB scan could be gone before a later cache pass and its directory would be missed.
+    Map<String, OmDirectoryInfo> cached = new HashMap<>();
+    Iterator<Map.Entry<CacheKey<String>, CacheValue<OmDirectoryInfo>>> cacheIterator = dirTable.cacheIterator();
+    while (cacheIterator.hasNext()) {
+      Map.Entry<CacheKey<String>, CacheValue<OmDirectoryInfo>> entry = cacheIterator.next();
+      if (entry.getKey().getCacheKey().startsWith(bucketPrefix)) {
+        cached.put(entry.getKey().getCacheKey(), entry.getValue().getCacheValue());
+      }
+    }
+    Map<Long, Long> parentOfDir = new HashMap<>();
+    for (OmDirectoryInfo dir : cached.values()) {
+      if (dir != null) {
+        parentOfDir.put(dir.getObjectID(), dir.getParentObjectID());
+      }
+    }
+    try (Table.KeyValueIterator<String, OmDirectoryInfo> iterator = dirTable.iterator(bucketPrefix)) {
+      while (iterator.hasNext()) {
+        Table.KeyValue<String, OmDirectoryInfo> row = iterator.next();
+        if (!cached.containsKey(row.getKey())) {
+          parentOfDir.put(row.getValue().getObjectID(), row.getValue().getParentObjectID());
+        }
+      }
+    }
+    while (parentId != bucketId) {
+      // remove() instead of get() so that corrupt metadata with a cycle ends the walk.
+      Long grandParentId = parentOfDir.remove(parentId);
+      if (grandParentId == null) {
+        return false;
+      }
+      parentId = grandParentId;
+    }
+    return true;
   }
 }

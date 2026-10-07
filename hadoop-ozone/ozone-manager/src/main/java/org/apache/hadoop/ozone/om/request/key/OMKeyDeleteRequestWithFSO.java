@@ -26,6 +26,7 @@ import static org.apache.hadoop.ozone.util.MetricUtil.captureLatencyNs;
 import java.io.IOException;
 import java.nio.file.InvalidPathException;
 import java.util.Map;
+import org.apache.commons.lang3.tuple.Pair;
 import org.apache.hadoop.hdds.utils.db.Table;
 import org.apache.hadoop.hdds.utils.db.cache.CacheKey;
 import org.apache.hadoop.hdds.utils.db.cache.CacheValue;
@@ -44,6 +45,7 @@ import org.apache.hadoop.ozone.om.helpers.OmKeyInfo;
 import org.apache.hadoop.ozone.om.helpers.OzoneFSUtils;
 import org.apache.hadoop.ozone.om.helpers.OzoneFileStatus;
 import org.apache.hadoop.ozone.om.request.file.OMFileRequest;
+import org.apache.hadoop.ozone.om.request.util.OmAppendUtil;
 import org.apache.hadoop.ozone.om.request.util.OmResponseUtil;
 import org.apache.hadoop.ozone.om.response.OMClientResponse;
 import org.apache.hadoop.ozone.om.response.key.OMKeyDeleteResponseWithFSO;
@@ -183,6 +185,18 @@ public class OMKeyDeleteRequestWithFSO extends OMKeyDeleteRequest {
         }
       }
 
+      // If omKeyInfo has an append owner, invalidate its session. The deleted record must not keep the owner.
+      String invalidatedAppendOpenKey = null;
+      if (omKeyInfo.getAppendOwnerSessionId() != null) {
+        Pair<String, OmKeyInfo> invalidated =
+            OmAppendUtil.invalidateSessionOfDeletedFile(omMetadataManager, omKeyInfo, trxnLogIndex);
+        if (invalidated != null) {
+          invalidatedAppendOpenKey = invalidated.getKey();
+          deletedOpenKeyInfo = invalidated.getValue();
+        }
+        omKeyInfo = omKeyInfo.toBuilder().setAppendOwnerSessionId(null).build();
+      }
+
       if (keyStatus.isFile()) {
         auditMap.put(OzoneConsts.DATA_SIZE, String.valueOf(omKeyInfo.getDataSize()));
         auditMap.put(OzoneConsts.REPLICATION_CONFIG, omKeyInfo.getReplicationConfig().toString());
@@ -194,7 +208,8 @@ public class OMKeyDeleteRequestWithFSO extends OMKeyDeleteRequest {
       omClientResponse = new OMKeyDeleteResponseWithFSO(omResponse
           .setDeleteKeyResponse(DeleteKeyResponse.newBuilder()).build(),
           keyName, omKeyInfo,
-          omBucketInfo.copyObject(), keyStatus.isDirectory(), volumeId, deletedOpenKeyInfo);
+          omBucketInfo.copyObject(), keyStatus.isDirectory(), volumeId, deletedOpenKeyInfo,
+          invalidatedAppendOpenKey);
 
       result = Result.SUCCESS;
       long endNanosDeleteKeySuccessLatencyNs = Time.monotonicNowNanos();

@@ -21,6 +21,7 @@ import static org.apache.hadoop.hdds.protocol.proto.HddsProtos.ReplicationFactor
 import static org.apache.hadoop.ozone.om.lock.DAGLeveledResource.SNAPSHOT_DB_CONTENT_LOCK;
 import static org.apache.hadoop.ozone.om.lock.OzoneManagerLock.LeveledResource.BUCKET_LOCK;
 import static org.apache.hadoop.ozone.om.request.file.OMFileRequest.getOmKeyInfo;
+import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
@@ -81,6 +82,7 @@ import org.apache.ratis.util.function.UncheckedAutoCloseableSupplier;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.CsvSource;
+import org.junit.jupiter.params.provider.ValueSource;
 
 /**
  * Tests {@link OMKeyPurgeRequest} and {@link OMKeyPurgeResponse}.
@@ -702,6 +704,53 @@ public class TestOMDirectoriesPurgeRequestAndResponse extends OMKeyRequestTests 
     // hsync leg: the corresponding open key is marked deleted after the batch commit.
     OmKeyInfo purgedOpenKey = omMetadataManager.getOpenKeyTable(BucketLayout.FILE_SYSTEM_OPTIMIZED).get(dbOpenKey);
     assertEquals("true", purgedOpenKey.getMetadata().get(OzoneConsts.DELETED_HSYNC_KEY));
+  }
+
+  /**
+   * A purged sub-file that is owned by an append session takes the session with it. An owner that only the purge
+   * entry remembers (a snapshot's copy of the file) must not invalidate anything.
+   */
+  @ParameterizedTest
+  @ValueSource(booleans = {true, false})
+  public void testPurgeSubFileWithAppendSession(boolean liveFileHasOwner) throws Exception {
+    long sessionId = 4321L;
+    String bucket = "bucket" + RandomUtils.secure().randomInt();
+    OMRequestTestUtils.addVolumeAndBucketToDB(volumeName, bucket, omMetadataManager,
+        BucketLayout.FILE_SYSTEM_OPTIMIZED);
+    String bucketKey = omMetadataManager.getBucketKey(volumeName, bucket);
+    OmBucketInfo bucketInfo = omMetadataManager.getBucketTable().get(bucketKey);
+    OmDirectoryInfo dir1 = OMRequestTestUtils.createOmDirectoryInfo("dir1", 1L, bucketInfo.getObjectID());
+    OMRequestTestUtils.addDirKeyToDirTable(false, dir1, volumeName, bucket, 1L, omMetadataManager);
+    OmKeyInfo file = OMRequestTestUtils.createOmKeyInfo(volumeName, bucket, "dir1/file1",
+            RatisReplicationConfig.getInstance(ONE))
+        .setObjectID(2L)
+        .setParentObjectID(dir1.getObjectID())
+        .setUpdateID(100L)
+        .build();
+    String dbOpenKey = OMRequestTestUtils.addFileWithAppendSession(file, sessionId, omMetadataManager);
+    String dbFileKey = omMetadataManager.getOzonePathKey(omMetadataManager.getVolumeId(volumeName),
+        bucketInfo.getObjectID(), dir1.getObjectID(), "file1");
+
+    // The purge entry is the file row with its full path, as the directory deleting service sends it.
+    OmKeyInfo subFile = omMetadataManager.getFileTable().get(dbFileKey);
+    subFile.setKeyName(file.getKeyName());
+    if (!liveFileHasOwner) {
+      omMetadataManager.getFileTable().put(dbFileKey, file);
+    }
+    OMRequest omRequest = createPurgeKeysRequest(null, null, Collections.emptyList(),
+        Collections.singletonList(subFile), bucketInfo);
+    OMDirectoriesPurgeResponseWithFSO omClientResponse = (OMDirectoriesPurgeResponseWithFSO)
+        new OMDirectoriesPurgeRequestWithFSO(preExecute(omRequest)).validateAndUpdateCache(ozoneManager, 100L);
+    performBatchOperationCommit(omClientResponse);
+
+    if (liveFileHasOwner) {
+      OMRequestTestUtils.assertAppendSessionInvalidated(file, sessionId, dbOpenKey, omMetadataManager);
+    } else {
+      assertEquals(dbOpenKey, omMetadataManager.getAppendSessionOpenKey(volumeName, bucket, sessionId));
+      OmKeyInfo open = omMetadataManager.getOpenKeyTable(BucketLayout.FILE_SYSTEM_OPTIMIZED).get(dbOpenKey);
+      assertTrue(open.getAppendSession().isActive());
+      assertThat(OMRequestTestUtils.getBlockLocalIds(open)).containsExactly(2L, 3L);
+    }
   }
 
   private void performBatchOperationCommit(OMDirectoriesPurgeResponseWithFSO omClientResponse)

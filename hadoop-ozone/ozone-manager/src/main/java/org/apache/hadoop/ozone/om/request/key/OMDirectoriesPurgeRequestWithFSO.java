@@ -57,6 +57,7 @@ import org.apache.hadoop.ozone.om.helpers.OmKeyInfo;
 import org.apache.hadoop.ozone.om.helpers.OzoneFSUtils;
 import org.apache.hadoop.ozone.om.helpers.QuotaUtil;
 import org.apache.hadoop.ozone.om.helpers.SnapshotInfo;
+import org.apache.hadoop.ozone.om.request.util.OmAppendUtil;
 import org.apache.hadoop.ozone.om.request.util.OmResponseUtil;
 import org.apache.hadoop.ozone.om.response.OMClientResponse;
 import org.apache.hadoop.ozone.om.response.key.OMDirectoriesPurgeResponseWithFSO;
@@ -280,7 +281,7 @@ public class OMDirectoriesPurgeRequestWithFSO extends OMKeyRequest {
     List<PreparedEntry> preparedSubDirs = new ArrayList<>();
     for (OzoneManagerProtocolProtos.KeyInfo key : path.getMarkDeletedSubDirsList()) {
       ProcessedKeyInfo processed = processDeleteKey(key, path, omMetadataManager);
-      preparedSubDirs.add(new PreparedEntry(processed, path.getBucketId(), 0L, null));
+      preparedSubDirs.add(new PreparedEntry(processed, path.getBucketId(), 0L, null, null));
     }
     return preparedSubDirs;
   }
@@ -301,7 +302,8 @@ public class OMDirectoriesPurgeRequestWithFSO extends OMKeyRequest {
       String dbOpenKey = hsyncClientId == null ? null
           : omMetadataManager.getOpenFileName(path.getVolumeId(), path.getBucketId(),
           processed.parentObjectID, processed.fileName, hsyncClientId);
-      preparedSubFiles.add(new PreparedEntry(processed, path.getBucketId(), replicatedSize, dbOpenKey));
+      preparedSubFiles.add(new PreparedEntry(processed, path.getBucketId(), replicatedSize, dbOpenKey,
+          key.hasAppendOwnerSessionId() ? key : null));
     }
     return preparedSubFiles;
   }
@@ -387,6 +389,19 @@ public class OMDirectoriesPurgeRequestWithFSO extends OMKeyRequest {
       // bucketInfo can be null in case of delete volume or bucket
       // or key does not belong to bucket as bucket is recreated
       if (null != omBucketInfo && omBucketInfo.getObjectID() == entry.bucketId) {
+        if (entry.appendOwnedFile != null) {
+          // The purge entry was read outside this lock, possibly from a snapshot, so the live file row has to confirm
+          // the owner before the session is invalidated.
+          OmKeyInfo purgedFile = OmKeyInfo.getFromProtobuf(entry.appendOwnedFile);
+          if (OmAppendUtil.isOwnedBy(omMetadataManager.getFileTable().get(processed.pathKey),
+              purgedFile.getAppendOwnerSessionId())) {
+            Pair<String, OmKeyInfo> invalidated =
+                OmAppendUtil.invalidateSessionOfDeletedFile(omMetadataManager, purgedFile, trxnLogIndex);
+            if (invalidated != null) {
+              result.openKeyInfoMap.put(invalidated.getKey(), invalidated.getValue());
+            }
+          }
+        }
         omMetadataManager.getFileTable().addCacheEntry(new CacheKey<>(processed.pathKey),
             CacheValue.get(trxnLogIndex));
         result.volBucketInfoMap.putIfAbsent(processed.volBucketPair, omBucketInfo);
@@ -477,19 +492,23 @@ public class OMDirectoriesPurgeRequestWithFSO extends OMKeyRequest {
   /**
    * A sub-directory or sub-file prepared (lock-free) in phase 1 for application under the bucket write lock in phase
    * 2. {@code replicatedSize} is the file's replicated byte usage (0 for directories) and {@code dbOpenKey} is the
-   * hsync open-key to clean up, or {@code null} when the entry is not an hsync file.
+   * hsync open-key to clean up, or {@code null} when the entry is not an hsync file. {@code appendOwnedFile} is the
+   * purged file when it has an append owner whose session has to be invalidated, otherwise {@code null}.
    */
   private static final class PreparedEntry {
     private final ProcessedKeyInfo processed;
     private final long bucketId;
     private final long replicatedSize;
     private final String dbOpenKey;
+    private final OzoneManagerProtocolProtos.KeyInfo appendOwnedFile;
 
-    PreparedEntry(ProcessedKeyInfo processed, long bucketId, long replicatedSize, String dbOpenKey) {
+    PreparedEntry(ProcessedKeyInfo processed, long bucketId, long replicatedSize, String dbOpenKey,
+        OzoneManagerProtocolProtos.KeyInfo appendOwnedFile) {
       this.processed = processed;
       this.bucketId = bucketId;
       this.replicatedSize = replicatedSize;
       this.dbOpenKey = dbOpenKey;
+      this.appendOwnedFile = appendOwnedFile;
     }
   }
 
