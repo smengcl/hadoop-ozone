@@ -1,0 +1,57 @@
+# Licensed to the Apache Software Foundation (ASF) under one
+# or more contributor license agreements.  See the NOTICE file
+# distributed with this work for additional information
+# regarding copyright ownership.  The ASF licenses this file
+# to you under the Apache License, Version 2.0 (the
+# "License"); you may not use this file except in compliance
+# with the License.  You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# Add-on for compose/ozone/docker-compose.yaml: Apache Solr keeping its index and
+# transaction log (tlog) on Ozone through ofs://, using Solr's hdfs module.
+# Use with: COMPOSE_FILE=docker-compose.yaml:solr.yaml (see test-solr.sh).
+#
+# The Ozone shaded filesystem jar is mounted into the hdfs module's lib dir so the
+# module classloader (which also owns hadoop-client-api) can load RootedOzoneFileSystem.
+# Solr 9.5+ ships hadoop-client-api >= 3.3.6, required for org.apache.hadoop.fs.LeaseRecoverable.
+services:
+  om:
+    environment:
+      # hsync/hflush from the Solr client is accepted by OM only when both flags are set
+      # (ozone.fs.hsync.enabled is already set in docker-config).
+      OZONE-SITE.XML_ozone.hbase.enhancements.allowed: "true"
+      # Solr reopens every existing tlog with FileSystem.append() when a core starts.
+      OZONE-SITE.XML_ozone.om.append.enabled: "true"
+      # Shorten the lease soft limit so lease recovery succeeds quickly after kill -9.
+      OZONE-SITE.XML_ozone.om.lease.soft.limit: 10s
+  solr:
+    image: ${SOLR_IMAGE:-solr:9.11}
+    hostname: solr
+    volumes:
+      - ../../share/ozone/lib/ozone-filesystem-hadoop3-@project.version@.jar:/opt/solr/modules/hdfs/lib/ozone-filesystem-hadoop3.jar:ro
+      - ./solr:/etc/hadoop:ro
+    ports:
+      - 8983
+    environment:
+      SOLR_MODULES: hdfs
+      SOLR_SECURITY_MANAGER_ENABLED: "false"
+      # autoCommit disabled so indexed docs live only in the tlog until an explicit commit;
+      # block cache and NRT caching disabled to keep the container small.
+      SOLR_OPTS: >-
+        -Dsolr.directoryFactory=org.apache.solr.hdfs.HdfsDirectoryFactory
+        -Dsolr.lock.type=hdfs
+        -Dsolr.hdfs.home=ofs://om/vol1/bucket1/solr
+        -Dsolr.hdfs.confdir=/etc/hadoop
+        -Dsolr.hdfs.blockcache.enabled=false
+        -Dsolr.hdfs.nrtcachingdirectory.enable=false
+        -Dsolr.hdfs.locality.metrics.enabled=false
+        -Dsolr.autoCommit.maxTime=-1
+        -Dsolr.autoSoftCommit.maxTime=-1
+    command: ["solr-foreground"]
