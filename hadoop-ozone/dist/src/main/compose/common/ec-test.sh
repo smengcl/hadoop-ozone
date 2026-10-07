@@ -17,7 +17,11 @@
 
 start_docker_env 5
 
-execute_robot_test scm -v BUCKET:erasure s3
+# S3 tests with EC bucket do not depend on security, only need to be run in one of the environments
+# some tests are independent of the bucket type, those are run in other suites
+if [[ "${SECURITY_ENABLED}" != "true" ]]; then
+  execute_robot_test scm -v BUCKET:erasure --exclude no-bucket-type s3
+fi
 
 execute_robot_test scm ec/rewrite.robot
 
