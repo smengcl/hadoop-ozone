@@ -126,7 +126,7 @@ public abstract class ReclaimableFilter<V>
     return tmpValidationSnapshotInfos;
   }
 
-  private boolean validateExistingLastNSnapshotsInChain(String volume, String bucket) throws IOException {
+  protected boolean validateExistingLastNSnapshotsInChain(String volume, String bucket) throws IOException {
     List<SnapshotInfo> expectedLastNSnapshotsInChain = getLastNSnapshotInChain(volume, bucket);
     if (expectedLastNSnapshotsInChain.size() != previousOmSnapshots.size()) {
       return false;

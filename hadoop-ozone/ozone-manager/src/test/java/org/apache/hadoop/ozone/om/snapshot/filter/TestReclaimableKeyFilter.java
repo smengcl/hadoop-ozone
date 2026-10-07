@@ -17,6 +17,7 @@
 
 package org.apache.hadoop.ozone.om.snapshot.filter;
 
+import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.eq;
@@ -26,6 +27,7 @@ import static org.mockito.Mockito.when;
 
 import java.io.IOException;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
 import java.util.Optional;
 import java.util.concurrent.atomic.AtomicLong;
@@ -268,11 +270,40 @@ public class TestReclaimableKeyFilter extends AbstractReclaimableFilterTest {
     OmKeyInfo prevPrevKeyInfo = index - 2 >= 0 ? getMockedOmKeyInfo(3) : null;
     testReclaimableKeyFilter(volume, bucket, index, keyInfo, prevKeyInfo, prevPrevKeyInfo,
         true, Optional.empty(), Optional.empty());
+    assertThat(((ReclaimableKeyFilter) getReclaimableFilter()).getRetainedBlocks()).isEmpty();
+  }
+
+  /**
+   * Tests that a key with exactly the blocks of the previous snapshot's key is retained as a whole: the filter rejects
+   * it without reporting blocks to retain.
+   *
+   * @param actualNumberOfSnapshots the total number of snapshots in the chain.
+   * @param index the snapshot chain index used for testing.
+   * @throws IOException if an I/O error occurs during the test.
+   * @throws RocksDBException if RocksDB encounters an error.
+   */
+  @ParameterizedTest
+  @MethodSource("testReclaimableFilterArguments")
+  public void testNonReclaimableKeyWithSameBlockIds(int actualNumberOfSnapshots, int index)
+      throws IOException, RocksDBException {
+    setup(2, actualNumberOfSnapshots, index, 4, 2);
+    String volume = getVolumes().get(3);
+    String bucket = getBuckets().get(1);
+    index = Math.min(index, actualNumberOfSnapshots);
+    OmKeyInfo keyInfo = getOmKeyInfoWithBlocks(1, 1, 2);
+    OmKeyInfo prevKeyInfo = index - 1 >= 0 ? getOmKeyInfoWithBlocks(1, 1, 2) : null;
+    OmKeyInfo prevPrevKeyInfo = index - 2 >= 0 ? getMockedOmKeyInfo(3) : null;
+    Optional<AtomicLong> size = Optional.ofNullable(prevKeyInfo).map(i -> new AtomicLong(200));
+    Optional<AtomicLong> replicatedSize = Optional.ofNullable(prevKeyInfo).map(i -> new AtomicLong(600));
+    testReclaimableKeyFilter(volume, bucket, index, keyInfo, prevKeyInfo, prevPrevKeyInfo,
+        prevKeyInfo == null, size, replicatedSize);
+    assertThat(((ReclaimableKeyFilter) getReclaimableFilter()).getRetainedBlocks()).isEmpty();
   }
 
   /**
    * Tests that a key sharing some but not all blocks with the previous snapshot's key of the same object ID (an
    * appended file) is not reclaimable, since reclaiming it would delete blocks the snapshot still references.
+   * The filter reports the blocks of the previous snapshot's key as the ones to retain.
    * The previous snapshot's key counts towards the exclusive size of that snapshot only when the snapshot before it
    * has no version sharing blocks with it.
    *
@@ -299,6 +330,8 @@ public class TestReclaimableKeyFilter extends AbstractReclaimableFilterTest {
         .map(i -> prevPrevKeyInfo == null ? new AtomicLong(600) : null);
     testReclaimableKeyFilter(volume, bucket, index, keyInfo, prevKeyInfo, prevPrevKeyInfo,
         prevKeyInfo == null, size, replicatedSize);
+    assertThat(((ReclaimableKeyFilter) getReclaimableFilter()).getRetainedBlocks())
+        .isEqualTo(prevKeyInfo == null ? Collections.emptySet() : SnapshotUtils.getContainerBlockIds(prevKeyInfo));
 
     // The snapshot before the previous one holds an unrelated key at that path.
     OmKeyInfo unrelatedPrevPrevKeyInfo = index - 2 >= 0 ? getMockedOmKeyInfo(3) : null;

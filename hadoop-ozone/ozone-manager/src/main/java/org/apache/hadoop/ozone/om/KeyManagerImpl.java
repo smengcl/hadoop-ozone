@@ -124,6 +124,7 @@ import org.apache.hadoop.crypto.key.KeyProviderCryptoExtension;
 import org.apache.hadoop.crypto.key.KeyProviderCryptoExtension.EncryptedKeyVersion;
 import org.apache.hadoop.fs.FileEncryptionInfo;
 import org.apache.hadoop.hdds.client.BlockID;
+import org.apache.hadoop.hdds.client.ContainerBlockID;
 import org.apache.hadoop.hdds.client.ReplicationConfig;
 import org.apache.hadoop.hdds.conf.OzoneConfiguration;
 import org.apache.hadoop.hdds.protocol.DatanodeDetails;
@@ -184,7 +185,9 @@ import org.apache.hadoop.ozone.om.service.KeyLifecycleService;
 import org.apache.hadoop.ozone.om.service.MultipartUploadCleanupService;
 import org.apache.hadoop.ozone.om.service.OpenKeyCleanupService;
 import org.apache.hadoop.ozone.om.service.SnapshotDeletingService;
+import org.apache.hadoop.ozone.om.snapshot.SnapshotUtils;
 import org.apache.hadoop.ozone.om.snapshot.defrag.SnapshotDefragService;
+import org.apache.hadoop.ozone.om.snapshot.filter.ReclaimableKeyFilter;
 import org.apache.hadoop.ozone.protocol.proto.OzoneManagerProtocolProtos.ExpiredMultipartUploadsBucket;
 import org.apache.hadoop.ozone.protocol.proto.OzoneManagerProtocolProtos.PartKeyInfo;
 import org.apache.hadoop.ozone.security.acl.IAccessAuthorizer;
@@ -883,13 +886,22 @@ public class KeyManagerImpl implements KeyManager {
           RepeatedOmKeyInfo infoList = kv.getValue();
           long bucketId = infoList.getBucketId();
           int reclaimableKeyCount = 0;
+          boolean partiallyReclaimed = false;
           for (OmKeyInfo info : infoList.getOmKeyInfoList()) {
 
             // Skip the key if the filter doesn't allow the file to be deleted.
-            if (filter == null || filter.apply(Table.newKeyValue(kv.getKey(), info))) {
+            boolean reclaimable = filter == null || filter.apply(Table.newKeyValue(kv.getKey(), info));
+            // A key sharing only some of its blocks with the previous snapshot (an appended file) is reclaimed in part:
+            // its other blocks are deleted while the key stays in the deleted table with the shared blocks.
+            Set<ContainerBlockID> retainedBlocks = !reclaimable && filter instanceof ReclaimableKeyFilter
+                ? ((ReclaimableKeyFilter) filter).getRetainedBlocks() : Collections.emptySet();
+            boolean partial = !retainedBlocks.isEmpty()
+                && !retainedBlocks.containsAll(SnapshotUtils.getContainerBlockIds(info));
+            if (reclaimable || partial) {
               List<DeletedBlock> deletedBlocks = info.getKeyLocationVersions().stream()
                   .flatMap(versionLocations -> versionLocations.getLocationLists().stream()
                       .flatMap(List::stream)
+                      .filter(b -> !retainedBlocks.contains(b.getBlockID().getContainerBlockID()))
                       .map(b -> new DeletedBlock(
                           new BlockID(b.getContainerID(), b.getLocalID()),
                           b.getLength(),
@@ -905,18 +917,21 @@ public class KeyManagerImpl implements KeyManager {
                   .build();
               reclaimableKeys.put(blockGroupName,
                   new PurgedKey(info.getVolumeName(), info.getBucketName(), bucketId,
-                  keyBlocks, kv.getKey(), purgedBytes, info.isDeletedKeyCommitted()));
+                  keyBlocks, kv.getKey(), purgedBytes, info.isDeletedKeyCommitted()).setPartial(partial));
               currentCount++;
-            } else {
-              notReclaimableKeyInfo.addOmKeyInfo(info);
+            }
+            if (!reclaimable) {
+              notReclaimableKeyInfo.addOmKeyInfo(partial ? retainBlocks(info, retainedBlocks) : info);
+              partiallyReclaimed |= partial;
             }
           }
 
           List<OmKeyInfo> notReclaimableKeyInfoList = notReclaimableKeyInfo.getOmKeyInfoList();
 
           // If all the versions are not reclaimable, then modify key by just purging the key that can be purged.
-          if (!notReclaimableKeyInfoList.isEmpty() &&
-              notReclaimableKeyInfoList.size() != infoList.getOmKeyInfoList().size()) {
+          // A key reclaimed in part is modified as well, even if it is the only version.
+          if (!notReclaimableKeyInfoList.isEmpty() && (partiallyReclaimed ||
+              notReclaimableKeyInfoList.size() != infoList.getOmKeyInfoList().size())) {
             keysToModify.put(kv.getKey(), notReclaimableKeyInfo);
           }
           purgedKeys.putAll(reclaimableKeys);
@@ -925,6 +940,24 @@ public class KeyManagerImpl implements KeyManager {
       }
     }
     return new PendingKeysDeletion(purgedKeys, keysToModify, notReclaimableKeyCount);
+  }
+
+  /**
+   * Returns a copy of the deleted key that holds only the given blocks. It replaces the key in the deleted table once
+   * the other blocks are deleted.
+   */
+  private static OmKeyInfo retainBlocks(OmKeyInfo info, Set<ContainerBlockID> retainedBlocks) {
+    List<OmKeyLocationInfoGroup> retainedLocations = info.getKeyLocationVersions().stream()
+        .map(group -> new OmKeyLocationInfoGroup(group.getVersion(), group.createLocationList().stream()
+            .filter(b -> retainedBlocks.contains(b.getBlockID().getContainerBlockID())).collect(Collectors.toList()),
+            group.isMultipartKey()))
+        .collect(Collectors.toList());
+    // ponytail: the data size shrinks to the retained blocks because quota repair and Recon size deleted keys by it and
+    // would count the reclaimed bytes again; AP-29 adds a deletion progress marker and keeps the original size.
+    return info.toBuilder().setOmKeyLocationInfos(retainedLocations)
+        .setDataSize(retainedLocations.stream().map(OmKeyLocationInfoGroup::getLocationLists)
+            .flatMap(Collection::stream).flatMap(List::stream).mapToLong(OmKeyLocationInfo::getLength).sum())
+        .build();
   }
 
   private <V, R> List<KeyValue<String, R>> getTableEntries(String startKey,

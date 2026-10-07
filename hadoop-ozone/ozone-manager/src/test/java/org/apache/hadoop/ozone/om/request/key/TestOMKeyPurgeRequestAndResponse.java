@@ -18,6 +18,7 @@
 package org.apache.hadoop.ozone.om.request.key;
 
 import static org.apache.hadoop.ozone.om.lock.DAGLeveledResource.SNAPSHOT_DB_CONTENT_LOCK;
+import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
@@ -36,13 +37,18 @@ import java.util.List;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import org.apache.commons.lang3.tuple.Pair;
+import org.apache.hadoop.hdds.client.BlockID;
 import org.apache.hadoop.hdds.client.RatisReplicationConfig;
 import org.apache.hadoop.hdds.protocol.proto.HddsProtos;
 import org.apache.hadoop.hdds.utils.TransactionInfo;
 import org.apache.hadoop.hdds.utils.db.BatchOperation;
 import org.apache.hadoop.hdds.utils.db.cache.CacheKey;
+import org.apache.hadoop.ozone.ClientVersion;
 import org.apache.hadoop.ozone.om.OmSnapshot;
 import org.apache.hadoop.ozone.om.helpers.OmBucketInfo;
+import org.apache.hadoop.ozone.om.helpers.OmKeyInfo;
+import org.apache.hadoop.ozone.om.helpers.OmKeyLocationInfo;
+import org.apache.hadoop.ozone.om.helpers.OmKeyLocationInfoGroup;
 import org.apache.hadoop.ozone.om.helpers.SnapshotInfo;
 import org.apache.hadoop.ozone.om.lock.IOzoneManagerLock;
 import org.apache.hadoop.ozone.om.request.OMRequestTestUtils;
@@ -55,6 +61,7 @@ import org.apache.hadoop.ozone.protocol.proto.OzoneManagerProtocolProtos.OMReque
 import org.apache.hadoop.ozone.protocol.proto.OzoneManagerProtocolProtos.OMResponse;
 import org.apache.hadoop.ozone.protocol.proto.OzoneManagerProtocolProtos.PurgeKeysRequest;
 import org.apache.hadoop.ozone.protocol.proto.OzoneManagerProtocolProtos.PurgeKeysResponse;
+import org.apache.hadoop.ozone.protocol.proto.OzoneManagerProtocolProtos.SnapshotMoveKeyInfos;
 import org.apache.hadoop.ozone.protocol.proto.OzoneManagerProtocolProtos.Status;
 import org.apache.hadoop.ozone.protocol.proto.OzoneManagerProtocolProtos.Type;
 import org.apache.ratis.util.function.UncheckedAutoCloseableSupplier;
@@ -198,6 +205,64 @@ public class TestOMKeyPurgeRequestAndResponse extends OMKeyRequestTests {
     OmBucketInfo durable = omMetadataManager.getBucketTable().getSkipCache(bucketKey);
     assertEquals(cached.getSnapshotUsedBytes(), durable.getSnapshotUsedBytes());
     assertEquals(cached.getSnapshotUsedNamespace(), durable.getSnapshotUsedNamespace());
+  }
+
+  /**
+   * A request that purges no key and only rewrites a deleted table entry, as sent for a key whose blocks are
+   * reclaimed in part, is applied together with its purged size. A request without anything to do is still rejected.
+   */
+  @Test
+  public void testUpdateOnlyRequest() throws Exception {
+    List<String> deletedKeys = createAndDeleteKeysAndRenamedEntry(1, null).getKey();
+    String deletedKey = deletedKeys.get(0);
+    String bucketKey = omMetadataManager.getBucketKey(volumeName, bucketName);
+    OmBucketInfo bucketInfo = omMetadataManager.getBucketTable()
+        .getCacheValue(new CacheKey<>(bucketKey)).getCacheValue();
+    bucketInfo.incrSnapshotUsedBytes(500L);
+    bucketInfo.incrSnapshotUsedNamespace(5L);
+
+    OmKeyInfo deletedKeyInfo = omMetadataManager.getDeletedTable().get(deletedKey).getOmKeyInfoList().get(0);
+    OmKeyLocationInfo retainedBlock = new OmKeyLocationInfo.Builder().setBlockID(new BlockID(1L, 1L)).setLength(100L)
+        .build();
+    OmKeyInfo residualKeyInfo = deletedKeyInfo.toBuilder().setDataSize(100L)
+        .setOmKeyLocationInfos(Collections.singletonList(
+            new OmKeyLocationInfoGroup(0, Collections.singletonList(retainedBlock))))
+        .build();
+
+    // KeyDeletingService adds a DeletedKeys entry without keys when no key is purged as a whole.
+    PurgeKeysRequest purgeKeysRequest = PurgeKeysRequest.newBuilder()
+        .addDeletedKeys(DeletedKeys.newBuilder().setVolumeName("").setBucketName(""))
+        .addKeysToUpdate(SnapshotMoveKeyInfos.newBuilder().setKey(deletedKey).setBucketId(bucketInfo.getObjectID())
+            .addKeyInfos(residualKeyInfo.getProtobuf(ClientVersion.CURRENT_VERSION)))
+        .addBucketPurgeKeysSize(BucketPurgeKeysSize.newBuilder()
+            .setBucketNameInfo(BucketNameInfo.newBuilder().setVolumeName(volumeName).setBucketName(bucketName)
+                .setBucketId(bucketInfo.getObjectID()))
+            .setPurgedBytes(100L).setPurgedNamespace(0L))
+        .build();
+    OMRequest omRequest = OMRequest.newBuilder().setPurgeKeysRequest(purgeKeysRequest).setCmdType(Type.PurgeKeys)
+        .setClientId(UUID.randomUUID().toString()).build();
+
+    OMClientResponse omClientResponse =
+        new OMKeyPurgeRequest(preExecute(omRequest)).validateAndUpdateCache(ozoneManager, 100L);
+    assertEquals(Status.OK, omClientResponse.getOMResponse().getStatus());
+    try (BatchOperation batchOperation = omMetadataManager.getStore().initBatchOperation()) {
+      omClientResponse.checkAndUpdateDB(omMetadataManager, batchOperation);
+      omMetadataManager.getStore().commitBatchOperation(batchOperation);
+    }
+
+    assertThat(omMetadataManager.getDeletedTable().get(deletedKey).getOmKeyInfoList())
+        .containsExactly(residualKeyInfo);
+    for (String otherDeletedKey : deletedKeys.subList(1, deletedKeys.size())) {
+      assertThat(omMetadataManager.getDeletedTable().isExist(otherDeletedKey)).isTrue();
+    }
+    OmBucketInfo updatedBucketInfo = omMetadataManager.getBucketTable().get(bucketKey);
+    assertThat(updatedBucketInfo.getSnapshotUsedBytes()).isEqualTo(400L);
+    assertThat(updatedBucketInfo.getSnapshotUsedNamespace()).isEqualTo(5L);
+
+    OMRequest emptyRequest = omRequest.toBuilder().setPurgeKeysRequest(PurgeKeysRequest.newBuilder()
+        .addDeletedKeys(DeletedKeys.newBuilder().setVolumeName("").setBucketName(""))).build();
+    assertEquals(Status.KEY_DELETION_ERROR, new OMKeyPurgeRequest(preExecute(emptyRequest))
+        .validateAndUpdateCache(ozoneManager, 101L).getOMResponse().getStatus());
   }
 
   @Test

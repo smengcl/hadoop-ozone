@@ -52,12 +52,15 @@ import java.io.File;
 import java.io.IOException;
 import java.io.UncheckedIOException;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.LinkedList;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
@@ -74,6 +77,7 @@ import java.util.stream.Collectors;
 import java.util.stream.IntStream;
 import org.apache.commons.lang3.RandomStringUtils;
 import org.apache.hadoop.hdds.client.BlockID;
+import org.apache.hadoop.hdds.client.ContainerBlockID;
 import org.apache.hadoop.hdds.client.RatisReplicationConfig;
 import org.apache.hadoop.hdds.client.StandaloneReplicationConfig;
 import org.apache.hadoop.hdds.conf.OzoneConfiguration;
@@ -83,6 +87,8 @@ import org.apache.hadoop.hdds.scm.container.common.helpers.ExcludeList;
 import org.apache.hadoop.hdds.server.ServerUtils;
 import org.apache.hadoop.hdds.utils.db.DBConfigFromFile;
 import org.apache.hadoop.hdds.utils.db.Table;
+import org.apache.hadoop.hdds.utils.db.cache.CacheKey;
+import org.apache.hadoop.hdds.utils.db.cache.CacheValue;
 import org.apache.hadoop.ozone.common.BlockGroup;
 import org.apache.hadoop.ozone.common.DeletedBlock;
 import org.apache.hadoop.ozone.om.DeletingServiceMetrics;
@@ -116,6 +122,7 @@ import org.apache.hadoop.ozone.om.protocol.OzoneManagerProtocol;
 import org.apache.hadoop.ozone.om.ratis.OzoneManagerDoubleBuffer;
 import org.apache.hadoop.ozone.om.ratis.utils.OzoneManagerRatisUtils;
 import org.apache.hadoop.ozone.om.request.OMRequestTestUtils;
+import org.apache.hadoop.ozone.om.snapshot.SnapshotUtils;
 import org.apache.hadoop.ozone.om.snapshot.filter.ReclaimableKeyFilter;
 import org.apache.hadoop.ozone.protocol.proto.OzoneManagerProtocolProtos;
 import org.apache.ozone.test.GenericTestUtils;
@@ -156,6 +163,9 @@ class TestKeyDeletingService extends OzoneTestBase {
   private static final Logger LOG =
       LoggerFactory.getLogger(TestKeyDeletingService.class);
   private static final AtomicInteger OBJECT_COUNTER = new AtomicInteger();
+  private static final long APPEND_BLOCK_LENGTH = 1000L;
+  private static final long APPEND_BLOCK_REPLICATED_SIZE =
+      QuotaUtil.getReplicatedSize(APPEND_BLOCK_LENGTH, RatisReplicationConfig.getInstance(THREE));
   private OzoneConfiguration conf;
   private OzoneManagerProtocol writeClient;
   private OzoneManager om;
@@ -778,6 +788,231 @@ class TestKeyDeletingService extends OzoneTestBase {
       verify(omSnapshotManager, Mockito.never()).getActiveSnapshot(any(), any(), any());
     }
 
+    /**
+     * A snapshot captures a file with block A, the file is appended with block B and deleted. B is reclaimed right
+     * away while A stays in the deleted table until the snapshot is deleted. The deleted key is processed either in
+     * the active object store or, when another snapshot is taken after the delete, in that snapshot.
+     */
+    @ParameterizedTest
+    @ValueSource(booleans = {true, false})
+    void testAppendedKeyPartialReclamation(boolean testForSnapshot) throws Exception {
+      keyDeletingService.suspend();
+      final String volumeName = getTestName();
+      final String bucketName = uniqueObjectName("bucket");
+      final String keyName = uniqueObjectName("key");
+      createVolumeAndBucket(volumeName, bucketName, false);
+      UncheckedAutoCloseableSupplier<OmSnapshot> snapshot = null;
+      try {
+        createAndCommitKey(volumeName, bucketName, keyName, 1);
+        ContainerBlockID blockA = newBlockId();
+        ContainerBlockID blockB = newBlockId();
+        OmKeyInfo keyInfo = setKeyBlocks(volumeName, bucketName, keyName, blockA);
+        String deletedKey = getDeletedKey(keyInfo);
+        String snap1 = uniqueObjectName("snap");
+        writeClient.createSnapshot(volumeName, bucketName, snap1);
+        setKeyBlocks(volumeName, bucketName, keyName, blockA, blockB);
+        deleteKey(volumeName, bucketName, keyName);
+        om.awaitDoubleBufferFlush();
+        Table<String, RepeatedOmKeyInfo> deletedTable = metadataManager.getDeletedTable();
+        if (testForSnapshot) {
+          String snap2 = uniqueObjectName("snap");
+          writeClient.createSnapshot(volumeName, bucketName, snap2);
+          om.awaitDoubleBufferFlush();
+          snapshot = om.getOmSnapshotManager().getSnapshot(volumeName, bucketName, snap2);
+          deletedTable = snapshot.get().getMetadataManager().getDeletedTable();
+        }
+        final Table<String, RepeatedOmKeyInfo> table = deletedTable;
+        assertThat(getDeletedKeyBlocks(table, deletedKey)).containsExactly(newSet(blockA, blockB));
+        assertThat(getBucketInfo(volumeName, bucketName).getSnapshotUsedBytes())
+            .isEqualTo(2 * APPEND_BLOCK_REPLICATED_SIZE);
+        assertThat(getBucketInfo(volumeName, bucketName).getSnapshotUsedNamespace()).isEqualTo(1);
+
+        // Only B is deleted. The key stays with A and with its identity, and keeps its namespace.
+        keyDeletingService.resume();
+        GenericTestUtils.waitFor(
+            () -> getDeletedKeyBlocks(table, deletedKey).equals(Collections.singletonList(newSet(blockA))), 100, 30000);
+        long runCount = getRunCount();
+        GenericTestUtils.waitFor(() -> getRunCount() > runCount + 2, 100, 10000);
+        assertThat(scmBlockTestingClient.getDeletedBlocks()).contains(blockB).doesNotContain(blockA);
+        assertThat(getDeletedKeyBlocks(table, deletedKey)).containsExactly(newSet(blockA));
+        OmKeyInfo residual = table.get(deletedKey).getOmKeyInfoList().get(0);
+        assertThat(residual.getObjectID()).isEqualTo(keyInfo.getObjectID());
+        assertThat(residual.getKeyName()).isEqualTo(keyName);
+        assertThat(residual.isDeletedKeyCommitted()).isTrue();
+        assertThat(residual.getDataSize()).isEqualTo(APPEND_BLOCK_LENGTH);
+        assertThat(getBucketInfo(volumeName, bucketName).getSnapshotUsedBytes())
+            .isEqualTo(APPEND_BLOCK_REPLICATED_SIZE);
+        assertThat(getBucketInfo(volumeName, bucketName).getSnapshotUsedNamespace()).isEqualTo(1);
+
+        // Without the snapshot nothing references A, so the rest of the key is reclaimed like any other key.
+        writeClient.deleteSnapshot(volumeName, bucketName, snap1);
+        GenericTestUtils.waitFor(() -> getDeletedKeyBlocks(table, deletedKey).isEmpty(), 1000, 120000);
+        assertThat(scmBlockTestingClient.getDeletedBlocks()).contains(blockA, blockB);
+        assertThat(getBucketInfo(volumeName, bucketName).getSnapshotUsedBytes()).isZero();
+        assertThat(getBucketInfo(volumeName, bucketName).getSnapshotUsedNamespace()).isZero();
+      } finally {
+        if (snapshot != null) {
+          snapshot.close();
+        }
+      }
+    }
+
+    /**
+     * Two snapshots capture a file as it grows: blocks A, then A and B. The file is appended with block C and deleted.
+     * Each block is reclaimed once the last snapshot referencing it is gone, whichever snapshot is deleted first.
+     */
+    @ParameterizedTest
+    @ValueSource(booleans = {true, false})
+    void testAppendedKeyPartialReclamationWithTwoSnapshots(boolean deleteNewerSnapshotFirst) throws Exception {
+      keyDeletingService.suspend();
+      final String volumeName = getTestName();
+      final String bucketName = uniqueObjectName("bucket");
+      final String keyName = uniqueObjectName("key");
+      createVolumeAndBucket(volumeName, bucketName, false);
+      createAndCommitKey(volumeName, bucketName, keyName, 1);
+      ContainerBlockID blockA = newBlockId();
+      ContainerBlockID blockB = newBlockId();
+      ContainerBlockID blockC = newBlockId();
+      String deletedKey = getDeletedKey(setKeyBlocks(volumeName, bucketName, keyName, blockA));
+      String snap1 = uniqueObjectName("snap");
+      writeClient.createSnapshot(volumeName, bucketName, snap1);
+      setKeyBlocks(volumeName, bucketName, keyName, blockA, blockB);
+      String snap2 = uniqueObjectName("snap");
+      writeClient.createSnapshot(volumeName, bucketName, snap2);
+      setKeyBlocks(volumeName, bucketName, keyName, blockA, blockB, blockC);
+      deleteKey(volumeName, bucketName, keyName);
+      om.awaitDoubleBufferFlush();
+      Table<String, RepeatedOmKeyInfo> deletedTable = metadataManager.getDeletedTable();
+
+      // The newer snapshot references A and B, only C is deleted.
+      keyDeletingService.resume();
+      GenericTestUtils.waitFor(
+          () -> getDeletedKeyBlocks(deletedTable, deletedKey).equals(Collections.singletonList(newSet(blockA, blockB))),
+          100, 30000);
+      assertThat(scmBlockTestingClient.getDeletedBlocks()).contains(blockC).doesNotContain(blockA, blockB);
+      assertThat(getBucketInfo(volumeName, bucketName).getSnapshotUsedBytes())
+          .isEqualTo(2 * APPEND_BLOCK_REPLICATED_SIZE);
+
+      if (deleteNewerSnapshotFirst) {
+        // The older snapshot references A alone, so B follows.
+        writeClient.deleteSnapshot(volumeName, bucketName, snap2);
+        GenericTestUtils.waitFor(
+            () -> getDeletedKeyBlocks(deletedTable, deletedKey).equals(Collections.singletonList(newSet(blockA))),
+            1000, 120000);
+        assertThat(scmBlockTestingClient.getDeletedBlocks()).contains(blockB).doesNotContain(blockA);
+        assertThat(getBucketInfo(volumeName, bucketName).getSnapshotUsedBytes())
+            .isEqualTo(APPEND_BLOCK_REPLICATED_SIZE);
+      } else {
+        // The newer snapshot still references A and B.
+        Table<String, SnapshotInfo> snapshotInfoTable = metadataManager.getSnapshotInfoTable();
+        long snapshotCount = metadataManager.countRowsInTable(snapshotInfoTable);
+        writeClient.deleteSnapshot(volumeName, bucketName, snap1);
+        assertTableRowCount(snapshotInfoTable, snapshotCount - 1, metadataManager);
+        long runCount = getRunCount();
+        GenericTestUtils.waitFor(() -> getRunCount() > runCount + 5, 100, 10000);
+        assertThat(scmBlockTestingClient.getDeletedBlocks()).doesNotContain(blockA, blockB);
+        assertThat(getDeletedKeyBlocks(deletedTable, deletedKey)).containsExactly(newSet(blockA, blockB));
+      }
+      assertThat(getBucketInfo(volumeName, bucketName).getSnapshotUsedNamespace()).isEqualTo(1);
+
+      writeClient.deleteSnapshot(volumeName, bucketName, deleteNewerSnapshotFirst ? snap1 : snap2);
+      GenericTestUtils.waitFor(() -> getDeletedKeyBlocks(deletedTable, deletedKey).isEmpty(), 1000, 120000);
+      assertThat(scmBlockTestingClient.getDeletedBlocks()).contains(blockA, blockB, blockC);
+      assertThat(getBucketInfo(volumeName, bucketName).getSnapshotUsedBytes()).isZero();
+      assertThat(getBucketInfo(volumeName, bucketName).getSnapshotUsedNamespace()).isZero();
+    }
+
+    /**
+     * A snapshot captures an appended file with blocks A and B, and the file is deleted without further changes.
+     * Nothing is reclaimed until the snapshot is deleted.
+     */
+    @Test
+    void testAppendedKeyRetainedBySnapshotWithSameBlocks() throws Exception {
+      keyDeletingService.suspend();
+      final String volumeName = getTestName();
+      final String bucketName = uniqueObjectName("bucket");
+      final String keyName = uniqueObjectName("key");
+      createVolumeAndBucket(volumeName, bucketName, false);
+      createAndCommitKey(volumeName, bucketName, keyName, 1);
+      ContainerBlockID blockA = newBlockId();
+      ContainerBlockID blockB = newBlockId();
+      String deletedKey = getDeletedKey(setKeyBlocks(volumeName, bucketName, keyName, blockA, blockB));
+      String snap = uniqueObjectName("snap");
+      writeClient.createSnapshot(volumeName, bucketName, snap);
+      deleteKey(volumeName, bucketName, keyName);
+      om.awaitDoubleBufferFlush();
+      Table<String, RepeatedOmKeyInfo> deletedTable = metadataManager.getDeletedTable();
+
+      long runCount = getRunCount();
+      keyDeletingService.resume();
+      GenericTestUtils.waitFor(() -> getRunCount() > runCount + 5, 100, 10000);
+      assertThat(scmBlockTestingClient.getDeletedBlocks()).doesNotContain(blockA, blockB);
+      assertThat(getDeletedKeyBlocks(deletedTable, deletedKey)).containsExactly(newSet(blockA, blockB));
+      assertThat(deletedTable.get(deletedKey).getOmKeyInfoList().get(0).getDataSize())
+          .isEqualTo(2 * APPEND_BLOCK_LENGTH);
+      assertThat(getBucketInfo(volumeName, bucketName).getSnapshotUsedBytes())
+          .isEqualTo(2 * APPEND_BLOCK_REPLICATED_SIZE);
+      assertThat(getBucketInfo(volumeName, bucketName).getSnapshotUsedNamespace()).isEqualTo(1);
+
+      writeClient.deleteSnapshot(volumeName, bucketName, snap);
+      GenericTestUtils.waitFor(() -> getDeletedKeyBlocks(deletedTable, deletedKey).isEmpty(), 1000, 120000);
+      assertThat(scmBlockTestingClient.getDeletedBlocks()).contains(blockA, blockB);
+      assertThat(getBucketInfo(volumeName, bucketName).getSnapshotUsedBytes()).isZero();
+      assertThat(getBucketInfo(volumeName, bucketName).getSnapshotUsedNamespace()).isZero();
+    }
+
+    /**
+     * A deleted table entry holds two versions of a key: the appended file with blocks A and B, of which the snapshot
+     * references A, and a version with block C that shares nothing with the snapshot. The second version is reclaimed
+     * as a whole and the first one in part, in the same pass.
+     */
+    @Test
+    void testAppendedKeyPartialReclamationWithReclaimableVersion() throws Exception {
+      keyDeletingService.suspend();
+      final String volumeName = getTestName();
+      final String bucketName = uniqueObjectName("bucket");
+      final String keyName = uniqueObjectName("key");
+      createVolumeAndBucket(volumeName, bucketName, false);
+      createAndCommitKey(volumeName, bucketName, keyName, 1);
+      ContainerBlockID blockA = newBlockId();
+      ContainerBlockID blockB = newBlockId();
+      ContainerBlockID blockC = newBlockId();
+      String deletedKey = getDeletedKey(setKeyBlocks(volumeName, bucketName, keyName, blockA));
+      String snap = uniqueObjectName("snap");
+      writeClient.createSnapshot(volumeName, bucketName, snap);
+      setKeyBlocks(volumeName, bucketName, keyName, blockA, blockB);
+      deleteKey(volumeName, bucketName, keyName);
+      om.awaitDoubleBufferFlush();
+      // Deleting or overwriting a key always starts a new deleted table entry, entries with several versions come
+      // from elsewhere (such as moving the deleted keys of a deleted snapshot). So the second version is written
+      // directly, along with the pending bytes and namespace its deletion would have added to the bucket.
+      Table<String, RepeatedOmKeyInfo> deletedTable = metadataManager.getDeletedTable();
+      RepeatedOmKeyInfo deletedKeyInfos = deletedTable.get(deletedKey);
+      deletedKeyInfos.addOmKeyInfo(withBlocks(deletedKeyInfos.getOmKeyInfoList().get(0), blockC));
+      deletedTable.put(deletedKey, deletedKeyInfos);
+      OmBucketInfo cachedBucketInfo = metadataManager.getBucketTable()
+          .getCacheValue(new CacheKey<>(metadataManager.getBucketKey(volumeName, bucketName))).getCacheValue();
+      cachedBucketInfo.incrSnapshotUsedBytes(APPEND_BLOCK_REPLICATED_SIZE);
+      cachedBucketInfo.incrSnapshotUsedNamespace(1);
+      assertThat(getDeletedKeyBlocks(deletedTable, deletedKey))
+          .containsExactly(newSet(blockA, blockB), newSet(blockC));
+
+      keyDeletingService.resume();
+      GenericTestUtils.waitFor(
+          () -> getDeletedKeyBlocks(deletedTable, deletedKey).equals(Collections.singletonList(newSet(blockA))),
+          100, 30000);
+      assertThat(scmBlockTestingClient.getDeletedBlocks()).contains(blockB, blockC).doesNotContain(blockA);
+      assertThat(getBucketInfo(volumeName, bucketName).getSnapshotUsedBytes())
+          .isEqualTo(APPEND_BLOCK_REPLICATED_SIZE);
+      assertThat(getBucketInfo(volumeName, bucketName).getSnapshotUsedNamespace()).isEqualTo(1);
+
+      writeClient.deleteSnapshot(volumeName, bucketName, snap);
+      GenericTestUtils.waitFor(() -> getDeletedKeyBlocks(deletedTable, deletedKey).isEmpty(), 1000, 120000);
+      assertThat(scmBlockTestingClient.getDeletedBlocks()).contains(blockA);
+      assertThat(getBucketInfo(volumeName, bucketName).getSnapshotUsedBytes()).isZero();
+      assertThat(getBucketInfo(volumeName, bucketName).getSnapshotUsedNamespace()).isZero();
+    }
+
     @Test
     void testSnapshotExclusiveSize() throws Exception {
       Table<String, SnapshotInfo> snapshotInfoTable =
@@ -1199,6 +1434,60 @@ class TestKeyDeletingService extends OzoneTestBase {
       }
     }
 
+    /**
+     * SCM does not accept the blocks of a key reclaimed in part: the key stays in the deleted table unchanged and the
+     * same blocks are offered again in the next run.
+     */
+    @Test
+    void testAppendedKeyPartialReclamationWithFailingSCM() throws Exception {
+      keyDeletingService.suspend();
+      final String volumeName = getTestName();
+      final String bucketName = uniqueObjectName("bucket");
+      final String keyName = uniqueObjectName("key");
+      createVolumeAndBucket(volumeName, bucketName, false);
+      createAndCommitKey(volumeName, bucketName, keyName, 1);
+      ContainerBlockID blockA = newBlockId();
+      ContainerBlockID blockB = newBlockId();
+      String deletedKey = getDeletedKey(setKeyBlocks(volumeName, bucketName, keyName, blockA));
+      writeClient.createSnapshot(volumeName, bucketName, uniqueObjectName("snap"));
+      setKeyBlocks(volumeName, bucketName, keyName, blockA, blockB);
+      deleteKey(volumeName, bucketName, keyName);
+      om.awaitDoubleBufferFlush();
+      Table<String, RepeatedOmKeyInfo> deletedTable = metadataManager.getDeletedTable();
+      List<OmKeyInfo> deletedKeyInfos = deletedTable.get(deletedKey).getOmKeyInfoList();
+      assertThat(deletedKeyInfos).extracting(SnapshotUtils::getContainerBlockIds)
+          .containsExactly(newSet(blockA, blockB));
+
+      long runCount = getRunCount();
+      keyDeletingService.resume();
+      GenericTestUtils.waitFor(() -> getRunCount() > runCount + 5, 100, 10000);
+      keyDeletingService.suspend();
+      om.awaitDoubleBufferFlush();
+      assertThat(deletedTable.get(deletedKey).getOmKeyInfoList()).isEqualTo(deletedKeyInfos);
+      assertThat(getBucketInfo(volumeName, bucketName).getSnapshotUsedBytes())
+          .isEqualTo(2 * APPEND_BLOCK_REPLICATED_SIZE);
+      assertThat(getBucketInfo(volumeName, bucketName).getSnapshotUsedNamespace()).isEqualTo(1);
+
+      // The next run offers B again and would leave the key with A.
+      try (ReclaimableKeyFilter filter = new ReclaimableKeyFilter(om, om.getOmSnapshotManager(),
+          ((OmMetadataManagerImpl) om.getMetadataManager()).getSnapshotChainManager(), null,
+          keyManager, om.getMetadataManager().getLock())) {
+        PendingKeysDeletion pendingKeysDeletion =
+            keyManager.getPendingDeletionKeys(volumeName, bucketName, null, filter, Integer.MAX_VALUE);
+        assertThat(pendingKeysDeletion.getPurgedKeys()).hasSize(1);
+        PurgedKey purgedKey = pendingKeysDeletion.getPurgedKeys().values().iterator().next();
+        assertThat(purgedKey.getDeleteKeyName()).isEqualTo(deletedKey);
+        assertThat(purgedKey.isPartial()).isTrue();
+        assertThat(purgedKey.isCommittedKey()).isTrue();
+        assertThat(purgedKey.getPurgedBytes()).isEqualTo(APPEND_BLOCK_REPLICATED_SIZE);
+        assertThat(purgedKey.getBlockGroup().getDeletedBlocks()).extracting(b -> b.getBlockID().getContainerBlockID())
+            .containsExactly(blockB);
+        assertThat(pendingKeysDeletion.getKeysToModify()).containsOnlyKeys(deletedKey);
+        assertThat(pendingKeysDeletion.getKeysToModify().get(deletedKey).getOmKeyInfoList())
+            .extracting(SnapshotUtils::getContainerBlockIds).containsExactly(newSet(blockA));
+      }
+    }
+
     @Test
     void checkIfDeleteServiceWithFailingSCM() throws Exception {
       final int initialCount = countKeysPendingDeletion();
@@ -1602,6 +1891,72 @@ class TestKeyDeletingService extends OzoneTestBase {
             .setObjectID(OBJECT_COUNTER.incrementAndGet())
             .setIsVersionEnabled(isVersioningEnabled)
             .build());
+  }
+
+  /**
+   * Returns a block ID which the testing SCM client never allocates, since that one uses the same value as the
+   * container ID and the local ID of a block.
+   */
+  private static ContainerBlockID newBlockId() {
+    return new ContainerBlockID(1L, 1000L + OBJECT_COUNTER.incrementAndGet());
+  }
+
+  private static Set<ContainerBlockID> newSet(ContainerBlockID... blocks) {
+    return new HashSet<>(Arrays.asList(blocks));
+  }
+
+  /**
+   * Rewrites the key table row of a committed key so that its only location version holds the given blocks, each
+   * {@link #APPEND_BLOCK_LENGTH} bytes long, while everything else, the object ID included, stays as it is.
+   * Calling this again with the previous blocks followed by new ones leaves the key as an append would: the append
+   * request itself is not available to this test, and what matters for key deletion is only that an appended file
+   * keeps its object ID and its old blocks.
+   */
+  private OmKeyInfo setKeyBlocks(String volumeName, String bucketName, String keyName, ContainerBlockID... blocks)
+      throws Exception {
+    // Pending changes of the key have to reach RocksDB first, or their flush would overwrite the row written below.
+    om.awaitDoubleBufferFlush();
+    Table<String, OmKeyInfo> keyTable = metadataManager.getKeyTable(BucketLayout.DEFAULT);
+    String dbKey = metadataManager.getOzoneKey(volumeName, bucketName, keyName);
+    OmKeyInfo keyInfo = withBlocks(keyTable.get(dbKey), blocks);
+    keyTable.addCacheEntry(new CacheKey<>(dbKey), CacheValue.get(keyInfo.getUpdateID(), keyInfo));
+    keyTable.put(dbKey, keyInfo);
+    return keyInfo;
+  }
+
+  private static OmKeyInfo withBlocks(OmKeyInfo keyInfo, ContainerBlockID... blocks) {
+    List<OmKeyLocationInfo> locations = Arrays.stream(blocks)
+        .map(block -> new OmKeyLocationInfo.Builder().setBlockID(new BlockID(block)).setLength(APPEND_BLOCK_LENGTH)
+            .build())
+        .collect(Collectors.toList());
+    return keyInfo.toBuilder()
+        .setOmKeyLocationInfos(Collections.singletonList(
+            new OmKeyLocationInfoGroup(keyInfo.getLatestVersionLocations().getVersion(), locations)))
+        .setDataSize(APPEND_BLOCK_LENGTH * blocks.length)
+        .build();
+  }
+
+  private String getDeletedKey(OmKeyInfo keyInfo) {
+    return metadataManager.getOzoneDeletePathKey(keyInfo.getObjectID(),
+        metadataManager.getOzoneKey(keyInfo.getVolumeName(), keyInfo.getBucketName(), keyInfo.getKeyName()));
+  }
+
+  /**
+   * Returns the blocks of each version in the given deleted table entry, or an empty list if there is no such entry.
+   */
+  private static List<Set<ContainerBlockID>> getDeletedKeyBlocks(Table<String, RepeatedOmKeyInfo> deletedTable,
+      String deletedKey) {
+    try {
+      RepeatedOmKeyInfo deletedKeyInfos = deletedTable.get(deletedKey);
+      return deletedKeyInfos == null ? Collections.emptyList() : deletedKeyInfos.getOmKeyInfoList().stream()
+          .map(SnapshotUtils::getContainerBlockIds).collect(Collectors.toList());
+    } catch (IOException e) {
+      throw new UncheckedIOException(e);
+    }
+  }
+
+  private OmBucketInfo getBucketInfo(String volumeName, String bucketName) throws IOException {
+    return metadataManager.getBucketTable().get(metadataManager.getBucketKey(volumeName, bucketName));
   }
 
   private void deleteKey(String volumeName,

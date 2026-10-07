@@ -251,7 +251,9 @@ public class KeyDeletingService extends AbstractKeyDeletingService {
     } else {
       bucketPurgeSize = bucketPurgeSizeMap.get(purgedKey.getBucketId());
     }
-    bucketPurgeSize.incrementPurgedBytes(purgedKey.getPurgedBytes()).incrementPurgedNamespace(1);
+    // A key reclaimed in part stays in the deleted table, its namespace is released with its last blocks.
+    bucketPurgeSize.incrementPurgedBytes(purgedKey.getPurgedBytes())
+        .incrementPurgedNamespace(purgedKey.isPartial() ? 0 : 1);
     return estimatedSize;
   }
 

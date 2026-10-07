@@ -17,14 +17,18 @@
 
 package org.apache.hadoop.ozone.om.snapshot.filter;
 
+import static org.apache.hadoop.ozone.om.snapshot.SnapshotUtils.getContainerBlockIds;
 import static org.apache.hadoop.ozone.om.snapshot.SnapshotUtils.hasSharedBlocks;
 import static org.apache.hadoop.ozone.om.snapshot.SnapshotUtils.isBlockLocationInfoSame;
 
 import java.io.IOException;
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 import java.util.UUID;
+import org.apache.hadoop.hdds.client.ContainerBlockID;
 import org.apache.hadoop.hdds.utils.db.Table;
 import org.apache.hadoop.ozone.om.KeyManager;
 import org.apache.hadoop.ozone.om.OmSnapshot;
@@ -46,6 +50,7 @@ import org.apache.ratis.util.function.UncheckedAutoCloseableSupplier;
 public class ReclaimableKeyFilter extends ReclaimableFilter<OmKeyInfo> {
   private final Map<UUID, Long> exclusiveSizeMap;
   private final Map<UUID, Long> exclusiveReplicatedSizeMap;
+  private Set<ContainerBlockID> retainedBlocks = Collections.emptySet();
 
   /**
    * @param currentSnapshotInfo  : If null the deleted keys in AOS needs to be processed, hence the latest snapshot
@@ -60,6 +65,29 @@ public class ReclaimableKeyFilter extends ReclaimableFilter<OmKeyInfo> {
     super(ozoneManager, omSnapshotManager, snapshotChainManager, currentSnapshotInfo, keyManager, lock, 2);
     this.exclusiveSizeMap = new HashMap<>();
     this.exclusiveReplicatedSizeMap = new HashMap<>();
+  }
+
+  @Override
+  public synchronized Boolean apply(Table.KeyValue<String, OmKeyInfo> deletedKeyInfo) throws IOException {
+    retainedBlocks = Collections.emptySet();
+    Boolean reclaimable = super.apply(deletedKeyInfo);
+    // Like a reclaimable answer, the blocks to retain only hold if the chain did not change while processing the entry.
+    if (!retainedBlocks.isEmpty()
+        && !validateExistingLastNSnapshotsInChain(getVolumeName(deletedKeyInfo), getBucketName(deletedKeyInfo))) {
+      retainedBlocks = Collections.emptySet();
+    }
+    return reclaimable;
+  }
+
+  /**
+   * Tells which blocks of the key last rejected by {@link #apply} have to be retained when the key shares only some
+   * of its blocks with the previous snapshot (an appended file). Every other block of that key is reclaimable.
+   *
+   * @return the blocks referenced by the previous snapshot, or an empty set if the last key was reclaimable or has to
+   * be retained as a whole.
+   */
+  public synchronized Set<ContainerBlockID> getRetainedBlocks() {
+    return retainedBlocks;
   }
 
   @Override
@@ -100,6 +128,14 @@ public class ReclaimableKeyFilter extends ReclaimableFilter<OmKeyInfo> {
     // If file not present in previous snapshot then it won't be present in previous to previous snapshot either.
     if (!previousKeyInfo.get().isPresent()) {
       return true;
+    }
+    // ponytail: only the previous snapshot is consulted, not every snapshot of the bucket as the append design
+    // proposes. This entry was deleted after the previous snapshot was taken, append only adds blocks and released
+    // blocks are never attached to a file again, so a block of this key referenced by an older snapshot is also
+    // referenced by the previous snapshot's version of the key. Walking the whole chain is defense in depth still to
+    // be done.
+    if (!isBlockLocationInfoSame(previousKeyInfo.get().get(), deletedKeyInfo.getValue())) {
+      retainedBlocks = getContainerBlockIds(previousKeyInfo.get().get());
     }
 
     UncheckedAutoCloseableSupplier<OmSnapshot> previousToPreviousSnapshot = getPreviousOmSnapshot(0);
@@ -167,7 +203,8 @@ public class ReclaimableKeyFilter extends ReclaimableFilter<OmKeyInfo> {
     if (prevKeyInfo == null || prevKeyInfo.getObjectID() != keyInfo.getObjectID()) {
       return Optional.empty();
     }
-    // A version sharing only some blocks with the previous snapshot (an appended file) is retained as a whole.
+    // A version sharing only some blocks with the previous snapshot (an appended file) is not reclaimable as a whole,
+    // see getRetainedBlocks().
     // ponytail: whole version exclusive size, a previous version sharing any block with the one before it counts as
     // not exclusive, so its unshared suffix is left out; per block exclusive size is AP-31.
     return isBlockLocationInfoSame(prevKeyInfo, keyInfo) || hasSharedBlocks(prevKeyInfo, keyInfo)

@@ -26,7 +26,9 @@ import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
+import java.util.Set;
 import java.util.UUID;
+import java.util.concurrent.ConcurrentHashMap;
 import org.apache.commons.lang3.StringUtils;
 import org.apache.hadoop.hdds.client.BlockID;
 import org.apache.hadoop.hdds.client.ContainerBlockID;
@@ -76,6 +78,9 @@ public class ScmBlockLocationTestingClient implements ScmBlockLocationProtocol {
 
   // The number of blocks deleted by this client
   private int numBlocksDeleted = 0;
+
+  // The blocks deleted by this client
+  private final Set<ContainerBlockID> deletedBlocks = ConcurrentHashMap.newKeySet();
 
   /**
    * If ClusterID or SCMID is blank a per instance ID is generated.
@@ -179,6 +184,9 @@ public class ScmBlockLocationTestingClient implements ScmBlockLocationProtocol {
         numBlocksDeleted++;
       }
     }
+    if (result == success) {
+      deletedBlocks.add(blockID.getContainerBlockID());
+    }
     return new DeleteBlockResult(blockID, result);
   }
 
@@ -215,6 +223,13 @@ public class ScmBlockLocationTestingClient implements ScmBlockLocationProtocol {
    */
   public int getNumberOfDeletedBlocks() {
     return numBlocksDeleted;
+  }
+
+  /**
+   * Return the blocks puesdo deleted by this testing client.
+   */
+  public Set<ContainerBlockID> getDeletedBlocks() {
+    return deletedBlocks;
   }
 
   @Override

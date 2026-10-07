@@ -68,6 +68,7 @@ public class PendingKeysDeletion {
     private final BlockGroup blockGroup;
     private final long purgedBytes;
     private final boolean isCommittedKey;
+    private boolean isPartial;
     private final String deleteKeyName;
 
     public PurgedKey(String volume, String bucket, long bucketId, BlockGroup group, String deleteKeyName,
@@ -105,6 +106,19 @@ public class PendingKeysDeletion {
       return isCommittedKey;
     }
 
+    /**
+     * @param partial true if the block group holds only some blocks of the key, while the key stays in the deleted
+     *                table with its other blocks.
+     */
+    public PurgedKey setPartial(boolean partial) {
+      this.isPartial = partial;
+      return this;
+    }
+
+    public boolean isPartial() {
+      return isPartial;
+    }
+
     public String getDeleteKeyName() {
       return deleteKeyName;
     }
@@ -118,6 +132,7 @@ public class PendingKeysDeletion {
           ", bucketId=" + bucketId +
           ", purgedBytes=" + purgedBytes +
           ", isCommittedKey=" + isCommittedKey +
+          ", isPartial=" + isPartial +
           ", deleteKeyName='" + deleteKeyName + '\'' +
           '}';
     }
