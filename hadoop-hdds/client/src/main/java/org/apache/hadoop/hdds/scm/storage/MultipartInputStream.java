@@ -213,6 +213,10 @@ public class MultipartInputStream extends ExtendedInputStream {
     long pos = position;
     int bytesRead = 0;
     while (buffer.hasRemaining()) {
+      if (pos >= length) {
+        // The last block of an hsync'ed file can be longer on the datanodes than the length that OM returned.
+        initialize();
+      }
       if (pos < 0 || pos >= length) {
         if (bytesRead > 0) {
           return true;

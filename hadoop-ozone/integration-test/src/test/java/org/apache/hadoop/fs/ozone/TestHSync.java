@@ -51,6 +51,7 @@ import static org.mockito.Mockito.when;
 import com.google.common.io.ByteStreams;
 import com.google.common.primitives.Bytes;
 import java.io.Closeable;
+import java.io.EOFException;
 import java.io.FileNotFoundException;
 import java.io.IOException;
 import java.io.UncheckedIOException;
@@ -443,6 +444,20 @@ public class TestHSync {
           for (int i = 1; i < buffer.length; i++) {
             assertEquals(data[i], buffer[i], "expected at i=" + i);
           }
+        }
+        // a positional read on a new stream has to find the data beyond the length in OM as well
+        try (FSDataInputStream in = fs.open(key1)) {
+          final byte[] positional = new byte[data.length - 1];
+          in.readFully(WAL_HEADER_LEN + 1, positional);
+          assertArrayEquals(Arrays.copyOfRange(data, 1, data.length), positional);
+          // a read that starts below the length in OM and ends beyond it
+          final byte[] straddling = new byte[WAL_HEADER_LEN];
+          in.readFully(WAL_HEADER_LEN / 2, straddling);
+          final byte[] expected = new byte[WAL_HEADER_LEN];
+          System.arraycopy(data, WAL_HEADER_LEN / 2, expected, 0, WAL_HEADER_LEN - WAL_HEADER_LEN / 2);
+          System.arraycopy(data, 0, expected, WAL_HEADER_LEN - WAL_HEADER_LEN / 2, WAL_HEADER_LEN / 2);
+          assertArrayEquals(expected, straddling);
+          assertThrows(EOFException.class, () -> in.readFully(WAL_HEADER_LEN + data.length, new byte[1]));
         }
       } finally {
         fs.delete(key1, false);
