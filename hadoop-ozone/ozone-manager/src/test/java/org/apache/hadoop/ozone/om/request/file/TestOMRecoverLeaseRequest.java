@@ -446,6 +446,33 @@ public class TestOMRecoverLeaseRequest extends OMKeyRequestTests {
     }
   }
 
+  /**
+   * The leader decides whether the lease is past the soft limit. An OM that applies the request later, when its own
+   * clock or soft limit says otherwise, does not decide again.
+   */
+  @ParameterizedTest
+  @ValueSource(booleans = {true, false})
+  public void testAppendSoftLimitDecidedByLeader(boolean expiredOnLeader) throws Exception {
+    addAppendSession(1, 1, 0, Time.now(), Time.now(), APPEND_ACTIVE);
+    ozoneManager.getConfiguration().set(OzoneConfigKeys.OZONE_OM_LEASE_SOFT_LIMIT, expiredOnLeader ? "0s" : "1h");
+    OMRequest request = doPreExecute(createRecoverLeaseRequest(volumeName, bucketName, keyName, false));
+    ozoneManager.getConfiguration().set(OzoneConfigKeys.OZONE_OM_LEASE_SOFT_LIMIT, expiredOnLeader ? "1h" : "0s");
+
+    assertEquals(expiredOnLeader ? OzoneManagerProtocolProtos.Status.OK
+            : OzoneManagerProtocolProtos.Status.KEY_UNDER_LEASE_SOFT_LIMIT_PERIOD,
+        getOmRecoverLeaseRequest(request).validateAndUpdateCache(ozoneManager, 100L).getOMResponse().getStatus());
+    assertEquals(expiredOnLeader ? APPEND_RECOVERING : APPEND_ACTIVE,
+        omMetadataManager.getOpenKeyTable(getBucketLayout()).get(getOpenFileName()).getAppendSession().getPhase());
+
+    if (!expiredOnLeader) {
+      // A request that was logged before the leader supplied the cutoff is still decided locally.
+      OMRequest logged = request.toBuilder()
+          .setRecoverLeaseRequest(request.getRecoverLeaseRequest().toBuilder().clearLeaseSoftLimitCutoff()).build();
+      assertEquals(OzoneManagerProtocolProtos.Status.OK,
+          getOmRecoverLeaseRequest(logged).validateAndUpdateCache(ozoneManager, 101L).getOMResponse().getStatus());
+    }
+  }
+
   @Test
   public void testRecoverAppendSessionIgnoresModificationTime() throws Exception {
     // fresh modification time, old renewal

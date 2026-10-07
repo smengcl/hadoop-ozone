@@ -1681,6 +1681,9 @@ message CommitKeyRequest {
     required uint64 clientID = 2;
     optional bool hsync = 3;
     optional bool recovery = 4;
+    // Set by the leader OM for a recovery commit: an append lease that was last renewed after this time is inside the
+    // soft limit period, or for the open key cleanup has not passed the hard limit.
+    optional uint64 leaseSoftLimitCutoff = 5;
 }
 
 message CommitKeyResponse {
@@ -2561,6 +2564,8 @@ message RecoverLeaseRequest {
   optional string bucketName = 2;
   optional string keyName = 3;
   optional bool force = 4;
+  // Set by the leader OM: an append lease that was last renewed after this time is inside the soft limit period.
+  optional uint64 leaseSoftLimitCutoff = 5;
 }
 
 message RecoverLeaseResponse {

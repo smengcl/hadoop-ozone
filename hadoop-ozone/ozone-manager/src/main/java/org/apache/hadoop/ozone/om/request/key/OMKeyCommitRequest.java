@@ -142,9 +142,14 @@ public class OMKeyCommitRequest extends OMKeyRequest {
     KeyArgs resolvedKeyArgs =
         resolveBucketAndCheckSessionAcls(newKeyArgs.build(), ozoneManager, commitKeyRequest.getClientID(), isRecovery);
 
-    return request.toBuilder()
-        .setCommitKeyRequest(commitKeyRequest.toBuilder()
-            .setKeyArgs(resolvedKeyArgs)).build();
+    CommitKeyRequest.Builder newCommitKeyRequest = commitKeyRequest.toBuilder().setKeyArgs(resolvedKeyArgs);
+    if (isRecovery) {
+      // Decided here, so that an OM with another soft limit does not decide differently when it applies the request.
+      newCommitKeyRequest.setLeaseSoftLimitCutoff(resolvedKeyArgs.getModificationTime()
+          - ozoneManager.getConfiguration().getTimeDuration(OZONE_OM_LEASE_SOFT_LIMIT,
+              OZONE_OM_LEASE_SOFT_LIMIT_DEFAULT, TimeUnit.MILLISECONDS));
+    }
+    return request.toBuilder().setCommitKeyRequest(newCommitKeyRequest).build();
   }
 
   @Override
@@ -728,10 +733,12 @@ public class OMKeyCommitRequest extends OMKeyRequest {
     }
     OmAppendUtil.checkReachable(omMetadataManager, openRecord, getBucketLayout());
     if (isRecovery && session.isActive()) {
-      // The request carries the time, so every OM decides the same way.
-      long softLimit = ozoneManager.getConfiguration().getTimeDuration(OZONE_OM_LEASE_SOFT_LIMIT,
-          OZONE_OM_LEASE_SOFT_LIMIT_DEFAULT, TimeUnit.MILLISECONDS);
-      if (commitKeyArgs.getModificationTime() < session.getLastRenewedAt() + softLimit) {
+      // The request carries the cutoff, so every OM decides the same way. Only a request that was logged before the
+      // leader supplied it is decided with the local soft limit.
+      long cutoff = commitKeyRequest.hasLeaseSoftLimitCutoff() ? commitKeyRequest.getLeaseSoftLimitCutoff()
+          : commitKeyArgs.getModificationTime() - ozoneManager.getConfiguration().getTimeDuration(
+              OZONE_OM_LEASE_SOFT_LIMIT, OZONE_OM_LEASE_SOFT_LIMIT_DEFAULT, TimeUnit.MILLISECONDS);
+      if (session.getLastRenewedAt() > cutoff) {
         throw new OMException("Append session " + sessionId + " of " + openRecord.getKeyName()
             + " was renewed recently and is inside soft limit period", KEY_UNDER_LEASE_SOFT_LIMIT_PERIOD);
       }

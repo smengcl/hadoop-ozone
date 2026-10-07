@@ -455,6 +455,8 @@ class TestOpenKeyCleanupService {
           assertEquals(2L, commit.getClientID());
           assertThat(commit.getRecovery()).isTrue();
           assertEquals("lapsed", commit.getKeyArgs().getKeyName());
+          // The request does not pass preExecute, so the service decides that the lease is over.
+          assertThat(commit.getLeaseSoftLimitCutoff()).isGreaterThanOrEqualTo(old);
         });
 
     final long submitted = openKeyCleanupService.getSubmittedOpenKeyCount();

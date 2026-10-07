@@ -1642,7 +1642,7 @@ public class OmMetadataManagerImpl implements OMMetadataManager,
         .setDataSize(committed.getDataSize())
         .setModificationTime(Time.now());
     OzoneManagerProtocolClientSideTranslatorPB.setReplicationConfig(committed.getReplicationConfig(), keyArgs);
-    expiredKeys.addAppendRecoveryKey(keyArgs, sessionId);
+    expiredKeys.addAppendRecoveryKey(keyArgs, sessionId, expiredLeaseTimestamp);
     return true;
   }
 

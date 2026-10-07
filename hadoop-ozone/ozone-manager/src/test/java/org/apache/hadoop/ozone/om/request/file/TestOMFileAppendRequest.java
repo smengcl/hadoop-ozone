@@ -535,6 +535,34 @@ public class TestOMFileAppendRequest extends OMKeyRequestTests {
     assertThat(committed.getDataSize()).isEqualTo(BLOCK_LENGTH + 120);
   }
 
+  /**
+   * The leader decides whether the lease of an ACTIVE session is past the soft limit. An OM that applies the recovery
+   * commit with another soft limit does not decide again.
+   */
+  @ParameterizedTest
+  @ValueSource(booleans = {true, false})
+  public void testRecoveryCommitSoftLimitDecidedByLeader(boolean expiredOnLeader) throws Exception {
+    addCommittedFile(1);
+    long sessionId = admit();
+    allocate(sessionId);
+    ozoneManager.getConfiguration().set(OzoneConfigKeys.OZONE_OM_LEASE_SOFT_LIMIT, expiredOnLeader ? "0s" : "1h");
+    OMRequest request = preExecute(commitRequest(ClientVersion.CURRENT, sessionId, false, true,
+        keyArgs().setDataSize(BLOCK_LENGTH)));
+    ozoneManager.getConfiguration().set(OzoneConfigKeys.OZONE_OM_LEASE_SOFT_LIMIT, expiredOnLeader ? "1h" : "0s");
+
+    assertThat(apply(request).getOMResponse().getStatus())
+        .isEqualTo(expiredOnLeader ? OK : KEY_UNDER_LEASE_SOFT_LIMIT_PERIOD);
+    assertThat(committedFile().getAppendOwnerSessionId()).isEqualTo(expiredOnLeader ? null : sessionId);
+
+    if (!expiredOnLeader) {
+      // A request that was logged before the leader supplied the cutoff is still decided locally.
+      OMRequest logged = request.toBuilder()
+          .setCommitKeyRequest(request.getCommitKeyRequest().toBuilder().clearLeaseSoftLimitCutoff()).build();
+      assertThat(apply(logged).getOMResponse().getStatus()).isEqualTo(OK);
+      assertThat(committedFile().getAppendOwnerSessionId()).isNull();
+    }
+  }
+
   @Test
   public void testCommitOfInvalidatedSession() throws Exception {
     addCommittedFile(1);
@@ -1305,14 +1333,19 @@ public class TestOMFileAppendRequest extends OMKeyRequestTests {
 
   private OMClientResponse commit(ClientVersion clientVersion, long commitClientId, boolean hsync, boolean recovery,
       KeyArgs.Builder keyArgs) throws Exception {
-    return execute(OMRequest.newBuilder()
+    return execute(commitRequest(clientVersion, commitClientId, hsync, recovery, keyArgs));
+  }
+
+  private static OMRequest commitRequest(ClientVersion clientVersion, long commitClientId, boolean hsync,
+      boolean recovery, KeyArgs.Builder keyArgs) {
+    return OMRequest.newBuilder()
         .setVersion(clientVersion.toProtoValue())
         .setCmdType(Type.CommitKey)
         .setClientId(UUID.randomUUID().toString())
         .setUserInfo(CALLER)
         .setCommitKeyRequest(CommitKeyRequest.newBuilder()
             .setKeyArgs(keyArgs).setClientID(commitClientId).setHsync(hsync).setRecovery(recovery))
-        .build());
+        .build();
   }
 
   private static List<BlockID> blocksToDelete(OMClientResponse response) {

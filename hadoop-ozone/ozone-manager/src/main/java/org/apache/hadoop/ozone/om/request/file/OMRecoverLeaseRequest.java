@@ -118,12 +118,15 @@ public class OMRecoverLeaseRequest extends OMKeyRequest {
     OmAppendUtil.checkNativeFileAcls(ozoneManager, this, resolvedArgs.getVolumeName(),
         resolvedArgs.getBucketName(), normalizedKeyPath);
 
+    final long leaseSoftLimit = ozoneManager.getConfiguration()
+        .getTimeDuration(OZONE_OM_LEASE_SOFT_LIMIT, OZONE_OM_LEASE_SOFT_LIMIT_DEFAULT, TimeUnit.MILLISECONDS);
     return request.toBuilder()
         .setRecoverLeaseRequest(
             recoverLeaseRequest.toBuilder()
                 .setVolumeName(resolvedArgs.getVolumeName())
                 .setBucketName(resolvedArgs.getBucketName())
-                .setKeyName(normalizedKeyPath))
+                .setKeyName(normalizedKeyPath)
+                .setLeaseSoftLimitCutoff(Time.now() - leaseSoftLimit))
         .build();
   }
 
@@ -285,11 +288,13 @@ public class OMRecoverLeaseRequest extends OMKeyRequest {
       LOG.debug("Key: {} is already under recovery", keyName);
       return;
     }
-    final long leaseSoftLimit = ozoneManager.getConfiguration()
-        .getTimeDuration(OZONE_OM_LEASE_SOFT_LIMIT, OZONE_OM_LEASE_SOFT_LIMIT_DEFAULT, TimeUnit.MILLISECONDS);
-    // ponytail: local clock read during apply like the hsync branch, so replicas can decide differently near the
-    // limit. Carry a leader supplied time in RecoverLeaseRequest once the proto can change.
-    if (!force && Time.now() < session.getLastRenewedAt() + leaseSoftLimit) {
+    // The leader supplies the cutoff, so an OM that applies the request later or has another soft limit decides the
+    // same way. Only a request that was logged before the leader did so is decided with the local clock.
+    final RecoverLeaseRequest recoverLeaseRequest = getOmRequest().getRecoverLeaseRequest();
+    final long cutoff = recoverLeaseRequest.hasLeaseSoftLimitCutoff() ? recoverLeaseRequest.getLeaseSoftLimitCutoff()
+        : Time.now() - ozoneManager.getConfiguration()
+            .getTimeDuration(OZONE_OM_LEASE_SOFT_LIMIT, OZONE_OM_LEASE_SOFT_LIMIT_DEFAULT, TimeUnit.MILLISECONDS);
+    if (!force && session.getLastRenewedAt() > cutoff) {
       throw new OMException("Append session " + sessionId + " of " + keyName
           + " renewed recently and is inside soft limit period", KEY_UNDER_LEASE_SOFT_LIMIT_PERIOD);
     }

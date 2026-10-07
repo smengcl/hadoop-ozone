@@ -72,10 +72,12 @@ public class ExpiredOpenKeys {
         .setClientID(clientId));
   }
 
-  void addAppendRecoveryKey(KeyArgs.Builder keyArgs, long sessionId) {
+  /** @param leaseCutoff the session is recovered unless its lease was renewed after this time */
+  void addAppendRecoveryKey(KeyArgs.Builder keyArgs, long sessionId, long leaseCutoff) {
     appendRecoveryKeys.add(CommitKeyRequest.newBuilder()
         .setKeyArgs(keyArgs)
         .setClientID(sessionId)
-        .setRecovery(true));
+        .setRecovery(true)
+        .setLeaseSoftLimitCutoff(leaseCutoff));
   }
 }
