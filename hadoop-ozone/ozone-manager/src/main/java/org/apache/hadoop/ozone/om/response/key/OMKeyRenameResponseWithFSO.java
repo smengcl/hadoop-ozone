@@ -38,10 +38,6 @@ public class OMKeyRenameResponseWithFSO extends OMKeyRenameResponse {
   private OmKeyInfo fromKeyParent;
   private OmKeyInfo toKeyParent;
   private OmBucketInfo bucketInfo;
-  // If not null, the open record of the renamed file's append session, which moves from fromOpenDBKey to toOpenDBKey
-  private OmKeyInfo renamedOpenKeyInfo;
-  private String fromOpenDBKey;
-  private String toOpenDBKey;
 
   @SuppressWarnings("checkstyle:ParameterNumber")
   public OMKeyRenameResponseWithFSO(@Nonnull OMResponse omResponse,
@@ -49,11 +45,8 @@ public class OMKeyRenameResponseWithFSO extends OMKeyRenameResponse {
       OmKeyInfo toKeyParent, @Nonnull OmKeyInfo renameKeyInfo,
       OmBucketInfo bucketInfo,
       boolean isRenameDirectory, BucketLayout bucketLayout) {
-    super(omResponse, fromDBKey, toDBKey, renameKeyInfo, bucketLayout);
-    this.isRenameDirectory = isRenameDirectory;
-    this.fromKeyParent = fromKeyParent;
-    this.toKeyParent = toKeyParent;
-    this.bucketInfo = bucketInfo;
+    this(omResponse, fromDBKey, toDBKey, fromKeyParent, toKeyParent, renameKeyInfo, bucketInfo, isRenameDirectory,
+        bucketLayout, null, null, null);
   }
 
   @SuppressWarnings("checkstyle:ParameterNumber")
@@ -63,11 +56,12 @@ public class OMKeyRenameResponseWithFSO extends OMKeyRenameResponse {
       OmBucketInfo bucketInfo,
       boolean isRenameDirectory, BucketLayout bucketLayout,
       String fromOpenDBKey, String toOpenDBKey, OmKeyInfo renamedOpenKeyInfo) {
-    this(omResponse, fromDBKey, toDBKey, fromKeyParent, toKeyParent, renameKeyInfo, bucketInfo, isRenameDirectory,
-        bucketLayout);
-    this.fromOpenDBKey = fromOpenDBKey;
-    this.toOpenDBKey = toOpenDBKey;
-    this.renamedOpenKeyInfo = renamedOpenKeyInfo;
+    super(omResponse, fromDBKey, toDBKey, renameKeyInfo, bucketLayout, fromOpenDBKey, toOpenDBKey,
+        renamedOpenKeyInfo);
+    this.isRenameDirectory = isRenameDirectory;
+    this.fromKeyParent = fromKeyParent;
+    this.toKeyParent = toKeyParent;
+    this.bucketInfo = bucketInfo;
   }
 
   /**
@@ -100,11 +94,7 @@ public class OMKeyRenameResponseWithFSO extends OMKeyRenameResponse {
           .deleteWithBatch(batchOperation, getFromKeyName());
       omMetadataManager.getKeyTable(getBucketLayout())
           .putWithBatch(batchOperation, getToKeyName(), getRenameKeyInfo());
-      if (renamedOpenKeyInfo != null) {
-        omMetadataManager.getOpenKeyTable(getBucketLayout()).deleteWithBatch(batchOperation, fromOpenDBKey);
-        omMetadataManager.getOpenKeyTable(getBucketLayout())
-            .putWithBatch(batchOperation, toOpenDBKey, renamedOpenKeyInfo);
-      }
+      addRenamedOpenKeyToBatch(omMetadataManager, batchOperation);
     }
 
     boolean isSnapshotBucket = OMClientRequestUtils.

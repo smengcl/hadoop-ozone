@@ -60,6 +60,7 @@ import org.apache.hadoop.ozone.om.helpers.OmBucketInfo;
 import org.apache.hadoop.ozone.om.helpers.OmKeyInfo;
 import org.apache.hadoop.ozone.om.helpers.OmLifecycleScanState;
 import org.apache.hadoop.ozone.om.helpers.OzoneFileStatus;
+import org.apache.hadoop.ozone.om.request.util.OmAppendUtil;
 import org.apache.hadoop.ozone.om.request.util.OmResponseUtil;
 import org.apache.hadoop.ozone.om.request.validation.RequestFeatureValidator;
 import org.apache.hadoop.ozone.om.request.validation.ValidationCondition;
@@ -397,7 +398,8 @@ public class OMKeysDeleteRequest extends OMKeyRequest {
           throws IOException {
     int emptyKeys = 0;
     long quotaReleased = 0;
-    for (OmKeyInfo omKeyInfo : omKeyInfoList) {
+    for (int i = 0; i < omKeyInfoList.size(); i++) {
+      OmKeyInfo omKeyInfo = omKeyInfoList.get(i);
       String volumeName = omKeyInfo.getVolumeName();
       String bucketName = omKeyInfo.getBucketName();
       String keyName = omKeyInfo.getKeyName();
@@ -426,6 +428,16 @@ public class OMKeysDeleteRequest extends OMKeyRequest {
         } else {
           LOG.warn("Potentially inconsistent DB state: open key not found with dbOpenKey '{}'", dbOpenKey);
         }
+      }
+
+      // If omKeyInfo has an append owner, invalidate its session. The deleted record must not keep the owner.
+      if (omKeyInfo.getAppendOwnerSessionId() != null) {
+        final Pair<String, OmKeyInfo> invalidatedAppend =
+            OmAppendUtil.invalidateSessionOfDeletedFile(omMetadataManager, omKeyInfo, trxnLogIndex, getBucketLayout());
+        if (invalidatedAppend != null) {
+          openKeyInfoMap.put(invalidatedAppend.getKey(), invalidatedAppend.getValue());
+        }
+        omKeyInfoList.set(i, omKeyInfo.toBuilder().setAppendOwnerSessionId(null).build());
       }
     }
     return Pair.of(quotaReleased, emptyKeys);

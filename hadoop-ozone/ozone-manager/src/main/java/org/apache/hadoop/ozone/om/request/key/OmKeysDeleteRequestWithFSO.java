@@ -113,7 +113,7 @@ public class OmKeysDeleteRequestWithFSO extends OMKeysDeleteRequest {
       emptyKeys += OmKeyInfo.isKeyEmpty(omKeyInfo) ? 1 : 0;
       // If omKeyInfo has an append owner, invalidate its session. The deleted record must not keep the owner.
       final Pair<String, OmKeyInfo> invalidatedAppend =
-          OmAppendUtil.invalidateSessionOfDeletedFile(omMetadataManager, omKeyInfo, trxnLogIndex);
+          OmAppendUtil.invalidateSessionOfDeletedFile(omMetadataManager, omKeyInfo, trxnLogIndex, getBucketLayout());
       if (invalidatedAppend != null) {
         openKeyInfoMap.put(invalidatedAppend.getKey(), invalidatedAppend.getValue());
       }

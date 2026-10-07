@@ -34,6 +34,10 @@ public class OMKeyRenameResponse extends OmKeyResponse {
   private String fromKeyName;
   private String toKeyName;
   private OmKeyInfo renameKeyInfo;
+  // If not null, the open record of the renamed file's append session, which moves from fromOpenDBKey to toOpenDBKey
+  private OmKeyInfo renamedOpenKeyInfo;
+  private String fromOpenDBKey;
+  private String toOpenDBKey;
 
   public OMKeyRenameResponse(@Nonnull OMResponse omResponse,
       String fromKeyName, String toKeyName, @Nonnull OmKeyInfo renameKeyInfo) {
@@ -50,6 +54,16 @@ public class OMKeyRenameResponse extends OmKeyResponse {
     this.fromKeyName = fromKeyName;
     this.toKeyName = toKeyName;
     this.renameKeyInfo = renameKeyInfo;
+  }
+
+  @SuppressWarnings("checkstyle:ParameterNumber")
+  public OMKeyRenameResponse(@Nonnull OMResponse omResponse, String fromKeyName,
+      String toKeyName, @Nonnull OmKeyInfo renameKeyInfo,
+      BucketLayout bucketLayout, String fromOpenDBKey, String toOpenDBKey, OmKeyInfo renamedOpenKeyInfo) {
+    this(omResponse, fromKeyName, toKeyName, renameKeyInfo, bucketLayout);
+    this.fromOpenDBKey = fromOpenDBKey;
+    this.toOpenDBKey = toOpenDBKey;
+    this.renamedOpenKeyInfo = renamedOpenKeyInfo;
   }
 
   /**
@@ -75,6 +89,7 @@ public class OMKeyRenameResponse extends OmKeyResponse {
         .putWithBatch(batchOperation,
             omMetadataManager.getOzoneKey(volumeName, bucketName, toKeyName),
             renameKeyInfo);
+    addRenamedOpenKeyToBatch(omMetadataManager, batchOperation);
 
     // Check if the bucket is in snapshot scope, if yes
     // add the key to snapshotRenamedTable.
@@ -88,6 +103,15 @@ public class OMKeyRenameResponse extends OmKeyResponse {
     if (isSnapshotBucket && renamedKey == null) {
       omMetadataManager.getSnapshotRenamedTable().putWithBatch(
           batchOperation, renameDbKey, fromDbKey);
+    }
+  }
+
+  protected void addRenamedOpenKeyToBatch(OMMetadataManager omMetadataManager, BatchOperation batchOperation)
+      throws IOException {
+    if (renamedOpenKeyInfo != null) {
+      omMetadataManager.getOpenKeyTable(getBucketLayout()).deleteWithBatch(batchOperation, fromOpenDBKey);
+      omMetadataManager.getOpenKeyTable(getBucketLayout())
+          .putWithBatch(batchOperation, toOpenDBKey, renamedOpenKeyInfo);
     }
   }
 

@@ -48,6 +48,7 @@ import org.apache.hadoop.ozone.om.helpers.OmBucketInfo;
 import org.apache.hadoop.ozone.om.helpers.OmKeyInfo;
 import org.apache.hadoop.ozone.om.helpers.OmKeyLocationInfo;
 import org.apache.hadoop.ozone.om.request.key.OMKeyRequest;
+import org.apache.hadoop.ozone.om.request.util.OmAppendUtil;
 import org.apache.hadoop.ozone.om.request.util.OmResponseUtil;
 import org.apache.hadoop.ozone.om.request.validation.RequestFeatureValidator;
 import org.apache.hadoop.ozone.om.request.validation.ValidationCondition;
@@ -220,6 +221,7 @@ public class OMFileCreateRequest extends OMKeyRequest {
 
       // Check if a file or directory exists with same key name.
       checkDirectoryResult(keyName, isOverWrite, omDirectoryResult);
+      OmAppendUtil.checkNotReserved(dbKeyInfo, keyName);
 
       if (!isRecursive) {
         checkAllParentsExist(keyArgs, pathInfo);

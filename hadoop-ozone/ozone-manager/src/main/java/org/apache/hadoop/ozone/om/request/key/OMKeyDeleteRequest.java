@@ -26,6 +26,7 @@ import java.io.IOException;
 import java.nio.file.InvalidPathException;
 import java.util.Map;
 import java.util.Objects;
+import org.apache.commons.lang3.tuple.Pair;
 import org.apache.hadoop.hdds.utils.db.Table;
 import org.apache.hadoop.hdds.utils.db.cache.CacheKey;
 import org.apache.hadoop.hdds.utils.db.cache.CacheValue;
@@ -42,6 +43,7 @@ import org.apache.hadoop.ozone.om.execution.flowcontrol.ExecutionContext;
 import org.apache.hadoop.ozone.om.helpers.BucketLayout;
 import org.apache.hadoop.ozone.om.helpers.OmBucketInfo;
 import org.apache.hadoop.ozone.om.helpers.OmKeyInfo;
+import org.apache.hadoop.ozone.om.request.util.OmAppendUtil;
 import org.apache.hadoop.ozone.om.request.util.OmResponseUtil;
 import org.apache.hadoop.ozone.om.request.validation.RequestFeatureValidator;
 import org.apache.hadoop.ozone.om.request.validation.ValidationCondition;
@@ -186,13 +188,25 @@ public class OMKeyDeleteRequest extends OMKeyRequest {
         }
       }
 
+      // If omKeyInfo has an append owner, invalidate its session. The deleted record must not keep the owner.
+      String invalidatedAppendOpenKey = null;
+      if (omKeyInfo.getAppendOwnerSessionId() != null) {
+        Pair<String, OmKeyInfo> invalidated =
+            OmAppendUtil.invalidateSessionOfDeletedFile(omMetadataManager, omKeyInfo, trxnLogIndex, getBucketLayout());
+        if (invalidated != null) {
+          invalidatedAppendOpenKey = invalidated.getKey();
+          deletedOpenKeyInfo = invalidated.getValue();
+        }
+        omKeyInfo = omKeyInfo.toBuilder().setAppendOwnerSessionId(null).build();
+      }
+
       omMetadataManager.getBucketTable().addCacheEntry(
           omMetadataManager.getBucketKey(volumeName, bucketName), omBucketInfo, trxnLogIndex);
 
       omClientResponse = new OMKeyDeleteResponse(
           omResponse.setDeleteKeyResponse(DeleteKeyResponse.newBuilder())
               .build(), omKeyInfo,
-          omBucketInfo.copyObject(), deletedOpenKeyInfo);
+          omBucketInfo.copyObject(), deletedOpenKeyInfo, invalidatedAppendOpenKey);
       if (omKeyInfo.isFile()) {
         auditMap.put(OzoneConsts.DATA_SIZE, String.valueOf(omKeyInfo.getDataSize()));
         auditMap.put(OzoneConsts.REPLICATION_CONFIG, omKeyInfo.getReplicationConfig().toString());

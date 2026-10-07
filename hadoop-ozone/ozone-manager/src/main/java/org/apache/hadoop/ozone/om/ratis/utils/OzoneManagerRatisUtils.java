@@ -270,19 +270,21 @@ public final class OzoneManagerRatisUtils {
       bucketLayout =
         getBucketLayout(ozoneManager.getMetadataManager(), volumeName,
           bucketName);
-      if (bucketLayout != BucketLayout.FILE_SYSTEM_OPTIMIZED) {
-        throw new IOException("Bucket " + bucketName + " is not FSO layout. " +
+      if (bucketLayout == BucketLayout.OBJECT_STORE) {
+        throw new IOException("Bucket " + bucketName + " has OBJECT_STORE layout. " +
                 "It does not support lease recovery");
       }
-      return new OMRecoverLeaseRequest(omRequest);
+      return new OMRecoverLeaseRequest(omRequest, bucketLayout);
     case AppendFile:
       keyArgs = omRequest.getAppendFileRequest().getKeyArgs();
-      if (getBucketLayout(ozoneManager.getMetadataManager(), keyArgs.getVolumeName(), keyArgs.getBucketName())
-          != BucketLayout.FILE_SYSTEM_OPTIMIZED) {
-        throw new OMException("Bucket " + keyArgs.getBucketName() + " is not FSO layout. It does not support append",
-            OMException.ResultCodes.APPEND_NOT_SUPPORTED);
+      bucketLayout =
+          getBucketLayout(ozoneManager.getMetadataManager(), keyArgs.getVolumeName(), keyArgs.getBucketName());
+      if (bucketLayout == BucketLayout.OBJECT_STORE) {
+        throw new OMException("Bucket " + keyArgs.getBucketName() + " has OBJECT_STORE layout, whose keys are objects"
+            + " and not files. Append is a file system operation and is supported in FILE_SYSTEM_OPTIMIZED and LEGACY"
+            + " buckets only", OMException.ResultCodes.APPEND_NOT_SUPPORTED);
       }
-      return new OMFileAppendRequest(omRequest);
+      return new OMFileAppendRequest(omRequest, bucketLayout);
     case RenewAppendLeases:
       return new OMAppendLeaseRenewRequest(omRequest);
     /*

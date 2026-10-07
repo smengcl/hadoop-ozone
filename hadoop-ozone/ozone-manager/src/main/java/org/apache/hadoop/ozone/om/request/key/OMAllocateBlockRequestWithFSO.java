@@ -17,19 +17,15 @@
 
 package org.apache.hadoop.ozone.om.request.key;
 
-import static org.apache.hadoop.ozone.om.exceptions.OMException.ResultCodes.APPEND_SESSION_NOT_FOUND;
-
 import jakarta.annotation.Nonnull;
 import java.io.IOException;
 import org.apache.hadoop.ozone.om.OMMetadataManager;
-import org.apache.hadoop.ozone.om.exceptions.OMException;
 import org.apache.hadoop.ozone.om.helpers.BucketLayout;
 import org.apache.hadoop.ozone.om.helpers.OmBucketInfo;
 import org.apache.hadoop.ozone.om.helpers.OmFSOFile;
 import org.apache.hadoop.ozone.om.helpers.OmKeyInfo;
 import org.apache.hadoop.ozone.om.helpers.OzoneFSUtils;
 import org.apache.hadoop.ozone.om.request.file.OMFileRequest;
-import org.apache.hadoop.ozone.om.request.util.OmAppendUtil;
 import org.apache.hadoop.ozone.om.response.OMClientResponse;
 import org.apache.hadoop.ozone.om.response.key.OMAllocateBlockResponseWithFSO;
 import org.apache.hadoop.ozone.protocol.proto.OzoneManagerProtocolProtos.OMRequest;
@@ -56,17 +52,7 @@ public class OMAllocateBlockRequestWithFSO extends OMAllocateBlockRequest {
       }
       return openKeyInfo;
     }
-    // Only the ACTIVE session that owns the file may allocate, also when the open record was found by path.
-    long sessionId = getOmRequest().getAllocateBlockRequest().getClientID();
-    if (!openKeyName.equals(omMetadataManager.getAppendSessionOpenKey(openKeyInfo.getVolumeName(),
-        openKeyInfo.getBucketName(), sessionId))
-        || !openKeyInfo.getAppendSession().isActive()
-        || !OmAppendUtil.isOwnedBy(omMetadataManager.getKeyTable(getBucketLayout())
-            .get(OmAppendUtil.getDbFileKey(omMetadataManager, openKeyInfo)), sessionId)) {
-      throw new OMException("Append session " + sessionId + " of " + openKeyInfo.getKeyName()
-          + " is not active", APPEND_SESSION_NOT_FOUND);
-    }
-    OmAppendUtil.checkReachable(omMetadataManager, openKeyInfo);
+    checkAppendSessionCanAllocate(omMetadataManager, openKeyName, openKeyInfo);
     return openKeyInfo;
   }
 

@@ -682,7 +682,7 @@ public class TestOMRecoverLeaseRequest extends OMKeyRequestTests {
   }
 
   protected OMRecoverLeaseRequest getOmRecoverLeaseRequest(OMRequest omRequest) {
-    return new OMRecoverLeaseRequest(omRequest);
+    return new OMRecoverLeaseRequest(omRequest, getBucketLayout());
   }
 
   private List<OmKeyLocationInfo> getKeyLocation(int count) {

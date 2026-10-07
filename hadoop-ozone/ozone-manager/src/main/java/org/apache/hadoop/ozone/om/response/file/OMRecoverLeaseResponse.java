@@ -61,9 +61,4 @@ public class OMRecoverLeaseResponse extends OmKeyResponse {
           batchOperation, openKeyName, openKeyInfo);
     }
   }
-
-  @Override
-  public BucketLayout getBucketLayout() {
-    return BucketLayout.FILE_SYSTEM_OPTIMIZED;
-  }
 }

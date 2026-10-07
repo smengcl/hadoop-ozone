@@ -38,6 +38,7 @@ import org.apache.hadoop.ozone.om.exceptions.OMException;
 import org.apache.hadoop.ozone.om.execution.flowcontrol.ExecutionContext;
 import org.apache.hadoop.ozone.om.helpers.BucketLayout;
 import org.apache.hadoop.ozone.om.helpers.OmKeyInfo;
+import org.apache.hadoop.ozone.om.request.util.OmAppendUtil;
 import org.apache.hadoop.ozone.om.request.util.OmResponseUtil;
 import org.apache.hadoop.ozone.om.request.validation.RequestFeatureValidator;
 import org.apache.hadoop.ozone.om.request.validation.ValidationCondition;
@@ -197,9 +198,21 @@ public class OMKeyRenameRequest extends OMKeyRequest {
       keyTable.addCacheEntry(new CacheKey<>(toKey),
           CacheValue.get(trxnLogIndex, fromKeyValue));
 
+      // An append session's open record is keyed by the key name, so it has to move with the key.
+      final Long appendSessionId = fromKeyValue.getAppendOwnerSessionId();
+      String dbFromOpenKey = null;
+      String dbToOpenKey = null;
+      OmKeyInfo renamedOpenKeyInfo = null;
+      if (appendSessionId != null) {
+        dbFromOpenKey = omMetadataManager.getOpenKey(volumeName, bucketName, fromKeyName, appendSessionId);
+        dbToOpenKey = omMetadataManager.getOpenKey(volumeName, bucketName, toKeyName, appendSessionId);
+        renamedOpenKeyInfo = OmAppendUtil.moveSessionOfRenamedFile(omMetadataManager, fromKeyValue, dbFromOpenKey,
+            dbToOpenKey, toKeyName, trxnLogIndex, getBucketLayout());
+      }
+
       omClientResponse = new OMKeyRenameResponse(omResponse
           .setRenameKeyResponse(RenameKeyResponse.newBuilder()).build(),
-          fromKeyName, toKeyName, fromKeyValue, getBucketLayout());
+          fromKeyName, toKeyName, fromKeyValue, getBucketLayout(), dbFromOpenKey, dbToOpenKey, renamedOpenKeyInfo);
 
       result = Result.SUCCESS;
     } catch (IOException | InvalidPathException ex) {

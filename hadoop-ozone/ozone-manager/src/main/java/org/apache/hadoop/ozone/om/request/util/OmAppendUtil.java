@@ -36,6 +36,7 @@ import org.apache.hadoop.hdds.utils.db.cache.CacheValue;
 import org.apache.hadoop.ozone.om.OMMetadataManager;
 import org.apache.hadoop.ozone.om.OzoneAclUtils;
 import org.apache.hadoop.ozone.om.OzoneManager;
+import org.apache.hadoop.ozone.om.OzoneManagerUtils;
 import org.apache.hadoop.ozone.om.exceptions.OMException;
 import org.apache.hadoop.ozone.om.helpers.BucketLayout;
 import org.apache.hadoop.ozone.om.helpers.OmDirectoryInfo;
@@ -83,14 +84,31 @@ public final class OmAppendUtil {
   }
 
   /**
-   * Returns the file table DB key of the file that an append session's open record belongs to. It is derived from
+   * Returns the key table DB key of the file that an append session's open record belongs to. It is derived from
    * the open record, which follows renames, and never from the path of a request.
    */
-  public static String getDbFileKey(OMMetadataManager omMetadataManager, OmKeyInfo openRecord) throws IOException {
+  public static String getDbFileKey(OMMetadataManager omMetadataManager, OmKeyInfo openRecord,
+      BucketLayout bucketLayout) throws IOException {
     String volume = openRecord.getVolumeName();
     String bucket = openRecord.getBucketName();
+    if (!bucketLayout.isFileSystemOptimized()) {
+      return omMetadataManager.getOzoneKey(volume, bucket, openRecord.getKeyName());
+    }
     return omMetadataManager.getOzonePathKey(omMetadataManager.getVolumeId(volume),
         omMetadataManager.getBucketId(volume, bucket), openRecord.getParentObjectID(), openRecord.getFileName());
+  }
+
+  /** Returns the open key table DB key of the append session that owns the committed file. */
+  private static String getDbOpenKey(OMMetadataManager omMetadataManager, OmKeyInfo committed, long sessionId,
+      BucketLayout bucketLayout) throws IOException {
+    String volume = committed.getVolumeName();
+    String bucket = committed.getBucketName();
+    if (!bucketLayout.isFileSystemOptimized()) {
+      return omMetadataManager.getOpenKey(volume, bucket, committed.getKeyName(), sessionId);
+    }
+    return omMetadataManager.getOpenFileName(omMetadataManager.getVolumeId(volume),
+        omMetadataManager.getBucketId(volume, bucket), committed.getParentObjectID(), committed.getFileName(),
+        sessionId);
   }
 
   /**
@@ -134,17 +152,18 @@ public final class OmAppendUtil {
   }
 
   /**
-   * Invalidates the append session that owns an FSO file which is being deleted: replaces the session's open record
-   * in the open file table cache by its {@link #invalidate invalidated} form and removes the session from the append
+   * Invalidates the append session that owns a file which is being deleted: replaces the session's open record in
+   * the open key table cache by its {@link #invalidate invalidated} form and removes the session from the append
    * session index. Must be called under the bucket write lock, before the deleted record loses its owner. The caller
-   * must persist the returned record under the returned open file table DB key.
+   * must persist the returned record under the returned open key table DB key.
    *
-   * @param committed the deleted file with its file name and parent object ID
-   * @return the open file table DB key and the invalidated open record, or null if nothing has to be persisted (no
+   * @param committed the deleted file as its key table row addresses it: with its file name and parent object ID in
+   *     an FSO bucket, with its full key name otherwise
+   * @return the open key table DB key and the invalidated open record, or null if nothing has to be persisted (no
    *     append owner, or no live open record of that session)
    */
   public static Pair<String, OmKeyInfo> invalidateSessionOfDeletedFile(OMMetadataManager omMetadataManager,
-      OmKeyInfo committed, long trxnLogIndex) throws IOException {
+      OmKeyInfo committed, long trxnLogIndex, BucketLayout bucketLayout) throws IOException {
     Long sessionId = committed.getAppendOwnerSessionId();
     if (sessionId == null) {
       return null;
@@ -153,12 +172,10 @@ public final class OmAppendUtil {
     String bucket = committed.getBucketName();
     String dbOpenKey = omMetadataManager.getAppendSessionOpenKey(volume, bucket, sessionId);
     if (dbOpenKey == null) {
-      dbOpenKey = omMetadataManager.getOpenFileName(omMetadataManager.getVolumeId(volume),
-          omMetadataManager.getBucketId(volume, bucket), committed.getParentObjectID(), committed.getFileName(),
-          sessionId);
+      dbOpenKey = getDbOpenKey(omMetadataManager, committed, sessionId, bucketLayout);
     }
-    Table<String, OmKeyInfo> openFileTable = omMetadataManager.getOpenKeyTable(BucketLayout.FILE_SYSTEM_OPTIMIZED);
-    OmKeyInfo openRecord = openFileTable.get(dbOpenKey);
+    Table<String, OmKeyInfo> openKeyTable = omMetadataManager.getOpenKeyTable(bucketLayout);
+    OmKeyInfo openRecord = openKeyTable.get(dbOpenKey);
     omMetadataManager.removeAppendSession(volume, bucket, sessionId);
     if (openRecord == null || openRecord.getAppendSession() == null) {
       LOG.warn("Potentially inconsistent DB state: append open record not found with dbOpenKey '{}'", dbOpenKey);
@@ -168,17 +185,57 @@ public final class OmAppendUtil {
       return null;
     }
     OmKeyInfo invalidated = invalidate(openRecord, committed, trxnLogIndex);
-    openFileTable.addCacheEntry(dbOpenKey, invalidated, trxnLogIndex);
+    openKeyTable.addCacheEntry(dbOpenKey, invalidated, trxnLogIndex);
     return Pair.of(dbOpenKey, invalidated);
+  }
+
+  /**
+   * Moves the open record of the append session that owns a renamed file, as the record is keyed by the location of
+   * the file, and points the append session index at the new row. Only the location changes: the session, including
+   * its lease renewal time, stays as it is. Must be called under the bucket write lock. The caller must persist the
+   * move: delete {@code dbFromOpenKey} and put the returned record under {@code dbToOpenKey}.
+   *
+   * @param renamed the committed file with its append owner
+   * @param toKeyName the key name of the open record after the rename
+   * @return the open record to store under {@code dbToOpenKey}, or null if the session has no open record
+   */
+  public static OmKeyInfo moveSessionOfRenamedFile(OMMetadataManager omMetadataManager, OmKeyInfo renamed,
+      String dbFromOpenKey, String dbToOpenKey, String toKeyName, long trxnLogIndex, BucketLayout bucketLayout)
+      throws IOException {
+    Table<String, OmKeyInfo> openKeyTable = omMetadataManager.getOpenKeyTable(bucketLayout);
+    OmKeyInfo openKeyInfo = openKeyTable.get(dbFromOpenKey);
+    if (openKeyInfo == null) {
+      LOG.warn("Potentially inconsistent DB state: append open record not found with dbOpenKey '{}'", dbFromOpenKey);
+      return null;
+    }
+    OmKeyInfo renamedOpenKeyInfo = openKeyInfo.toBuilder()
+        .setKeyName(toKeyName)
+        .setParentObjectID(renamed.getParentObjectID())
+        .setUpdateID(trxnLogIndex)
+        .build();
+    openKeyTable.addCacheEntry(dbFromOpenKey, trxnLogIndex);
+    openKeyTable.addCacheEntry(dbToOpenKey, renamedOpenKeyInfo, trxnLogIndex);
+    omMetadataManager.putAppendSession(renamed.getVolumeName(), renamed.getBucketName(),
+        renamed.getAppendOwnerSessionId(), dbToOpenKey);
+    return renamedOpenKeyInfo;
   }
 
   /**
    * Fails with KEY_NOT_FOUND unless the file of an append session is still {@link #isReachable reachable}. Must be
    * called under the bucket lock by allocate, hsync, close and recovery completion.
    *
+   * <p>Only an FSO bucket needs this. Elsewhere the committed row is addressed by its full key name and there is no
+   * directory tree keyed by object ID: a file leaves the namespace only when its own row is deleted, which
+   * invalidates the session, so the ownership check of the caller is the whole guard. The key name of the open
+   * record, which a rename rewrites, is the current path.
+   *
    * @return the {@link #getCurrentKeyName current path} of the file
    */
-  public static String checkReachable(OMMetadataManager omMetadataManager, OmKeyInfo openRecord) throws IOException {
+  public static String checkReachable(OMMetadataManager omMetadataManager, OmKeyInfo openRecord,
+      BucketLayout bucketLayout) throws IOException {
+    if (!bucketLayout.isFileSystemOptimized()) {
+      return openRecord.getKeyName();
+    }
     String volume = openRecord.getVolumeName();
     String bucket = openRecord.getBucketName();
     String keyName = getCurrentKeyName(omMetadataManager, omMetadataManager.getVolumeId(volume),
@@ -215,7 +272,8 @@ public final class OmAppendUtil {
       if (dbOpenKey == null) {
         return false;
       }
-      OmKeyInfo openRecord = omMetadataManager.getOpenKeyTable(BucketLayout.FILE_SYSTEM_OPTIMIZED).get(dbOpenKey);
+      BucketLayout bucketLayout = OzoneManagerUtils.getBucketLayout(omMetadataManager, volume, bucket);
+      OmKeyInfo openRecord = omMetadataManager.getOpenKeyTable(bucketLayout).get(dbOpenKey);
       if (openRecord == null) {
         // Must not fall back to the path of the request, which validateAndUpdateCache ignores for an indexed session.
         throw new OMException("Append session " + sessionId + " is not active",
@@ -224,9 +282,9 @@ public final class OmAppendUtil {
       // ponytail: once an ancestor directory was renamed this scans the directories of the bucket for every allocate,
       // hsync, close and renewal of the session, in addition to the scan in validateAndUpdateCache. Same upgrade path
       // as in getCurrentKeyName.
-      keyName = checkReachable(omMetadataManager, openRecord);
-      committed = !isNative ? null : omMetadataManager.getKeyTable(BucketLayout.FILE_SYSTEM_OPTIMIZED)
-          .get(getDbFileKey(omMetadataManager, openRecord));
+      keyName = checkReachable(omMetadataManager, openRecord, bucketLayout);
+      committed = !isNative ? null : omMetadataManager.getKeyTable(bucketLayout)
+          .get(getDbFileKey(omMetadataManager, openRecord, bucketLayout));
     } finally {
       omMetadataManager.getLock().releaseReadLock(BUCKET_LOCK, volume, bucket);
     }
@@ -248,23 +306,30 @@ public final class OmAppendUtil {
       return;
     }
     OMMetadataManager omMetadataManager = ozoneManager.getMetadataManager();
-    OzoneFileStatus status;
+    OmKeyInfo committed;
     omMetadataManager.getLock().acquireReadLock(BUCKET_LOCK, volume, bucket);
     try {
-      status = OMFileRequest.getOMKeyInfoIfExists(omMetadataManager, volume, bucket, keyName, 0,
-          ozoneManager.getDefaultReplicationConfig());
+      BucketLayout bucketLayout = OzoneManagerUtils.getBucketLayout(omMetadataManager, volume, bucket);
+      if (bucketLayout.isFileSystemOptimized()) {
+        OzoneFileStatus status = OMFileRequest.getOMKeyInfoIfExists(omMetadataManager, volume, bucket, keyName, 0,
+            ozoneManager.getDefaultReplicationConfig());
+        committed = status != null && status.isFile() ? status.getKeyInfo() : null;
+      } else {
+        committed = omMetadataManager.getKeyTable(bucketLayout)
+            .get(omMetadataManager.getOzoneKey(volume, bucket, keyName));
+      }
     } finally {
       omMetadataManager.getLock().releaseReadLock(BUCKET_LOCK, volume, bucket);
     }
-    if (status != null && status.isFile()) {
-      checkFileAcls(ozoneManager, request, status.getKeyInfo());
+    if (committed != null) {
+      checkFileAcls(ozoneManager, request, committed);
     }
   }
 
   /**
    * Checks WRITE in the ACLs of a committed file for the native authorizer. Its key level check looks for WRITE only
    * in the open key table and grants access when it finds nothing there (see KeyManagerImpl#checkAccess), which is the
-   * case for every committed FSO file. Admins and the owners of the volume and the bucket pass, as they do in
+   * case for every committed file. Admins and the owners of the volume and the bucket pass, as they do in
    * OzoneNativeAuthorizer. This only narrows the regular WRITE check, which covers the volume, bucket and prefix ACLs.
    */
   private static void checkFileAcls(OzoneManager ozoneManager, OMClientRequest request, OmKeyInfo committed)

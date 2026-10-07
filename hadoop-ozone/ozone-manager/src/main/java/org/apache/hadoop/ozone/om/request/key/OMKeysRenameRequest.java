@@ -191,6 +191,21 @@ public class OMKeysRenameRequest extends OMKeyRequest {
               fromKey);
           continue;
         }
+        // ponytail: the batch rename leaves a key with an append session in place instead of moving the session's
+        // open record with it. Do what OMKeyRenameRequest does, for every key, if a caller needs it.
+        if (fromKeyValue.getAppendOwnerSessionId() != null
+            || toKeyValue != null && toKeyValue.getAppendOwnerSessionId() != null) {
+          renameStatus = false;
+          // An existing destination was already reported above.
+          if (toKeyValue == null) {
+            unRenamedKeys.add(
+                unRenameKey.setFromKeyName(fromKeyName).setToKeyName(toKeyName)
+                    .build());
+          }
+          LOG.error("Received a request to rename a Key that an append session reserved {}",
+              fromKey);
+          continue;
+        }
 
         fromKeyValue = fromKeyValue.toBuilder()
             .setUpdateID(trxnLogIndex)

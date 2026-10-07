@@ -189,7 +189,7 @@ public class OMKeyDeleteRequestWithFSO extends OMKeyDeleteRequest {
       String invalidatedAppendOpenKey = null;
       if (omKeyInfo.getAppendOwnerSessionId() != null) {
         Pair<String, OmKeyInfo> invalidated =
-            OmAppendUtil.invalidateSessionOfDeletedFile(omMetadataManager, omKeyInfo, trxnLogIndex);
+            OmAppendUtil.invalidateSessionOfDeletedFile(omMetadataManager, omKeyInfo, trxnLogIndex, getBucketLayout());
         if (invalidated != null) {
           invalidatedAppendOpenKey = invalidated.getKey();
           deletedOpenKeyInfo = invalidated.getValue();

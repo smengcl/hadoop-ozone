@@ -24,6 +24,7 @@ import static org.apache.hadoop.ozone.OzoneConfigKeys.OZONE_OM_LEASE_SOFT_LIMIT_
 import static org.apache.hadoop.ozone.om.exceptions.OMException.ResultCodes.KEY_ALREADY_CLOSED;
 import static org.apache.hadoop.ozone.om.exceptions.OMException.ResultCodes.KEY_NOT_FOUND;
 import static org.apache.hadoop.ozone.om.exceptions.OMException.ResultCodes.KEY_UNDER_LEASE_SOFT_LIMIT_PERIOD;
+import static org.apache.hadoop.ozone.om.exceptions.OMException.ResultCodes.NOT_SUPPORTED_OPERATION;
 import static org.apache.hadoop.ozone.om.lock.OzoneManagerLock.LeveledResource.BUCKET_LOCK;
 import static org.apache.hadoop.ozone.om.upgrade.OMLayoutFeature.HBASE_SUPPORT;
 import static org.apache.hadoop.ozone.protocol.proto.OzoneManagerProtocolProtos.Type.RecoverLease;
@@ -59,12 +60,12 @@ import org.apache.hadoop.ozone.om.response.OMClientResponse;
 import org.apache.hadoop.ozone.om.response.file.OMRecoverLeaseResponse;
 import org.apache.hadoop.ozone.om.upgrade.DisallowedUntilLayoutVersion;
 import org.apache.hadoop.ozone.protocol.proto.OzoneManagerProtocolProtos.AppendSessionPhase;
+import org.apache.hadoop.ozone.protocol.proto.OzoneManagerProtocolProtos.KeyArgs;
 import org.apache.hadoop.ozone.protocol.proto.OzoneManagerProtocolProtos.OMRequest;
 import org.apache.hadoop.ozone.protocol.proto.OzoneManagerProtocolProtos.OMResponse;
 import org.apache.hadoop.ozone.protocol.proto.OzoneManagerProtocolProtos.RecoverLeaseRequest;
 import org.apache.hadoop.ozone.protocol.proto.OzoneManagerProtocolProtos.RecoverLeaseResponse;
 import org.apache.hadoop.ozone.security.acl.IAccessAuthorizer;
-import org.apache.hadoop.ozone.security.acl.OzoneObj;
 import org.apache.hadoop.util.Time;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -85,8 +86,8 @@ public class OMRecoverLeaseRequest extends OMKeyRequest {
 
   private OMMetadataManager omMetadataManager;
 
-  public OMRecoverLeaseRequest(OMRequest omRequest) {
-    super(omRequest, BucketLayout.FILE_SYSTEM_OPTIMIZED);
+  public OMRecoverLeaseRequest(OMRequest omRequest, BucketLayout bucketLayout) {
+    super(omRequest, bucketLayout);
     RecoverLeaseRequest recoverLeaseRequest = getOmRequest()
         .getRecoverLeaseRequest();
 
@@ -108,18 +109,20 @@ public class OMRecoverLeaseRequest extends OMKeyRequest {
         validateAndNormalizeKey(ozoneManager.getEnableFileSystemPaths(),
             keyPath, getBucketLayout());
 
-    // check ACL
-    checkKeyAcls(ozoneManager,
-        recoverLeaseRequest.getVolumeName(),
-        recoverLeaseRequest.getBucketName(),
-        recoverLeaseRequest.getKeyName(),
-        IAccessAuthorizer.ACLType.WRITE, OzoneObj.ResourceType.KEY);
-    OmAppendUtil.checkNativeFileAcls(ozoneManager, this, recoverLeaseRequest.getVolumeName(),
-        recoverLeaseRequest.getBucketName(), normalizedKeyPath);
+    // The file is in the bucket that a link resolves to, as for the append that reserved it.
+    KeyArgs resolvedArgs = resolveBucketAndCheckKeyAcls(KeyArgs.newBuilder()
+        .setVolumeName(recoverLeaseRequest.getVolumeName())
+        .setBucketName(recoverLeaseRequest.getBucketName())
+        .setKeyName(recoverLeaseRequest.getKeyName())
+        .build(), ozoneManager, IAccessAuthorizer.ACLType.WRITE);
+    OmAppendUtil.checkNativeFileAcls(ozoneManager, this, resolvedArgs.getVolumeName(),
+        resolvedArgs.getBucketName(), normalizedKeyPath);
 
     return request.toBuilder()
         .setRecoverLeaseRequest(
             recoverLeaseRequest.toBuilder()
+                .setVolumeName(resolvedArgs.getVolumeName())
+                .setBucketName(resolvedArgs.getBucketName())
                 .setKeyName(normalizedKeyPath))
         .build();
   }
@@ -194,7 +197,8 @@ public class OMRecoverLeaseRequest extends OMKeyRequest {
     String errMsg = "Cannot recover file : " + keyName
         + " as parent directory doesn't exist";
 
-    OmFSOFile fsoFile =  new OmFSOFile.Builder()
+    // The rows of a LEGACY key are addressed by its full key name.
+    OmFSOFile fsoFile = !getBucketLayout().isFileSystemOptimized() ? null : new OmFSOFile.Builder()
         .setVolumeName(volumeName)
         .setBucketName(bucketName)
         .setKeyName(keyName)
@@ -202,7 +206,8 @@ public class OMRecoverLeaseRequest extends OMKeyRequest {
         .setErrMsg(errMsg)
         .build();
 
-    String dbFileKey = fsoFile.getOzonePathKey();
+    String dbFileKey = fsoFile != null ? fsoFile.getOzonePathKey()
+        : omMetadataManager.getOzoneKey(volumeName, bucketName, keyName);
 
     OmKeyInfo keyInfo = getKey(dbFileKey);
     if (keyInfo == null) {
@@ -211,7 +216,9 @@ public class OMRecoverLeaseRequest extends OMKeyRequest {
 
     final Long appendSessionId = keyInfo.getAppendOwnerSessionId();
     if (appendSessionId != null) {
-      startAppendRecovery(ozoneManager, fsoFile, appendSessionId, transactionLogIndex);
+      startAppendRecovery(ozoneManager, fsoFile != null ? fsoFile.getOpenFileName(appendSessionId)
+          : omMetadataManager.getOpenKey(volumeName, bucketName, keyName, appendSessionId), appendSessionId,
+          transactionLogIndex);
       return buildResponse(ozoneManager, keyInfo);
     }
 
@@ -219,6 +226,12 @@ public class OMRecoverLeaseRequest extends OMKeyRequest {
     if (writerId == null) {
       // if file is closed, do nothing and return right away.
       throw new OMException("Key: " + keyName + " is already closed", KEY_ALREADY_CLOSED);
+    }
+    if (fsoFile == null) {
+      // ponytail: a LEGACY bucket recovers append sessions only, as it rejected every lease recovery before append.
+      // The hsync branch below needs LEGACY open key addressing and its own tests to lift this.
+      throw new OMException("Bucket " + bucketName + " is not FSO layout. It does not support lease recovery of an"
+          + " hsync'ed key", NOT_SUPPORTED_OPERATION);
     }
 
     dbOpenFileKey = fsoFile.getOpenFileName(Long.parseLong(writerId));
@@ -255,11 +268,13 @@ public class OMRecoverLeaseRequest extends OMKeyRequest {
   /**
    * Fences the append session that owns the file: ACTIVE becomes RECOVERING once the lease is past the soft limit
    * (or with force). A session already RECOVERING is joined. The session stays in the append session index.
+   *
+   * @param dbOpenKeyOfFile open key table DB key of the session at the location of the file
    */
-  private void startAppendRecovery(OzoneManager ozoneManager, OmFSOFile fsoFile, long sessionId,
+  private void startAppendRecovery(OzoneManager ozoneManager, String dbOpenKeyOfFile, long sessionId,
       long transactionLogIndex) throws IOException {
     final String indexedOpenKey = omMetadataManager.getAppendSessionOpenKey(volumeName, bucketName, sessionId);
-    dbOpenFileKey = indexedOpenKey != null ? indexedOpenKey : fsoFile.getOpenFileName(sessionId);
+    dbOpenFileKey = indexedOpenKey != null ? indexedOpenKey : dbOpenKeyOfFile;
     openKeyInfo = omMetadataManager.getOpenKeyTable(getBucketLayout()).get(dbOpenFileKey);
     final OmAppendSession session = openKeyInfo == null ? null : openKeyInfo.getAppendSession();
     if (session == null || session.getPhase() == AppendSessionPhase.APPEND_INVALIDATED) {

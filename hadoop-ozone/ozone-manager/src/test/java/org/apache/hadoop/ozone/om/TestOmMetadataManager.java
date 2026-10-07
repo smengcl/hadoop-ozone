@@ -1287,9 +1287,9 @@ public class TestOmMetadataManager {
    * Append sessions are classified by phase and last lease renewal, never by the creation or modification time
    * that their open record copies from the file.
    */
-  @Test
-  public void testGetExpiredOpenKeysAppendSessions() throws Exception {
-    final BucketLayout layout = BucketLayout.FILE_SYSTEM_OPTIMIZED;
+  @ParameterizedTest
+  @EnumSource(value = BucketLayout.class, names = {"FILE_SYSTEM_OPTIMIZED", "LEGACY"})
+  public void testGetExpiredOpenKeysAppendSessions(BucketLayout layout) throws Exception {
     final String volumeName = UUID.randomUUID().toString();
     final String bucketName = UUID.randomUUID().toString();
     OMRequestTestUtils.addVolumeAndBucketToDB(volumeName, bucketName, omMetadataManager, layout);
@@ -1322,13 +1322,12 @@ public class TestOmMetadataManager {
     // Ordinary and hsync open keys behave as before.
     final OmKeyInfo.Builder ordinary = OMRequestTestUtils.createOmKeyInfo(volumeName, bucketName, "ordinary",
         RatisReplicationConfig.getInstance(ONE)).setParentObjectID(1L).setCreationTime(old);
-    final String ordinaryKey = OMRequestTestUtils.addFileToKeyTable(true, false, "ordinary", ordinary.build(), 1008,
-        0L, omMetadataManager);
+    final String ordinaryKey = addFile(true, ordinary.build(), 1008);
     final OmKeyInfo hsync = OMRequestTestUtils.createOmKeyInfo(volumeName, bucketName, "hsync",
             RatisReplicationConfig.getInstance(ONE)).setParentObjectID(1L).setModificationTime(old)
         .addMetadata(OzoneConsts.HSYNC_CLIENT_ID, "1009").build();
-    OMRequestTestUtils.addFileToKeyTable(false, false, "hsync", hsync, 1009, 0L, omMetadataManager);
-    OMRequestTestUtils.addFileToKeyTable(true, false, "hsync", hsync, 1009, 0L, omMetadataManager);
+    addFile(false, hsync, 1009);
+    addFile(true, hsync, 1009);
 
     final ExpiredOpenKeys expired = omMetadataManager.getExpiredOpenKeys(expireThreshold, 100, layout, leaseThreshold);
 
@@ -1368,11 +1367,27 @@ public class TestOmMetadataManager {
             RatisReplicationConfig.getInstance(ONE))
         .setParentObjectID(1L).setCreationTime(fileTime).setModificationTime(fileTime).setDataSize(300);
     if (owned) {
-      OMRequestTestUtils.addFileToKeyTable(false, false, fileName, file.setAppendOwnerSessionId(sessionId).build(),
-          sessionId, 0L, omMetadataManager);
+      addFile(false, file.setAppendOwnerSessionId(sessionId).build(), sessionId);
     }
-    return OMRequestTestUtils.addFileToKeyTable(true, false, fileName,
-        file.setAppendOwnerSessionId(null).setAppendSession(session).build(), sessionId, 0L, omMetadataManager);
+    return addFile(true, file.setAppendOwnerSessionId(null).setAppendSession(session).build(), sessionId);
+  }
+
+  /**
+   * Adds a row to the key table or the open key table of the bucket's layout, to the DB only.
+   *
+   * @return the DB key of the row
+   */
+  private String addFile(boolean open, OmKeyInfo keyInfo, long clientId) throws Exception {
+    final String volume = keyInfo.getVolumeName();
+    final String bucket = keyInfo.getBucketName();
+    final String key = keyInfo.getKeyName();
+    if (omMetadataManager.getBucketTable().get(omMetadataManager.getBucketKey(volume, bucket)).getBucketLayout()
+        .isFileSystemOptimized()) {
+      return OMRequestTestUtils.addFileToKeyTable(open, false, key, keyInfo, clientId, 0L, omMetadataManager);
+    }
+    OMRequestTestUtils.addKeyToTable(open, false, keyInfo, clientId, 0L, omMetadataManager);
+    return open ? omMetadataManager.getOpenKey(volume, bucket, key, clientId)
+        : omMetadataManager.getOzoneKey(volume, bucket, key);
   }
 
   private List<String> getOpenKeyNames(
@@ -1405,8 +1420,13 @@ public class TestOmMetadataManager {
     omMetadataManager.getOpenKeyTable(layout).put("/1/2/3/file/101",
         openKey.setAppendSession(new OmAppendSession(AppendSessionPhase.APPEND_INVALIDATED, 10, 1, 1, 1)).build());
     omMetadataManager.getOpenKeyTable(layout).put("/1/2/3/file/102", openKey.setAppendSession(null).build());
+    // The open key of a LEGACY bucket carries the key name, which may contain the delimiter.
+    omMetadataManager.getOpenKeyTable(BucketLayout.LEGACY).put("/vol/legacy/dir/file/103",
+        openKey.setBucketName("legacy").setAppendSession(OmAppendSession.newActive(10, 1, 1000)).build());
 
     assertEquals("/1/2/3/file/100", omMetadataManager.getAppendSessionOpenKey("vol", "bucket", 100));
+    assertEquals("/vol/legacy/dir/file/103", omMetadataManager.getAppendSessionOpenKey("vol", "legacy", 103));
+    assertNull(omMetadataManager.getAppendSessionOpenKey("vol", "bucket", 103));
     assertNull(omMetadataManager.getAppendSessionOpenKey("vol", "bucket", 101));
     assertNull(omMetadataManager.getAppendSessionOpenKey("vol", "bucket", 102));
     assertNull(omMetadataManager.getAppendSessionOpenKey("vol", "otherbucket", 100));

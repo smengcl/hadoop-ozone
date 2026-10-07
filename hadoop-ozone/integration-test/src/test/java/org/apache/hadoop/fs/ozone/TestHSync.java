@@ -2237,23 +2237,88 @@ public class TestHSync {
     }
   }
 
+  /**
+   * The rows of a file in a LEGACY bucket are addressed by its name: renaming its directory renames the file itself,
+   * and has to move the session with it.
+   */
   @Test
-  public void testAppendNotSupported() throws Exception {
+  public void testAppendInLegacyBucket() throws Exception {
     final String legacyBucket = uniqueObjectName("legacy");
     DataTestUtil.createBucket(client, bucket.getVolumeName(),
         BucketArgs.newBuilder().setBucketLayout(BucketLayout.LEGACY).build(), legacyBucket);
+    try (FileSystem writerFs = newOfs(); FileSystem fs = newOfs()) {
+      final Path dir = new Path(ofsBucketPath(legacyBucket), "dir");
+      final Path file = new Path(dir, "file");
+      final Path renamedDir = new Path(ofsBucketPath(legacyBucket), "renamedDir");
+      final Path renamed = new Path(renamedDir, "file");
+      final byte[] prefix = createFile(fs, file, 100);
+      final byte[] beforeRename = randomBytes(100);
+      final byte[] afterRename = randomBytes(BLOCK_SIZE + 100);
+      final byte[] beforeClose = randomBytes(100);
+      assertThat(fs.hasPathCapability(file, CommonPathCapabilities.FS_APPEND)).isTrue();
+
+      try (FSDataOutputStream out = fs.append(file)) {
+        assertThat(out.getPos()).isEqualTo(prefix.length);
+        out.write(beforeRename);
+        out.hsync();
+        assertHsyncedContent(fs, file, prefix, beforeRename);
+        assertThat(((LeaseRecoverable) fs).isFileClosed(file)).isFalse();
+        assertThat(fs.rename(dir, renamedDir)).isTrue();
+        out.write(afterRename);
+        out.hsync();
+        assertHsyncedContent(fs, renamed, prefix, beforeRename, afterRename);
+        out.write(beforeClose);
+      }
+      final byte[] closed = Bytes.concat(prefix, beforeRename, afterRename, beforeClose);
+      assertFileContent(fs, renamed, closed);
+      assertThat(((LeaseRecoverable) fs).isFileClosed(renamed)).isTrue();
+      assertThat(fs.exists(file)).isFalse();
+
+      // Lease recovery fences an abandoned appender and keeps what it synced.
+      final byte[] synced = randomBytes(100);
+      final FSDataOutputStream abandoned = writerFs.append(renamed);
+      try {
+        abandoned.write(synced);
+        abandoned.hsync();
+        abandoned.write(randomBytes(100));
+        assertThat(((LeaseRecoverable) fs).recoverLease(renamed)).isTrue();
+        assertThat(((LeaseRecoverable) fs).isFileClosed(renamed)).isTrue();
+        assertFileContent(fs, renamed, closed, synced);
+        assertThatThrownBy(abandoned::hsync).isInstanceOf(IOException.class);
+      } finally {
+        IOUtils.closeQuietly(abandoned);
+      }
+
+      // A delete ends the session, and the appender cannot bring the file back.
+      final FSDataOutputStream out = fs.append(renamed);
+      try {
+        out.write(randomBytes(100));
+        out.hsync();
+        assertThat(fs.delete(renamed, false)).isTrue();
+        out.write(randomBytes(100));
+        assertThatThrownBy(out::close).isInstanceOf(IOException.class);
+      } finally {
+        IOUtils.closeQuietly(out);
+      }
+      assertThat(fs.exists(renamed)).isFalse();
+    }
+  }
+
+  @Test
+  public void testAppendNotSupported() throws Exception {
+    // The file systems refuse an OBJECT_STORE bucket, so only the object API reaches OM.
+    final OzoneBucket obsBucket = DataTestUtil.createBucket(client, bucket.getVolumeName(),
+        BucketArgs.newBuilder().setBucketLayout(BucketLayout.OBJECT_STORE).build(), uniqueObjectName("obs"));
+    DataTestUtil.createKey(obsBucket, "key", randomBytes(10));
+    assertThatThrownBy(() -> obsBucket.appendFile("key")).isInstanceOfSatisfying(OMException.class,
+        e -> assertThat(e.getResult()).isEqualTo(OMException.ResultCodes.APPEND_NOT_SUPPORTED))
+        .hasMessageContaining("OBJECT_STORE layout");
+    assertThat(obsBucket.getKey("key").getDataSize()).isEqualTo(10);
+
     try (FileSystem fs = newOfs()) {
       final Path file = newPath(fs);
       final byte[] data = createFile(fs, file, 10);
-      final Path legacyFile = new Path(ofsBucketPath(legacyBucket), "file");
-      final byte[] legacyData = createFile(fs, legacyFile, 10);
-
       assertThat(fs.hasPathCapability(file, CommonPathCapabilities.FS_APPEND)).isTrue();
-      assertThat(fs.hasPathCapability(legacyFile, CommonPathCapabilities.FS_APPEND)).isFalse();
-      assertThatThrownBy(() -> fs.append(legacyFile)).isInstanceOfSatisfying(OMException.class,
-          e -> assertThat(e.getResult()).isEqualTo(OMException.ResultCodes.APPEND_NOT_SUPPORTED))
-          .hasMessageContaining("does not support append");
-      assertFileContent(fs, legacyFile, legacyData);
 
       cluster.getOzoneManager().getConfiguration().setBoolean(OMConfigKeys.OZONE_OM_APPEND_ENABLED, false);
       try {

@@ -353,9 +353,12 @@ public class BasicOzoneFileSystem extends FileSystem {
     return new FSDataOutputStream(createFSOutputStream(out), statistics, out.getAppendPrefixLength());
   }
 
-  /** @return true if files at the path can be appended to: append is implemented for FSO buckets only. */
+  /**
+   * @return true if files at the path can be appended to: append is implemented for FSO and LEGACY buckets, the only
+   *     layouts that this file system accepts.
+   */
   protected boolean isAppendSupported(Path path) {
-    return adapter.isFSOptimizedBucket();
+    return true;
   }
 
   private class RenameIterator extends OzoneListingIterator {

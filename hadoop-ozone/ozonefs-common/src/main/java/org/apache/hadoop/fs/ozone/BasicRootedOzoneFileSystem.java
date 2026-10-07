@@ -357,8 +357,8 @@ public class BasicRootedOzoneFileSystem extends FileSystem {
   }
 
   /**
-   * @return true if files at the path can be appended to: append is implemented for FSO buckets only.
-   *     Looks up the bucket of the path.
+   * @return true if files at the path can be appended to: append is implemented for FSO and LEGACY buckets, the only
+   *     layouts that this file system accepts. Looks up the bucket of the path.
    */
   protected boolean isAppendSupported(Path path) throws IOException {
     OFSPath ofsPath = new OFSPath(pathToKey(path), ozoneConfiguration);
@@ -366,7 +366,8 @@ public class BasicRootedOzoneFileSystem extends FileSystem {
       return false;
     }
     try {
-      return adapterImpl.getBucket(ofsPath, false).getBucketLayout().isFileSystemOptimized();
+      adapterImpl.getBucket(ofsPath, false);
+      return true;
     } catch (OMException e) {
       if (e.getResult() == VOLUME_NOT_FOUND || e.getResult() == BUCKET_NOT_FOUND) {
         return false;

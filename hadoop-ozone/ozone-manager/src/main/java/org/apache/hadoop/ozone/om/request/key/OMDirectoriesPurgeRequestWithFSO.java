@@ -396,7 +396,8 @@ public class OMDirectoriesPurgeRequestWithFSO extends OMKeyRequest {
           if (OmAppendUtil.isOwnedBy(omMetadataManager.getFileTable().get(processed.pathKey),
               purgedFile.getAppendOwnerSessionId())) {
             Pair<String, OmKeyInfo> invalidated =
-                OmAppendUtil.invalidateSessionOfDeletedFile(omMetadataManager, purgedFile, trxnLogIndex);
+                OmAppendUtil.invalidateSessionOfDeletedFile(omMetadataManager, purgedFile, trxnLogIndex,
+                    getBucketLayout());
             if (invalidated != null) {
               result.openKeyInfoMap.put(invalidated.getKey(), invalidated.getValue());
             }

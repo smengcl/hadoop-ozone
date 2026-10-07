@@ -203,7 +203,7 @@ public abstract class OMKeyRequest extends OMClientRequest {
         clientId)) {
       checkKeyAclsInOpenKeyTable(ozoneManager, resolvedArgs.getVolumeName(), resolvedArgs.getBucketName(),
           keyArgs.getKeyName(), IAccessAuthorizer.ACLType.WRITE, clientId);
-      if (recovery && getBucketLayout().isFileSystemOptimized()) {
+      if (recovery && getBucketLayout() != BucketLayout.OBJECT_STORE) {
         OmAppendUtil.checkNativeFileAcls(ozoneManager, this, resolvedArgs.getVolumeName(),
             resolvedArgs.getBucketName(), keyArgs.getKeyName());
       }

@@ -86,6 +86,7 @@ import org.junit.jupiter.api.TestMethodOrder;
 import org.junit.jupiter.api.io.TempDir;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.CsvSource;
+import org.junit.jupiter.params.provider.EnumSource;
 import org.mockito.Mockito;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -424,14 +425,14 @@ class TestOpenKeyCleanupService {
    * A renewing append session survives although its open record is as old as the file. A session whose lease passed
    * the hard limit gets a recovery commit. The open record of a deleted file is deleted together with its blocks.
    */
-  @Test
-  public void testCleanupAppendSessions() throws Exception {
+  @ParameterizedTest
+  @EnumSource(value = BucketLayout.class, names = {"FILE_SYSTEM_OPTIMIZED", "LEGACY"})
+  public void testCleanupAppendSessions(BucketLayout layout) throws Exception {
     OpenKeyCleanupService openKeyCleanupService = (OpenKeyCleanupService) keyManager.getOpenKeyCleanupService();
     openKeyCleanupService.suspend();
     // wait for submitted tasks to complete
     Thread.sleep(SERVICE_INTERVAL);
 
-    final BucketLayout layout = BucketLayout.FILE_SYSTEM_OPTIMIZED;
     final String volume = UUID.randomUUID().toString();
     final String bucket = UUID.randomUUID().toString();
     createVolumeAndBucket(volume, bucket, layout);
@@ -507,12 +508,25 @@ class TestOpenKeyCleanupService {
             new OmKeyLocationInfoGroup(0L, Collections.singletonList(block)))
         .setParentObjectID(omMetadataManager.getBucketId(volume, bucket))
         .setCreationTime(fileTime).setModificationTime(fileTime);
-    if (owned) {
-      OMRequestTestUtils.addFileToKeyTable(false, false, fileName, file.setAppendOwnerSessionId(sessionId).build(),
-          sessionId, 0L, omMetadataManager);
+    final boolean fso = omMetadataManager.getBucketTable().get(omMetadataManager.getBucketKey(volume, bucket))
+        .getBucketLayout().isFileSystemOptimized();
+    final OmKeyInfo openRecord = file.setAppendSession(session).build();
+    final String openKey;
+    if (fso) {
+      if (owned) {
+        OMRequestTestUtils.addFileToKeyTable(false, false, fileName, file.setAppendSession(null)
+            .setAppendOwnerSessionId(sessionId).build(), sessionId, 0L, omMetadataManager);
+      }
+      openKey = OMRequestTestUtils.addFileToKeyTable(true, false, fileName, openRecord, sessionId, 0L,
+          omMetadataManager);
+    } else {
+      if (owned) {
+        OMRequestTestUtils.addKeyToTable(false, false, file.setAppendSession(null).setAppendOwnerSessionId(sessionId)
+            .build(), sessionId, 0L, omMetadataManager);
+      }
+      OMRequestTestUtils.addKeyToTable(true, false, openRecord, sessionId, 0L, omMetadataManager);
+      openKey = omMetadataManager.getOpenKey(volume, bucket, fileName, sessionId);
     }
-    final String openKey = OMRequestTestUtils.addFileToKeyTable(true, false, fileName,
-        file.setAppendOwnerSessionId(null).setAppendSession(session).build(), sessionId, 0L, omMetadataManager);
     if (session.getPhase() != APPEND_INVALIDATED) {
       omMetadataManager.putAppendSession(volume, bucket, sessionId, openKey);
     }

@@ -32,12 +32,13 @@ import org.apache.hadoop.ozone.protocol.proto.OzoneManagerProtocolProtos.OMRespo
  */
 public class OMAppendLeaseRenewResponse extends OmKeyResponse {
 
-  private Map<String, OmKeyInfo> renewedOpenKeys;
+  private Map<BucketLayout, Map<String, OmKeyInfo>> renewedOpenKeys;
 
   /**
-   * @param renewedOpenKeys renewed open records by their open file table DB key
+   * @param renewedOpenKeys renewed open records by their open key table DB key, for each bucket layout
    */
-  public OMAppendLeaseRenewResponse(@Nonnull OMResponse omResponse, @Nonnull Map<String, OmKeyInfo> renewedOpenKeys) {
+  public OMAppendLeaseRenewResponse(@Nonnull OMResponse omResponse,
+      @Nonnull Map<BucketLayout, Map<String, OmKeyInfo>> renewedOpenKeys) {
     super(omResponse, BucketLayout.FILE_SYSTEM_OPTIMIZED);
     this.renewedOpenKeys = renewedOpenKeys;
   }
@@ -54,9 +55,11 @@ public class OMAppendLeaseRenewResponse extends OmKeyResponse {
   @Override
   protected void addToDBBatch(OMMetadataManager omMetadataManager, BatchOperation batchOperation)
       throws IOException {
-    for (Map.Entry<String, OmKeyInfo> renewed : renewedOpenKeys.entrySet()) {
-      omMetadataManager.getOpenKeyTable(getBucketLayout()).putWithBatch(batchOperation, renewed.getKey(),
-          renewed.getValue());
+    for (Map.Entry<BucketLayout, Map<String, OmKeyInfo>> layout : renewedOpenKeys.entrySet()) {
+      for (Map.Entry<String, OmKeyInfo> renewed : layout.getValue().entrySet()) {
+        omMetadataManager.getOpenKeyTable(layout.getKey()).putWithBatch(batchOperation, renewed.getKey(),
+            renewed.getValue());
+      }
     }
   }
 }

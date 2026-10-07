@@ -29,6 +29,7 @@ import static org.mockito.Mockito.any;
 import static org.mockito.Mockito.anyInt;
 import static org.mockito.Mockito.anyString;
 import static org.mockito.Mockito.doReturn;
+import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.eq;
 import static org.mockito.Mockito.isNull;
 import static org.mockito.Mockito.mock;
@@ -342,8 +343,6 @@ public class TestBasicOzoneFileSystems {
 
     BasicOzoneClientAdapterImpl o3fsAdapter = mock(BasicOzoneClientAdapterImpl.class);
     BasicOzoneFileSystem o3fs = newO3fs(o3fsAdapter);
-    assertFalse(o3fs.isAppendSupported(path));
-    when(o3fsAdapter.isFSOptimizedBucket()).thenReturn(true);
     assertTrue(o3fs.isAppendSupported(path));
 
     BasicRootedOzoneClientAdapterImpl ofsAdapter = mock(BasicRootedOzoneClientAdapterImpl.class);
@@ -355,10 +354,13 @@ public class TestBasicOzoneFileSystems {
     assertFalse(ofs.isAppendSupported(new Path("/")));
     assertFalse(ofs.isAppendSupported(new Path("/vol")));
     when(bucket.getBucketLayout()).thenReturn(BucketLayout.LEGACY);
-    assertFalse(ofs.isAppendSupported(path));
+    assertTrue(ofs.isAppendSupported(path));
     when(ofsAdapter.getBucket(any(OFSPath.class), eq(false)))
         .thenThrow(new OMException("no bucket", OMException.ResultCodes.BUCKET_NOT_FOUND));
     assertFalse(ofs.isAppendSupported(path));
+    // The adapter refuses an OBJECT_STORE bucket, like for every other operation.
+    doThrow(new IllegalArgumentException("OBJECT_STORE")).when(ofsAdapter).getBucket(any(OFSPath.class), eq(false));
+    assertThrows(IllegalArgumentException.class, () -> ofs.isAppendSupported(path));
   }
 
   private static BasicOzoneFileSystem newO3fs(BasicOzoneClientAdapterImpl adapter) throws Exception {

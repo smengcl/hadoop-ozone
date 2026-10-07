@@ -23,7 +23,6 @@ import org.apache.hadoop.hdds.utils.db.BatchOperation;
 import org.apache.hadoop.ozone.om.OMMetadataManager;
 import org.apache.hadoop.ozone.om.helpers.BucketLayout;
 import org.apache.hadoop.ozone.om.helpers.OmKeyInfo;
-import org.apache.hadoop.ozone.om.request.file.OMFileRequest;
 import org.apache.hadoop.ozone.om.response.key.OmKeyResponse;
 import org.apache.hadoop.ozone.protocol.proto.OzoneManagerProtocolProtos.OMResponse;
 
@@ -33,19 +32,22 @@ import org.apache.hadoop.ozone.protocol.proto.OzoneManagerProtocolProtos.OMRespo
 public class OMFileAppendResponse extends OmKeyResponse {
 
   private OmKeyInfo committedKeyInfo;
+  private String dbFileKey;
   private OmKeyInfo openKeyInfo;
-  private long sessionId;
-  private long volumeId;
-  private long bucketId;
+  private String dbOpenKey;
 
+  /**
+   * @param dbFileKey key table DB key of the reserved committed file
+   * @param dbOpenKey open key table DB key of the session's open record
+   */
   public OMFileAppendResponse(@Nonnull OMResponse omResponse, @Nonnull OmKeyInfo committedKeyInfo,
-      @Nonnull OmKeyInfo openKeyInfo, long sessionId, long volumeId, long bucketId) {
-    super(omResponse, BucketLayout.FILE_SYSTEM_OPTIMIZED);
+      @Nonnull String dbFileKey, @Nonnull OmKeyInfo openKeyInfo, @Nonnull String dbOpenKey,
+      @Nonnull BucketLayout bucketLayout) {
+    super(omResponse, bucketLayout);
     this.committedKeyInfo = committedKeyInfo;
+    this.dbFileKey = dbFileKey;
     this.openKeyInfo = openKeyInfo;
-    this.sessionId = sessionId;
-    this.volumeId = volumeId;
-    this.bucketId = bucketId;
+    this.dbOpenKey = dbOpenKey;
   }
 
   /**
@@ -60,7 +62,7 @@ public class OMFileAppendResponse extends OmKeyResponse {
   @Override
   protected void addToDBBatch(OMMetadataManager omMetadataManager, BatchOperation batchOperation)
       throws IOException {
-    OMFileRequest.addToFileTable(omMetadataManager, batchOperation, committedKeyInfo, volumeId, bucketId);
-    OMFileRequest.addToOpenFileTable(omMetadataManager, batchOperation, openKeyInfo, sessionId, volumeId, bucketId);
+    omMetadataManager.getKeyTable(getBucketLayout()).putWithBatch(batchOperation, dbFileKey, committedKeyInfo);
+    omMetadataManager.getOpenKeyTable(getBucketLayout()).putWithBatch(batchOperation, dbOpenKey, openKeyInfo);
   }
 }

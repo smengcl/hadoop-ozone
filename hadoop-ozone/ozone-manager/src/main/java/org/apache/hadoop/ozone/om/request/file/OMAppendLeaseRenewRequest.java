@@ -20,6 +20,7 @@ package org.apache.hadoop.ozone.om.request.file;
 import static org.apache.hadoop.ozone.om.lock.OzoneManagerLock.LeveledResource.BUCKET_LOCK;
 
 import java.io.IOException;
+import java.util.EnumMap;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.Map;
@@ -32,6 +33,7 @@ import org.apache.hadoop.ozone.om.ResolvedBucket;
 import org.apache.hadoop.ozone.om.exceptions.OMException;
 import org.apache.hadoop.ozone.om.execution.flowcontrol.ExecutionContext;
 import org.apache.hadoop.ozone.om.helpers.BucketLayout;
+import org.apache.hadoop.ozone.om.helpers.OmBucketInfo;
 import org.apache.hadoop.ozone.om.helpers.OmKeyInfo;
 import org.apache.hadoop.ozone.om.request.OMClientRequest;
 import org.apache.hadoop.ozone.om.request.util.OmAppendUtil;
@@ -113,7 +115,7 @@ public class OMAppendLeaseRenewRequest extends OMClientRequest {
     OMClientResponse omClientResponse;
     try {
       RenewAppendLeasesResponse.Builder results = RenewAppendLeasesResponse.newBuilder();
-      Map<String, OmKeyInfo> renewedOpenKeys = new HashMap<>();
+      Map<BucketLayout, Map<String, OmKeyInfo>> renewedOpenKeys = new EnumMap<>(BucketLayout.class);
       for (AppendSessionKey session : renewRequest.getSessionsList()) {
         results.addRenewed(renew(ozoneManager.getMetadataManager(), session, renewRequest.getRenewalTime(),
             trxnLogIndex, renewedOpenKeys));
@@ -138,14 +140,21 @@ public class OMAppendLeaseRenewRequest extends OMClientRequest {
    * time.
    */
   private boolean renew(OMMetadataManager omMetadataManager, AppendSessionKey session, long renewalTime,
-      long trxnLogIndex, Map<String, OmKeyInfo> renewedOpenKeys) throws IOException {
+      long trxnLogIndex, Map<BucketLayout, Map<String, OmKeyInfo>> renewedOpenKeys) throws IOException {
     String volumeName = session.getVolumeName();
     String bucketName = session.getBucketName();
     mergeOmLockDetails(omMetadataManager.getLock().acquireWriteLock(BUCKET_LOCK, volumeName, bucketName));
     try {
       String dbOpenKey = omMetadataManager.getAppendSessionOpenKey(volumeName, bucketName, session.getSessionId());
-      Table<String, OmKeyInfo> openKeyTable = omMetadataManager.getOpenKeyTable(BucketLayout.FILE_SYSTEM_OPTIMIZED);
-      OmKeyInfo openRecord = dbOpenKey == null ? null : openKeyTable.get(dbOpenKey);
+      // The bucket layout tells which open key table holds the session.
+      OmBucketInfo bucketInfo = dbOpenKey == null ? null
+          : omMetadataManager.getBucketTable().get(omMetadataManager.getBucketKey(volumeName, bucketName));
+      if (bucketInfo == null) {
+        return false;
+      }
+      BucketLayout bucketLayout = bucketInfo.getBucketLayout();
+      Table<String, OmKeyInfo> openKeyTable = omMetadataManager.getOpenKeyTable(bucketLayout);
+      OmKeyInfo openRecord = openKeyTable.get(dbOpenKey);
       if (openRecord == null || openRecord.getAppendSession() == null
           || !openRecord.getAppendSession().isActive()) {
         return false;
@@ -156,7 +165,7 @@ public class OMAppendLeaseRenewRequest extends OMClientRequest {
           .setUpdateID(trxnLogIndex)
           .build();
       openKeyTable.addCacheEntry(dbOpenKey, renewed, trxnLogIndex);
-      renewedOpenKeys.put(dbOpenKey, renewed);
+      renewedOpenKeys.computeIfAbsent(bucketLayout, layout -> new HashMap<>()).put(dbOpenKey, renewed);
       return true;
     } finally {
       mergeOmLockDetails(omMetadataManager.getLock().releaseWriteLock(BUCKET_LOCK, volumeName, bucketName));

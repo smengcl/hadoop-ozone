@@ -43,6 +43,7 @@ import org.apache.hadoop.ozone.om.helpers.OmKeyInfo;
 import org.apache.hadoop.ozone.om.helpers.OzoneFSUtils;
 import org.apache.hadoop.ozone.om.helpers.OzoneFileStatus;
 import org.apache.hadoop.ozone.om.request.file.OMFileRequest;
+import org.apache.hadoop.ozone.om.request.util.OmAppendUtil;
 import org.apache.hadoop.ozone.om.request.util.OmResponseUtil;
 import org.apache.hadoop.ozone.om.response.OMClientResponse;
 import org.apache.hadoop.ozone.om.response.key.OMKeyRenameResponseWithFSO;
@@ -353,25 +354,10 @@ public class OMKeyRenameRequestWithFSO extends OMKeyRenameRequest {
               CacheValue.get(trxnLogIndex, fromKeyValue));
 
       if (dbFromOpenKey != null) {
-        Table<String, OmKeyInfo> openFileTable = metadataMgr.getOpenKeyTable(getBucketLayout());
-        OmKeyInfo openKeyInfo = openFileTable.get(dbFromOpenKey);
-        if (openKeyInfo != null) {
-          dbToOpenKey = ommm.getOpenFileName(volumeId, bucketId, fromKeyValue.getParentObjectID(), toKeyFileName,
-              appendSessionId);
-          // Only the location changes. The session, including its lease renewal time, stays as it is.
-          renamedOpenKeyInfo = openKeyInfo.toBuilder()
-              .setKeyName(toKeyName.isEmpty() ? toKeyFileName : toKeyName)
-              .setParentObjectID(fromKeyValue.getParentObjectID())
-              .setUpdateID(trxnLogIndex)
-              .build();
-          openFileTable.addCacheEntry(dbFromOpenKey, trxnLogIndex);
-          openFileTable.addCacheEntry(dbToOpenKey, renamedOpenKeyInfo, trxnLogIndex);
-          ommm.putAppendSession(fromKeyValue.getVolumeName(), fromKeyValue.getBucketName(), appendSessionId,
-              dbToOpenKey);
-        } else {
-          LOG.warn("Potentially inconsistent DB state: append open record not found with dbOpenKey '{}'",
-              dbFromOpenKey);
-        }
+        dbToOpenKey = ommm.getOpenFileName(volumeId, bucketId, fromKeyValue.getParentObjectID(), toKeyFileName,
+            appendSessionId);
+        renamedOpenKeyInfo = OmAppendUtil.moveSessionOfRenamedFile(ommm, fromKeyValue, dbFromOpenKey, dbToOpenKey,
+            toKeyName.isEmpty() ? toKeyFileName : toKeyName, trxnLogIndex, getBucketLayout());
       }
     }
 

@@ -36,8 +36,6 @@ public class OMKeyDeleteResponseWithFSO extends OMKeyDeleteResponse {
   private boolean isDeleteDirectory;
   private String keyName;
   private long volumeId;
-  // If not null, the open file table DB key of the deleted file's invalidated append session (deletedOpenKeyInfo)
-  private String invalidatedAppendOpenKey;
 
   @SuppressWarnings("parameternumber")
   public OMKeyDeleteResponseWithFSO(@Nonnull OMResponse omResponse,
@@ -45,11 +43,10 @@ public class OMKeyDeleteResponseWithFSO extends OMKeyDeleteResponse {
       @Nonnull OmBucketInfo omBucketInfo,
       @Nonnull boolean isDeleteDirectory, @Nonnull long volumeId, OmKeyInfo deletedOpenKeyInfo,
       String invalidatedAppendOpenKey) {
-    super(omResponse, omKeyInfo, omBucketInfo, deletedOpenKeyInfo);
+    super(omResponse, omKeyInfo, omBucketInfo, deletedOpenKeyInfo, invalidatedAppendOpenKey);
     this.keyName = keyName;
     this.isDeleteDirectory = isDeleteDirectory;
     this.volumeId = volumeId;
-    this.invalidatedAppendOpenKey = invalidatedAppendOpenKey;
   }
 
   /**
@@ -114,10 +111,7 @@ public class OMKeyDeleteResponseWithFSO extends OMKeyDeleteResponse {
             batchOperation, dbOpenKey, deletedOpenKeyInfo);
       }
     }
-    if (invalidatedAppendOpenKey != null) {
-      omMetadataManager.getOpenKeyTable(getBucketLayout()).putWithBatch(
-          batchOperation, invalidatedAppendOpenKey, deletedOpenKeyInfo);
-    }
+    addInvalidatedAppendSessionToBatch(omMetadataManager, batchOperation);
   }
 
   @Override

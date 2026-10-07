@@ -37,14 +37,23 @@ public class OMKeyDeleteResponse extends AbstractOMKeyDeleteResponse {
   private OmBucketInfo omBucketInfo;
   // If not null, this key will be deleted from OpenKeyTable
   private OmKeyInfo deletedOpenKeyInfo;
+  // If not null, the open key table DB key of the deleted file's invalidated append session (deletedOpenKeyInfo)
+  private String invalidatedAppendOpenKey;
 
   public OMKeyDeleteResponse(@Nonnull OMResponse omResponse,
       @Nonnull OmKeyInfo omKeyInfo,
       @Nonnull OmBucketInfo omBucketInfo, OmKeyInfo deletedOpenKeyInfo) {
+    this(omResponse, omKeyInfo, omBucketInfo, deletedOpenKeyInfo, null);
+  }
+
+  public OMKeyDeleteResponse(@Nonnull OMResponse omResponse,
+      @Nonnull OmKeyInfo omKeyInfo,
+      @Nonnull OmBucketInfo omBucketInfo, OmKeyInfo deletedOpenKeyInfo, String invalidatedAppendOpenKey) {
     super(omResponse, omBucketInfo.getBucketLayout());
     this.omKeyInfo = omKeyInfo;
     this.omBucketInfo = omBucketInfo;
     this.deletedOpenKeyInfo = deletedOpenKeyInfo;
+    this.invalidatedAppendOpenKey = invalidatedAppendOpenKey;
   }
 
   /**
@@ -85,6 +94,15 @@ public class OMKeyDeleteResponse extends AbstractOMKeyDeleteResponse {
         omMetadataManager.getOpenKeyTable(getBucketLayout()).putWithBatch(
             batchOperation, dbOpenKey, deletedOpenKeyInfo);
       }
+    }
+    addInvalidatedAppendSessionToBatch(omMetadataManager, batchOperation);
+  }
+
+  protected void addInvalidatedAppendSessionToBatch(OMMetadataManager omMetadataManager,
+      BatchOperation batchOperation) throws IOException {
+    if (invalidatedAppendOpenKey != null) {
+      omMetadataManager.getOpenKeyTable(getBucketLayout()).putWithBatch(
+          batchOperation, invalidatedAppendOpenKey, deletedOpenKeyInfo);
     }
   }
 

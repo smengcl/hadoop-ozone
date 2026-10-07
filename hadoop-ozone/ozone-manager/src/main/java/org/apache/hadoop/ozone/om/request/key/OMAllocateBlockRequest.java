@@ -17,6 +17,7 @@
 
 package org.apache.hadoop.ozone.om.request.key;
 
+import static org.apache.hadoop.ozone.om.exceptions.OMException.ResultCodes.APPEND_SESSION_NOT_FOUND;
 import static org.apache.hadoop.ozone.om.exceptions.OMException.ResultCodes.KEY_NOT_FOUND;
 import static org.apache.hadoop.ozone.om.exceptions.OMException.ResultCodes.KEY_UNDER_LEASE_RECOVERY;
 import static org.apache.hadoop.ozone.om.lock.OzoneManagerLock.LeveledResource.BUCKET_LOCK;
@@ -45,6 +46,7 @@ import org.apache.hadoop.ozone.om.helpers.OmBucketInfo;
 import org.apache.hadoop.ozone.om.helpers.OmKeyInfo;
 import org.apache.hadoop.ozone.om.helpers.OmKeyLocationInfo;
 import org.apache.hadoop.ozone.om.helpers.QuotaUtil;
+import org.apache.hadoop.ozone.om.request.util.OmAppendUtil;
 import org.apache.hadoop.ozone.om.request.util.OmResponseUtil;
 import org.apache.hadoop.ozone.om.request.validation.RequestFeatureValidator;
 import org.apache.hadoop.ozone.om.request.validation.ValidationCondition;
@@ -269,12 +271,40 @@ public class OMAllocateBlockRequest extends OMKeyRequest {
 
   protected OmKeyInfo getOpenKeyInfo(OMMetadataManager omMetadataManager,
       String openKeyName, String keyName) throws IOException {
-    return omMetadataManager.getOpenKeyTable(getBucketLayout()).get(openKeyName);
+    OmKeyInfo openKeyInfo = omMetadataManager.getOpenKeyTable(getBucketLayout()).get(openKeyName);
+    if (openKeyInfo != null && openKeyInfo.getAppendSession() != null) {
+      checkAppendSessionCanAllocate(omMetadataManager, openKeyName, openKeyInfo);
+    }
+    return openKeyInfo;
+  }
+
+  /**
+   * Only the ACTIVE session that owns the file may allocate, also when the open record was found by path.
+   *
+   * @param openKeyInfo the open record of an append session
+   */
+  protected void checkAppendSessionCanAllocate(OMMetadataManager omMetadataManager, String openKeyName,
+      OmKeyInfo openKeyInfo) throws IOException {
+    long sessionId = getOmRequest().getAllocateBlockRequest().getClientID();
+    if (!openKeyName.equals(omMetadataManager.getAppendSessionOpenKey(openKeyInfo.getVolumeName(),
+        openKeyInfo.getBucketName(), sessionId))
+        || !openKeyInfo.getAppendSession().isActive()
+        || !OmAppendUtil.isOwnedBy(omMetadataManager.getKeyTable(getBucketLayout())
+            .get(OmAppendUtil.getDbFileKey(omMetadataManager, openKeyInfo, getBucketLayout())), sessionId)) {
+      throw new OMException("Append session " + sessionId + " of " + openKeyInfo.getKeyName()
+          + " is not active", APPEND_SESSION_NOT_FOUND);
+    }
+    OmAppendUtil.checkReachable(omMetadataManager, openKeyInfo, getBucketLayout());
   }
 
   protected String getOpenKeyName(String volumeName, String bucketName,
       String keyName, long clientID, OMMetadataManager omMetadataManager)
           throws IOException {
+    // The open record of an append session follows renames, so it is found by session ID and not by path.
+    String appendOpenKey = omMetadataManager.getAppendSessionOpenKey(volumeName, bucketName, clientID);
+    if (appendOpenKey != null) {
+      return appendOpenKey;
+    }
     return omMetadataManager.getOpenKey(volumeName, bucketName, keyName, clientID);
   }
 

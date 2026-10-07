@@ -19,6 +19,8 @@ package org.apache.hadoop.ozone.om.request.file;
 
 import static org.apache.hadoop.ozone.OzoneConfigKeys.OZONE_OM_LEASE_SOFT_LIMIT;
 import static org.apache.hadoop.ozone.OzoneConfigKeys.OZONE_OM_LEASE_SOFT_LIMIT_DEFAULT;
+import static org.apache.hadoop.ozone.OzoneConsts.OM_KEY_PREFIX;
+import static org.apache.hadoop.ozone.OzoneConsts.OZONE_URI_DELIMITER;
 import static org.apache.hadoop.ozone.om.OMConfigKeys.OZONE_OM_APPEND_ENABLED;
 import static org.apache.hadoop.ozone.om.OMConfigKeys.OZONE_OM_APPEND_ENABLED_DEFAULT;
 import static org.apache.hadoop.ozone.om.exceptions.OMException.ResultCodes.APPEND_NOT_SUPPORTED;
@@ -29,12 +31,15 @@ import static org.apache.hadoop.ozone.om.exceptions.OMException.ResultCodes.NOT_
 import static org.apache.hadoop.ozone.om.lock.OzoneManagerLock.LeveledResource.BUCKET_LOCK;
 import static org.apache.hadoop.ozone.om.upgrade.OMLayoutFeature.APPEND;
 
+import com.google.common.annotations.VisibleForTesting;
 import java.io.IOException;
 import java.nio.file.InvalidPathException;
 import java.security.SecureRandom;
 import java.util.Collections;
+import java.util.HashSet;
 import java.util.Iterator;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.TimeUnit;
 import org.apache.hadoop.hdds.utils.db.Table;
 import org.apache.hadoop.hdds.utils.db.cache.CacheKey;
@@ -72,8 +77,8 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 /**
- * Handles AppendFile requests: admits an append session on an existing file of an FSO bucket. The committed file is
- * reserved for the session and an open record that will hold the session's suffix blocks is created.
+ * Handles AppendFile requests: admits an append session on an existing file of an FSO or LEGACY bucket. The committed
+ * file is reserved for the session and an open record that will hold the session's suffix blocks is created.
  */
 public class OMFileAppendRequest extends OMKeyRequest {
   private static final Logger LOG = LoggerFactory.getLogger(OMFileAppendRequest.class);
@@ -82,8 +87,8 @@ public class OMFileAppendRequest extends OMKeyRequest {
   /** Describes the writer that blocks admission. Set together with an APPEND_WRITER_CONFLICT failure. */
   private AppendConflictInfo conflict;
 
-  public OMFileAppendRequest(OMRequest omRequest) {
-    super(omRequest, BucketLayout.FILE_SYSTEM_OPTIMIZED);
+  public OMFileAppendRequest(OMRequest omRequest, BucketLayout bucketLayout) {
+    super(omRequest, bucketLayout);
   }
 
   @Override
@@ -149,9 +154,17 @@ public class OMFileAppendRequest extends OMKeyRequest {
       acquiredLock = getOmLockDetails().isLockAcquired();
       validateBucketAndVolume(omMetadataManager, volumeName, bucketName);
 
-      OmFSOFile fsoFile = resolveFile(omMetadataManager, volumeName, bucketName, keyName);
-      String dbFileKey = fsoFile.getOzonePathKey();
+      // The rows of a LEGACY key are addressed by its full key name.
+      OmFSOFile fsoFile = getBucketLayout().isFileSystemOptimized()
+          ? resolveFile(omMetadataManager, volumeName, bucketName, keyName) : null;
+      String dbFileKey = fsoFile != null ? fsoFile.getOzonePathKey()
+          : omMetadataManager.getOzoneKey(volumeName, bucketName, keyName);
       OmKeyInfo committed = omMetadataManager.getKeyTable(getBucketLayout()).get(dbFileKey);
+      // A directory of a LEGACY bucket is a key whose name ends with the delimiter.
+      if (fsoFile == null && (keyName.endsWith(OZONE_URI_DELIMITER)
+          || committed == null && checkDirectoryAlreadyExists(volumeName, bucketName, keyName, omMetadataManager))) {
+        throw new OMException("Cannot append to " + keyName + " as it is a directory", NOT_A_FILE);
+      }
       if (committed == null) {
         throw new OMException("Cannot append to " + keyName + " as the file does not exist", KEY_NOT_FOUND);
       }
@@ -159,8 +172,9 @@ public class OMFileAppendRequest extends OMKeyRequest {
         // The GDPR cipher stream cannot resume at an offset.
         throw new OMException("Cannot append to GDPR encrypted file " + keyName, APPEND_NOT_SUPPORTED);
       }
-      String openKeyPrefix = omMetadataManager.getOpenFileName(fsoFile.getVolumeId(), fsoFile.getBucketId(),
-          fsoFile.getParentID(), fsoFile.getFileName(), "");
+      String openKeyPrefix = fsoFile != null ? omMetadataManager.getOpenFileName(fsoFile.getVolumeId(),
+          fsoFile.getBucketId(), fsoFile.getParentID(), fsoFile.getFileName(), "")
+          : omMetadataManager.getOpenKey(volumeName, bucketName, keyName, "");
       checkNoWriter(ozoneManager, committed, openKeyPrefix, keyName, keyArgs.getModificationTime());
 
       OmKeyLocationInfoGroup committedLocations = committed.getLatestVersionLocations();
@@ -179,10 +193,15 @@ public class OMFileAppendRequest extends OMKeyRequest {
           .setUpdateID(trxnLogIndex)
           .build();
 
-      String dbOpenFileKey = fsoFile.getOpenFileName(sessionId);
-      OMFileRequest.addOpenFileTableCacheEntry(omMetadataManager, dbOpenFileKey, openRecord, keyName, trxnLogIndex);
-      OMFileRequest.addFileTableCacheEntry(omMetadataManager, dbFileKey, reserved, fsoFile.getFileName(),
-          trxnLogIndex);
+      String dbOpenFileKey = openKeyPrefix + sessionId;
+      if (fsoFile != null) {
+        OMFileRequest.addOpenFileTableCacheEntry(omMetadataManager, dbOpenFileKey, openRecord, keyName, trxnLogIndex);
+        OMFileRequest.addFileTableCacheEntry(omMetadataManager, dbFileKey, reserved, fsoFile.getFileName(),
+            trxnLogIndex);
+      } else {
+        omMetadataManager.getOpenKeyTable(getBucketLayout()).addCacheEntry(dbOpenFileKey, openRecord, trxnLogIndex);
+        omMetadataManager.getKeyTable(getBucketLayout()).addCacheEntry(dbFileKey, reserved, trxnLogIndex);
+      }
       omMetadataManager.putAppendSession(volumeName, bucketName, sessionId, dbOpenFileKey);
 
       omResponse.setAppendFileResponse(AppendFileResponse.newBuilder()
@@ -191,8 +210,8 @@ public class OMFileAppendRequest extends OMKeyRequest {
           .setID(sessionId)
           .setOpenVersion(openVersion))
           .setCmdType(Type.AppendFile);
-      omClientResponse = new OMFileAppendResponse(omResponse.build(), reserved, openRecord, sessionId,
-          fsoFile.getVolumeId(), fsoFile.getBucketId());
+      omClientResponse = new OMFileAppendResponse(omResponse.build(), reserved, dbFileKey, openRecord, dbOpenFileKey,
+          getBucketLayout());
       omMetrics.incNumAppendFile();
       LOG.debug("Append session {} admitted. Volume:{}, Bucket:{}, Key:{}", sessionId, volumeName, bucketName,
           keyName);
@@ -240,7 +259,7 @@ public class OMFileAppendRequest extends OMKeyRequest {
   /**
    * Fails with APPEND_WRITER_CONFLICT, and sets {@link #conflict}, if any writer still targets the file.
    *
-   * @param openKeyPrefix open file table DB key of the file without the client ID
+   * @param openKeyPrefix open key table DB key of the file without the client ID
    */
   private void checkNoWriter(OzoneManager ozoneManager, OmKeyInfo committed, String openKeyPrefix, String keyName,
       long now) throws IOException {
@@ -279,25 +298,40 @@ public class OMFileAppendRequest extends OMKeyRequest {
    * Returns true if an open record of the file can still be committed. Applied but unflushed records are only in the
    * table cache, and a cache entry (a tombstone included) overrides the DB row of the same key.
    */
-  private static boolean hasOpenWriter(Table<String, OmKeyInfo> openTable, String openKeyPrefix) throws IOException {
+  @VisibleForTesting
+  static boolean hasOpenWriter(Table<String, OmKeyInfo> openTable, String openKeyPrefix) throws IOException {
     // ponytail: scans the whole open file table cache under the bucket lock. Keep a per file view of open records,
     // maintained like the append session index, if admission shows up in profiles.
+    // Remember the cached keys first, tombstones included: the double buffer evicts flushed entries without the bucket
+    // lock, so a tombstone looked up during the DB scan could be gone while the scan still sees the row it deleted.
+    Set<String> cached = new HashSet<>();
     Iterator<Map.Entry<CacheKey<String>, CacheValue<OmKeyInfo>>> cache = openTable.cacheIterator();
     while (cache.hasNext()) {
       Map.Entry<CacheKey<String>, CacheValue<OmKeyInfo>> entry = cache.next();
-      if (entry.getKey().getCacheKey().startsWith(openKeyPrefix) && isWriter(entry.getValue().getCacheValue())) {
-        return true;
+      if (isOpenKeyOf(entry.getKey().getCacheKey(), openKeyPrefix)) {
+        if (isWriter(entry.getValue().getCacheValue())) {
+          return true;
+        }
+        cached.add(entry.getKey().getCacheKey());
       }
     }
     try (Table.KeyValueIterator<String, OmKeyInfo> rows = openTable.iterator(openKeyPrefix)) {
       while (rows.hasNext()) {
         Table.KeyValue<String, OmKeyInfo> row = rows.next();
-        if (openTable.getCacheValue(new CacheKey<>(row.getKey())) == null && isWriter(row.getValue())) {
+        if (isOpenKeyOf(row.getKey(), openKeyPrefix) && !cached.contains(row.getKey()) && isWriter(row.getValue())) {
           return true;
         }
       }
     }
     return false;
+  }
+
+  /**
+   * Returns true if the open key belongs to the file itself. In a LEGACY bucket the prefix of key {@code a} also
+   * matches the open keys of {@code a/b}, which have a further path component before the client ID.
+   */
+  private static boolean isOpenKeyOf(String dbOpenKey, String openKeyPrefix) {
+    return dbOpenKey.startsWith(openKeyPrefix) && dbOpenKey.indexOf(OM_KEY_PREFIX, openKeyPrefix.length()) < 0;
   }
 
   /** Open records that no request can commit anymore only wait for open key cleanup and do not block append. */
