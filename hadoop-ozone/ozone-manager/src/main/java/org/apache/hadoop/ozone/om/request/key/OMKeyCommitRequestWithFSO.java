@@ -528,10 +528,10 @@ public class OMKeyCommitRequestWithFSO extends OMKeyCommitRequest {
         committedGroup != null && committedGroup.isMultipartKey()));
 
     // Only the newly published bytes are charged. The file already exists, so the namespace does not change.
-    // ponytail: uses the whole-file replicated size formula, which undercounts an EC file whose prefix ends in a
-    // partial block group. Delete releases by the same formula, so usage does not drift. Per block group accounting
-    // is the upgrade.
-    long addedSpace = newCommitted.getReplicatedSize() - committed.getReplicatedSize();
+    // Charged per block group, as delete releases it: an EC prefix can end in a partial block group.
+    // ponytail: OmKeyInfo.getReplicatedSize() still applies the EC formula to the whole file, so overwrite, quota
+    // repair and the other callers undercount an appended EC file. Summing per block group there is the upgrade.
+    long addedSpace = sumBlockLengths(newCommitted) - sumBlockLengths(committed);
     checkBucketQuotaInBytes(omMetadataManager, omBucketInfo, addedSpace);
 
     Map<String, RepeatedOmKeyInfo> unusedBlocksToDelete = null;

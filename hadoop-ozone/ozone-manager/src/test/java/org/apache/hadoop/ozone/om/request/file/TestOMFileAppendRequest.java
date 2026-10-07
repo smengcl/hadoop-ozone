@@ -42,6 +42,7 @@ import java.util.Map;
 import java.util.UUID;
 import org.apache.commons.lang3.tuple.Pair;
 import org.apache.hadoop.hdds.client.BlockID;
+import org.apache.hadoop.hdds.client.ECReplicationConfig;
 import org.apache.hadoop.hdds.client.RatisReplicationConfig;
 import org.apache.hadoop.hdds.utils.db.BatchOperation;
 import org.apache.hadoop.hdds.utils.db.Table;
@@ -65,6 +66,7 @@ import org.apache.hadoop.ozone.om.request.key.OMAllocateBlockRequestWithFSO;
 import org.apache.hadoop.ozone.om.request.key.OMKeyCommitRequestWithFSO;
 import org.apache.hadoop.ozone.om.request.key.OMKeyCreateRequestWithFSO;
 import org.apache.hadoop.ozone.om.request.key.OMKeyRenameRequestWithFSO;
+import org.apache.hadoop.ozone.om.request.key.OMKeyRequest;
 import org.apache.hadoop.ozone.om.request.key.OMKeyRequestTests;
 import org.apache.hadoop.ozone.om.request.key.OMOpenKeysDeleteRequest;
 import org.apache.hadoop.ozone.om.request.s3.multipart.S3InitiateMultipartUploadRequestWithFSO;
@@ -397,6 +399,27 @@ public class TestOMFileAppendRequest extends OMKeyRequestTests {
     // The session is gone.
     assertThat(close(sessionId, 2 * BLOCK_LENGTH + 1030, 1000, 30).getOMResponse().getStatus())
         .isEqualTo(KEY_NOT_FOUND);
+  }
+
+  @Test
+  public void testECAppendChargesSuffixBlockGroups() throws Exception {
+    replicationConfig = new ECReplicationConfig(3, 2, ECReplicationConfig.EcCodec.RS, 1024);
+    // The prefix ends in a partial stripe. The suffix starts a new block group with its own parity.
+    addCommittedFile(1);
+    long sessionId = admit();
+    allocate(sessionId);
+    long usedBytes = bucketUsedBytes();
+    long before = OMKeyRequest.sumBlockLengths(committedFile());
+
+    assertThat(hsync(sessionId, BLOCK_LENGTH + 500, 500).getOMResponse().getStatus()).isEqualTo(OK);
+    assertThat(bucketUsedBytes() - usedBytes).isEqualTo(3 * 500);
+    assertThat(close(sessionId, BLOCK_LENGTH + 1000, 1000).getOMResponse().getStatus()).isEqualTo(OK);
+
+    // 1000 bytes of data and two parity cells of the same length, not the whole-file formula (2648).
+    assertThat(bucketUsedBytes() - usedBytes).isEqualTo(3 * 1000);
+    // Delete releases exactly what was charged.
+    assertThat(OMKeyRequest.sumBlockLengths(committedFile()) - before).isEqualTo(3 * 1000);
+    assertThat(committedFile().getReplicatedSize() - 3 * BLOCK_LENGTH).isEqualTo(2648);
   }
 
   @ParameterizedTest
@@ -985,10 +1008,12 @@ public class TestOMFileAppendRequest extends OMKeyRequestTests {
   }
 
   private KeyArgs.Builder keyArgs() {
-    return KeyArgs.newBuilder()
+    KeyArgs.Builder keyArgs = KeyArgs.newBuilder()
         .setVolumeName(volumeName).setBucketName(bucketName).setKeyName(keyName)
-        .setType(replicationConfig.getReplicationType())
-        .setFactor(((RatisReplicationConfig) replicationConfig).getReplicationFactor());
+        .setType(replicationConfig.getReplicationType());
+    return replicationConfig instanceof ECReplicationConfig
+        ? keyArgs.setEcReplicationConfig(((ECReplicationConfig) replicationConfig).toProto())
+        : keyArgs.setFactor(((RatisReplicationConfig) replicationConfig).getReplicationFactor());
   }
 
   private void setPhase(long sessionId, AppendSessionPhase phase) throws Exception {
