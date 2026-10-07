@@ -21,6 +21,8 @@ import static org.apache.hadoop.hdds.protocol.proto.HddsProtos.ReplicationFactor
 import static org.apache.hadoop.hdds.protocol.proto.HddsProtos.ReplicationType.EC;
 import static org.apache.hadoop.hdds.protocol.proto.HddsProtos.ReplicationType.RATIS;
 import static org.apache.hadoop.ozone.OzoneAcl.AclScope.ACCESS;
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
@@ -28,6 +30,14 @@ import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import com.google.protobuf.DescriptorProtos.DescriptorProto;
+import com.google.protobuf.DescriptorProtos.EnumDescriptorProto;
+import com.google.protobuf.DescriptorProtos.FileDescriptorProto;
+import com.google.protobuf.Descriptors.Descriptor;
+import com.google.protobuf.Descriptors.FileDescriptor;
+import com.google.protobuf.DynamicMessage;
+import com.google.protobuf.InvalidProtocolBufferException;
+import com.google.protobuf.UnknownFieldSet;
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -47,6 +57,11 @@ import org.apache.hadoop.ozone.OzoneAcl;
 import org.apache.hadoop.ozone.OzoneConsts;
 import org.apache.hadoop.ozone.om.helpers.OmKeyInfo.Builder;
 import org.apache.hadoop.ozone.protocol.proto.OzoneManagerProtocolProtos;
+import org.apache.hadoop.ozone.protocol.proto.OzoneManagerProtocolProtos.ListKeysResponse;
+import org.apache.hadoop.ozone.protocol.proto.OzoneManagerProtocolProtos.LookupKeyResponse;
+import org.apache.hadoop.ozone.protocol.proto.OzoneManagerProtocolProtos.OMResponse;
+import org.apache.hadoop.ozone.protocol.proto.OzoneManagerProtocolProtos.Status;
+import org.apache.hadoop.ozone.protocol.proto.OzoneManagerProtocolProtos.Type;
 import org.apache.hadoop.ozone.security.acl.IAccessAuthorizer;
 import org.apache.hadoop.util.Time;
 import org.junit.jupiter.api.Test;
@@ -143,6 +158,67 @@ public class TestOmKeyInfo {
     OmKeyInfo released = key.toBuilder().setAppendOwnerSessionId(null).setAppendSession(null).build();
     assertNull(released.getAppendOwnerSessionId());
     assertNull(released.getAppendSession());
+  }
+
+  /**
+   * A client built before append reads a key that carries the append fields: they are skipped as unknown fields and
+   * the rest of the key is unchanged. It cannot read a response with an append result code.
+   */
+  @Test
+  public void preAppendClientReadsKeyWithAppendFields() throws Exception {
+    Descriptor oldResponse = preAppendProtocol().findMessageTypeByName("OMResponse");
+    OzoneManagerProtocolProtos.KeyInfo key = createOmKeyInfo(RatisReplicationConfig.getInstance(THREE)).toBuilder()
+        .setAppendOwnerSessionId(42L).setAppendSession(OmAppendSession.newActive(123L, 2, 1000L)).build()
+        .getNetworkProtobuf(ClientVersion.BUCKET_LAYOUT_SUPPORT.toProtoValue(), true);
+    assertThat(key.hasAppendOwnerSessionId() && key.hasAppendSession()).isTrue();
+    OMResponse.Builder ok = OMResponse.newBuilder().setStatus(Status.OK);
+
+    DynamicMessage lookup = DynamicMessage.parseFrom(oldResponse, ok.setCmdType(Type.LookupKey)
+        .setLookupKeyResponse(LookupKeyResponse.newBuilder().setKeyInfo(key)).build().toByteString());
+    DynamicMessage oldKey = (DynamicMessage) field(field(lookup, "lookupKeyResponse"), "keyInfo");
+    assertThat(oldKey.getUnknownFields().asMap()).containsOnlyKeys(
+        OzoneManagerProtocolProtos.KeyInfo.APPENDOWNERSESSIONID_FIELD_NUMBER,
+        OzoneManagerProtocolProtos.KeyInfo.APPENDSESSION_FIELD_NUMBER);
+    assertThat(OzoneManagerProtocolProtos.KeyInfo.parseFrom(
+        oldKey.toBuilder().setUnknownFields(UnknownFieldSet.getDefaultInstance()).build().toByteString()))
+        .isEqualTo(key.toBuilder().clearAppendOwnerSessionId().clearAppendSession().build());
+
+    DynamicMessage list = DynamicMessage.parseFrom(oldResponse, ok.clearLookupKeyResponse().setCmdType(Type.ListKeys)
+        .setListKeysResponse(ListKeysResponse.newBuilder().addKeyInfo(key)).build().toByteString());
+    assertThat((List<?>) field(field(list, "listKeysResponse"), "keyInfo")).hasSize(1);
+
+    OMResponse.Builder rejected = OMResponse.newBuilder().setCmdType(Type.CreateFile);
+    assertThatThrownBy(() -> DynamicMessage.parseFrom(oldResponse,
+        rejected.setStatus(Status.APPEND_WRITER_CONFLICT).build().toByteString()))
+        .isInstanceOf(InvalidProtocolBufferException.class);
+    assertThat(DynamicMessage.parseFrom(oldResponse,
+        rejected.setStatus(Status.NOT_SUPPORTED_OPERATION).build().toByteString()).isInitialized()).isTrue();
+  }
+
+  /** @return the OM client protocol without the append fields of KeyInfo and without the append result codes. */
+  private static FileDescriptor preAppendProtocol() throws Exception {
+    FileDescriptor current = OzoneManagerProtocolProtos.getDescriptor();
+    FileDescriptorProto.Builder file = current.toProto().toBuilder();
+    for (DescriptorProto.Builder message : file.getMessageTypeBuilderList()) {
+      for (int i = message.getFieldCount() - 1; "KeyInfo".equals(message.getName()) && i >= 0; i--) {
+        if (message.getField(i).getName().startsWith("append")) {
+          message.removeField(i);
+        }
+      }
+    }
+    for (EnumDescriptorProto.Builder enumType : file.getEnumTypeBuilderList()) {
+      for (int i = enumType.getValueCount() - 1; "Status".equals(enumType.getName()) && i >= 0; i--) {
+        if (enumType.getValue(i).getName().startsWith("APPEND_")) {
+          enumType.removeValue(i);
+        }
+      }
+    }
+    return FileDescriptor.buildFrom(file.build(), current.getDependencies().toArray(new FileDescriptor[0]));
+  }
+
+  private static Object field(Object message, String name) {
+    DynamicMessage dynamicMessage = (DynamicMessage) message;
+    return dynamicMessage.getField(dynamicMessage.getDescriptorForType().findFieldByName(name));
   }
 
   private OmKeyInfo createOmKeyInfo(ReplicationConfig replicationConfig) {

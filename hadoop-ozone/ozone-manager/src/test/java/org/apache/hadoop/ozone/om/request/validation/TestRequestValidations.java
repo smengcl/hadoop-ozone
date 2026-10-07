@@ -192,6 +192,17 @@ public class TestRequestValidations {
   }
 
   @Test
+  public void testClientWithBucketLayoutSupportIsNotAnOldClient() throws Exception {
+    ValidationContext ctx = of(aFinalizedVersionManager(), metadataManager);
+    RequestValidations validations = loadValidations(ctx);
+
+    // No longer the newest client version, but it needs none of the validators of the clients before it.
+    validations.validateRequest(aCreateKeyRequest(ClientVersion.BUCKET_LAYOUT_SUPPORT.toProtoValue()));
+
+    validationListener.assertNumOfEvents(0);
+  }
+
+  @Test
   public void testOldClientConditionIsRecognizedAndPostValidatorsApplied()
       throws Exception {
     ValidationContext ctx = of(aFinalizedVersionManager(), metadataManager);
@@ -284,7 +295,7 @@ public class TestRequestValidations {
   }
 
   private int olderClientVersion() {
-    return ClientVersion.CURRENT_VERSION - 1;
+    return ClientVersion.BUCKET_LAYOUT_SUPPORT.toProtoValue() - 1;
   }
 
   private int currentClientVersion() {

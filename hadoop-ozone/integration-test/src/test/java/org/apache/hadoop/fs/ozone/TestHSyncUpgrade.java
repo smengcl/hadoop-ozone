@@ -25,24 +25,29 @@ import static org.apache.hadoop.ozone.OzoneConsts.OZONE_URI_DELIMITER;
 import static org.apache.hadoop.ozone.om.OMConfigKeys.OZONE_DEFAULT_BUCKET_LAYOUT;
 import static org.apache.hadoop.ozone.om.OMConfigKeys.OZONE_DIR_DELETING_SERVICE_INTERVAL;
 import static org.apache.hadoop.ozone.om.OMConfigKeys.OZONE_OM_ADDRESS_KEY;
+import static org.apache.hadoop.ozone.om.OMConfigKeys.OZONE_OM_APPEND_ENABLED;
 import static org.apache.hadoop.ozone.om.OMConfigKeys.OZONE_OM_LEASE_HARD_LIMIT;
 import static org.apache.hadoop.ozone.om.OMConfigKeys.OZONE_OM_OPEN_KEY_CLEANUP_SERVICE_INTERVAL;
 import static org.apache.hadoop.ozone.om.OMConfigKeys.OZONE_OM_OPEN_KEY_EXPIRE_THRESHOLD;
+import static org.apache.hadoop.ozone.om.exceptions.OMException.ResultCodes.APPEND_NOT_SUPPORTED;
 import static org.apache.hadoop.ozone.om.exceptions.OMException.ResultCodes.NOT_SUPPORTED_OPERATION_PRIOR_FINALIZATION;
 import static org.apache.hadoop.ozone.upgrade.UpgradeFinalization.isDone;
 import static org.apache.hadoop.ozone.upgrade.UpgradeFinalization.isStarting;
 import static org.apache.ozone.test.LambdaTestUtils.await;
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.io.IOException;
+import java.util.Collections;
 import java.util.UUID;
 import java.util.concurrent.TimeUnit;
 import org.apache.hadoop.fs.CommonConfigurationKeysPublic;
 import org.apache.hadoop.fs.FSDataOutputStream;
 import org.apache.hadoop.fs.FileSystem;
+import org.apache.hadoop.fs.LeaseRecoverable;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.hdds.conf.OzoneConfiguration;
 import org.apache.hadoop.hdds.conf.StorageUnit;
@@ -62,9 +67,11 @@ import org.apache.hadoop.ozone.container.metadata.AbstractDatanodeStore;
 import org.apache.hadoop.ozone.om.OMStorage;
 import org.apache.hadoop.ozone.om.exceptions.OMException;
 import org.apache.hadoop.ozone.om.helpers.BucketLayout;
+import org.apache.hadoop.ozone.om.helpers.OmKeyArgs;
 import org.apache.hadoop.ozone.om.protocol.OzoneManagerProtocol;
 import org.apache.hadoop.ozone.om.service.OpenKeyCleanupService;
 import org.apache.hadoop.ozone.om.upgrade.OMLayoutFeature;
+import org.apache.hadoop.ozone.protocol.proto.OzoneManagerProtocolProtos.AppendSessionKey;
 import org.apache.hadoop.ozone.upgrade.UpgradeFinalization;
 import org.apache.ozone.test.GenericTestUtils;
 import org.junit.jupiter.api.AfterEach;
@@ -104,6 +111,7 @@ public class TestHSyncUpgrade {
     conf.setBoolean(OzoneConfigKeys.OZONE_HBASE_ENHANCEMENTS_ALLOWED, true);
     conf.setBoolean("ozone.client.hbase.enhancements.allowed", true);
     conf.setBoolean(OzoneConfigKeys.OZONE_FS_HSYNC_ENABLED, true);
+    conf.setBoolean(OZONE_OM_APPEND_ENABLED, true);
     conf.setInt(OZONE_SCM_RATIS_PIPELINE_LIMIT, 10);
     // Reduce KeyDeletingService interval
     conf.setTimeDuration(OZONE_BLOCK_DELETING_SERVICE_INTERVAL, 100, TimeUnit.MILLISECONDS);
@@ -165,6 +173,7 @@ public class TestHSyncUpgrade {
   public void upgrade() throws Exception {
     preFinalizationChecks();
     finalizeOMUpgrade();
+    postFinalizationChecks();
   }
 
   private void preFinalizationChecks() throws IOException {
@@ -192,7 +201,46 @@ public class TestHSyncUpgrade {
       assertFinalizationException(omException);
 
       fs.delete(file, false);
+
+      // Append is enabled in the configuration, yet none of its requests is accepted before finalization.
+      final Path appendFile = appendFile();
+      try (FSDataOutputStream outputStream = fs.create(appendFile, true)) {
+        outputStream.write(1);
+      }
+      final OmKeyArgs keyArgs = new OmKeyArgs.Builder().setVolumeName(bucket.getVolumeName())
+          .setBucketName(bucket.getName()).setKeyName(appendFile.getName()).build();
+      assertFinalizationException(assertThrows(OMException.class, () -> omClient.appendFile(keyArgs)));
+      assertFinalizationException(assertThrows(OMException.class,
+          () -> omClient.renewAppendLeases(Collections.singletonList(AppendSessionKey.newBuilder()
+              .setVolumeName(bucket.getVolumeName()).setBucketName(bucket.getName()).setSessionId(1).build()))));
+      assertFinalizationException(assertThrows(OMException.class,
+          () -> omClient.abortOpenKey(bucket.getVolumeName(), bucket.getName(), appendFile.getName(), 1)));
+      // The rejected admission left no reservation behind.
+      assertThat(((LeaseRecoverable) fs).isFileClosed(appendFile)).isTrue();
+      assertThat(fs.getFileStatus(appendFile).getLen()).isEqualTo(1);
     }
+  }
+
+  private void postFinalizationChecks() throws IOException {
+    final Path appendFile = appendFile();
+    try (RootedOzoneFileSystem fs = (RootedOzoneFileSystem) FileSystem.get(conf)) {
+      // A finalized cluster still needs the feature flag of the leader.
+      cluster.getOzoneManager().getConfiguration().setBoolean(OZONE_OM_APPEND_ENABLED, false);
+      assertThatThrownBy(() -> fs.append(appendFile)).isInstanceOfSatisfying(OMException.class,
+          e -> assertThat(e.getResult()).isEqualTo(APPEND_NOT_SUPPORTED));
+      cluster.getOzoneManager().getConfiguration().setBoolean(OZONE_OM_APPEND_ENABLED, true);
+
+      try (FSDataOutputStream outputStream = fs.append(appendFile)) {
+        assertThat(((LeaseRecoverable) fs).isFileClosed(appendFile)).isFalse();
+        outputStream.write(2);
+      }
+      assertThat(((LeaseRecoverable) fs).isFileClosed(appendFile)).isTrue();
+      assertThat(fs.getFileStatus(appendFile).getLen()).isEqualTo(2);
+    }
+  }
+
+  private Path appendFile() {
+    return new Path(OZONE_ROOT + bucket.getVolumeName() + OZONE_URI_DELIMITER + bucket.getName(), "append");
   }
 
   private void assertFinalizationExceptionForHsync(OMException omException) {

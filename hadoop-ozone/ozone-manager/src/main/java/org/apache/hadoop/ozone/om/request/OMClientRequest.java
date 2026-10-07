@@ -31,6 +31,7 @@ import org.apache.commons.lang3.StringUtils;
 import org.apache.hadoop.hdds.utils.TransactionInfo;
 import org.apache.hadoop.hdds.utils.db.cache.TableCacheUpdateTracker;
 import org.apache.hadoop.ipc_.ProtobufRpcEngine;
+import org.apache.hadoop.ozone.ClientVersion;
 import org.apache.hadoop.ozone.OmUtils;
 import org.apache.hadoop.ozone.OzoneConsts;
 import org.apache.hadoop.ozone.audit.AuditAction;
@@ -56,6 +57,7 @@ import org.apache.hadoop.ozone.protocol.proto.OzoneManagerProtocolProtos;
 import org.apache.hadoop.ozone.protocol.proto.OzoneManagerProtocolProtos.LayoutVersion;
 import org.apache.hadoop.ozone.protocol.proto.OzoneManagerProtocolProtos.OMRequest;
 import org.apache.hadoop.ozone.protocol.proto.OzoneManagerProtocolProtos.OMResponse;
+import org.apache.hadoop.ozone.protocol.proto.OzoneManagerProtocolProtos.Status;
 import org.apache.hadoop.ozone.security.STSSecurityUtil;
 import org.apache.hadoop.ozone.security.acl.IAccessAuthorizer;
 import org.apache.hadoop.ozone.security.acl.OzoneObj;
@@ -533,8 +535,22 @@ public abstract class OMClientRequest implements RequestAuditor {
     if (errorMsg != null) {
       omResponse.setMessage(errorMsg);
     }
-    omResponse.setStatus(OzoneManagerRatisUtils.exceptionToResponseStatus(ex));
+    omResponse.setStatus(statusForClient(OzoneManagerRatisUtils.exceptionToResponseStatus(ex)));
     return omResponse.build();
+  }
+
+  /**
+   * A client older than append cannot parse a response whose status is an append result code, so the rejection of
+   * its write to a file that an append session has reserved would reach it as an RPC failure. It gets
+   * NOT_SUPPORTED_OPERATION instead: what requests of older clients already get for state they do not know, and a code
+   * that no client takes for success or for a reason to retry at once.
+   */
+  private Status statusForClient(Status status) {
+    // ponytail: maps only the code an ordinary writer can get. A recovery commit of a pre-append client that loses a
+    // race still gets APPEND_SESSION_NOT_FOUND. Map by the version that introduced each code if more codes need it.
+    return status == Status.APPEND_WRITER_CONFLICT
+        && ClientVersion.fromProtoValue(omRequest.getVersion()).compareTo(ClientVersion.APPEND_SUPPORT) < 0
+        ? Status.NOT_SUPPORTED_OPERATION : status;
   }
 
   private String exceptionErrorMessage(Exception ex) {

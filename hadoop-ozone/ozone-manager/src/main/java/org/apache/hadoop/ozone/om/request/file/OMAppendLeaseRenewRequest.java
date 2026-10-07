@@ -18,6 +18,7 @@
 package org.apache.hadoop.ozone.om.request.file;
 
 import static org.apache.hadoop.ozone.om.lock.OzoneManagerLock.LeveledResource.BUCKET_LOCK;
+import static org.apache.hadoop.ozone.om.upgrade.OMLayoutFeature.APPEND;
 
 import java.io.IOException;
 import java.util.EnumMap;
@@ -40,6 +41,7 @@ import org.apache.hadoop.ozone.om.request.util.OmAppendUtil;
 import org.apache.hadoop.ozone.om.request.util.OmResponseUtil;
 import org.apache.hadoop.ozone.om.response.OMClientResponse;
 import org.apache.hadoop.ozone.om.response.file.OMAppendLeaseRenewResponse;
+import org.apache.hadoop.ozone.om.upgrade.DisallowedUntilLayoutVersion;
 import org.apache.hadoop.ozone.protocol.proto.OzoneManagerProtocolProtos.AppendSessionKey;
 import org.apache.hadoop.ozone.protocol.proto.OzoneManagerProtocolProtos.OMRequest;
 import org.apache.hadoop.ozone.protocol.proto.OzoneManagerProtocolProtos.OMResponse;
@@ -63,6 +65,7 @@ public class OMAppendLeaseRenewRequest extends OMClientRequest {
   }
 
   @Override
+  @DisallowedUntilLayoutVersion(APPEND)
   public OMRequest preExecute(OzoneManager ozoneManager) throws IOException {
     final OMRequest request = super.preExecute(ozoneManager);
     if (request.getRenewAppendLeasesRequest().getSessionsCount() > MAX_SESSIONS_PER_REQUEST) {

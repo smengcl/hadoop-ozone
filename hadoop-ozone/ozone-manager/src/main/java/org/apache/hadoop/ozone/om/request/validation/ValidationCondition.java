@@ -37,15 +37,20 @@ public enum ValidationCondition {
   CLUSTER_NEEDS_FINALIZATION,
 
   /**
-   * Classifies validations that has to run, when the client uses an older
-   * protocol version than the server.
+   * Classifies validations that have to run when the client predates bucket layout support
+   * ({@link ClientVersion#BUCKET_LAYOUT_SUPPORT}). It does not mean "older than the server": the validators that use
+   * it adapt requests and responses for clients that know neither bucket layouts nor EC, and must not run for a
+   * newer client only because the server knows a newer client version still. A validator for another client version
+   * needs its own condition.
    */
   OLDER_CLIENT_REQUESTS;
 
   public boolean shouldApply(OMRequest req, ValidationContext ctx) {
     return switch (this) {
     case CLUSTER_NEEDS_FINALIZATION -> ctx.versionManager().needsFinalization();
-    case OLDER_CLIENT_REQUESTS -> req.getVersion() < ClientVersion.CURRENT_VERSION;
+    // Every validator of this condition handles clients that predate bucket layouts or EC. A newer client version must
+    // not turn the clients between that version and the newest into "older" ones.
+    case OLDER_CLIENT_REQUESTS -> req.getVersion() < ClientVersion.BUCKET_LAYOUT_SUPPORT.toProtoValue();
     };
   }
 }

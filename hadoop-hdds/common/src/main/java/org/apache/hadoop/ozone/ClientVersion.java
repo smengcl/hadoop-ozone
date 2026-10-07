@@ -42,6 +42,8 @@ public enum ClientVersion implements ComponentVersion {
       "This client version has support for Object Store and File " +
           "System Optimized Bucket Layouts."),
 
+  APPEND_SUPPORT(4, "This client version understands the append result codes of Ozone Manager."),
+
   FUTURE_VERSION(-1, "Used internally when the server side is older and an"
       + " unknown client version has arrived from the client.");
 

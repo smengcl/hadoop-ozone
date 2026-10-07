@@ -25,6 +25,7 @@ import static org.apache.hadoop.ozone.protocol.proto.OzoneManagerProtocolProtos.
 import static org.apache.hadoop.ozone.protocol.proto.OzoneManagerProtocolProtos.Status.KEY_NOT_FOUND;
 import static org.apache.hadoop.ozone.protocol.proto.OzoneManagerProtocolProtos.Status.KEY_UNDER_LEASE_SOFT_LIMIT_PERIOD;
 import static org.apache.hadoop.ozone.protocol.proto.OzoneManagerProtocolProtos.Status.NOT_A_FILE;
+import static org.apache.hadoop.ozone.protocol.proto.OzoneManagerProtocolProtos.Status.NOT_SUPPORTED_OPERATION;
 import static org.apache.hadoop.ozone.protocol.proto.OzoneManagerProtocolProtos.Status.OK;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -53,6 +54,7 @@ import org.apache.hadoop.hdds.utils.db.BatchOperation;
 import org.apache.hadoop.hdds.utils.db.Table;
 import org.apache.hadoop.hdds.utils.db.cache.CacheKey;
 import org.apache.hadoop.hdds.utils.db.cache.CacheValue;
+import org.apache.hadoop.ozone.ClientVersion;
 import org.apache.hadoop.ozone.OzoneAcl;
 import org.apache.hadoop.ozone.OzoneConfigKeys;
 import org.apache.hadoop.ozone.OzoneConsts;
@@ -104,6 +106,7 @@ import org.apache.hadoop.ozone.protocol.proto.OzoneManagerProtocolProtos.Recover
 import org.apache.hadoop.ozone.protocol.proto.OzoneManagerProtocolProtos.RenameKeyRequest;
 import org.apache.hadoop.ozone.protocol.proto.OzoneManagerProtocolProtos.RenewAppendLeasesRequest;
 import org.apache.hadoop.ozone.protocol.proto.OzoneManagerProtocolProtos.SetTimesRequest;
+import org.apache.hadoop.ozone.protocol.proto.OzoneManagerProtocolProtos.Status;
 import org.apache.hadoop.ozone.protocol.proto.OzoneManagerProtocolProtos.Type;
 import org.apache.hadoop.ozone.protocol.proto.OzoneManagerProtocolProtos.UserInfo;
 import org.apache.hadoop.ozone.security.acl.IAccessAuthorizer;
@@ -116,6 +119,7 @@ import org.assertj.core.api.ThrowableAssert;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.EnumSource;
 import org.junit.jupiter.params.provider.ValueSource;
 
 /**
@@ -549,25 +553,28 @@ public class TestOMFileAppendRequest extends OMKeyRequestTests {
     assertThat(committedFile()).isNull();
   }
 
-  @Test
-  public void testOrdinaryCreateRejectedDuringReservation() throws Exception {
+  @ParameterizedTest
+  @EnumSource(value = ClientVersion.class, names = {"BUCKET_LAYOUT_SUPPORT", "APPEND_SUPPORT"})
+  public void testOrdinaryCreateRejectedDuringReservation(ClientVersion clientVersion) throws Exception {
     addCommittedFile(1);
     long sessionId = admit();
 
     OMRequest createFile = OMRequest.newBuilder()
+        .setVersion(clientVersion.toProtoValue())
         .setCmdType(Type.CreateFile)
         .setClientId(UUID.randomUUID().toString())
         .setCreateFileRequest(CreateFileRequest.newBuilder()
             .setKeyArgs(keyArgs().setDataSize(100)).setIsOverwrite(true).setIsRecursive(true))
         .build();
-    assertThat(execute(createFile).getOMResponse().getStatus()).isEqualTo(APPEND_WRITER_CONFLICT);
+    assertThat(execute(createFile).getOMResponse().getStatus()).isEqualTo(writerConflictStatus(clientVersion));
 
     OMRequest createKey = OMRequest.newBuilder()
+        .setVersion(clientVersion.toProtoValue())
         .setCmdType(Type.CreateKey)
         .setClientId(UUID.randomUUID().toString())
         .setCreateKeyRequest(CreateKeyRequest.newBuilder().setKeyArgs(keyArgs().setDataSize(100)))
         .build();
-    assertThat(execute(createKey).getOMResponse().getStatus()).isEqualTo(APPEND_WRITER_CONFLICT);
+    assertThat(execute(createKey).getOMResponse().getStatus()).isEqualTo(writerConflictStatus(clientVersion));
 
     assertThat(committedFile().getAppendOwnerSessionId()).isEqualTo(sessionId);
   }
@@ -595,8 +602,9 @@ public class TestOMFileAppendRequest extends OMKeyRequestTests {
     assertThat(committedFile().getMetadata()).doesNotContainKey(OzoneConsts.ETAG);
   }
 
-  @Test
-  public void testOrdinaryCommitRejectedDuringReservation() throws Exception {
+  @ParameterizedTest
+  @EnumSource(value = ClientVersion.class, names = {"BUCKET_LAYOUT_SUPPORT", "APPEND_SUPPORT"})
+  public void testOrdinaryCommitRejectedDuringReservation(ClientVersion clientVersion) throws Exception {
     OmKeyInfo before = addCommittedFile(1);
     long sessionId = admit();
     // An ordinary writer of this path, as left behind when the reserved file is renamed onto the path.
@@ -605,8 +613,8 @@ public class TestOMFileAppendRequest extends OMKeyRequestTests {
 
     KeyArgs.Builder keyArgs = keyArgs().setDataSize(BLOCK_LENGTH).addKeyLocations(KeyLocation.newBuilder()
         .setBlockID(new BlockID(ORDINARY_CONTAINER_ID, LOCAL_ID).getProtobuf()).setOffset(0).setLength(BLOCK_LENGTH));
-    assertThat(commit(ordinaryClientId, false, false, keyArgs).getOMResponse().getStatus())
-        .isEqualTo(APPEND_WRITER_CONFLICT);
+    assertThat(commit(clientVersion, ordinaryClientId, false, false, keyArgs).getOMResponse().getStatus())
+        .isEqualTo(writerConflictStatus(clientVersion));
     // A recovery commit that names a session other than the owner.
     assertThat(commit(sessionId + 1, false, true, BLOCK_LENGTH).getOMResponse().getStatus())
         .isEqualTo(APPEND_SESSION_NOT_FOUND);
@@ -1171,6 +1179,11 @@ public class TestOMFileAppendRequest extends OMKeyRequestTests {
         omMetadataManager.getOzoneKey(volumeName, bucketName, keyName)).getAppendOwnerSessionId()).isNull();
   }
 
+  /** A client that predates append cannot parse the append result codes. */
+  private static Status writerConflictStatus(ClientVersion clientVersion) {
+    return clientVersion.compareTo(ClientVersion.APPEND_SUPPORT) < 0 ? NOT_SUPPORTED_OPERATION : APPEND_WRITER_CONFLICT;
+  }
+
   private static AppendConflictInfo assertConflict(OMClientResponse response, AppendWriterKind kind) {
     OMResponse omResponse = response.getOMResponse();
     assertThat(omResponse.getStatus()).isEqualTo(APPEND_WRITER_CONFLICT);
@@ -1195,6 +1208,9 @@ public class TestOMFileAppendRequest extends OMKeyRequestTests {
   }
 
   private OMRequest preExecute(OMRequest request) throws Exception {
+    if (!request.hasVersion()) {
+      request = request.toBuilder().setVersion(ClientVersion.CURRENT_VERSION).build();
+    }
     OMClientRequest clientRequest = OzoneManagerRatisUtils.createClientRequest(request, ozoneManager);
     if (!request.hasUserInfo()) {
       clientRequest.setUGI(UserGroupInformation.getCurrentUser());
@@ -1284,7 +1300,13 @@ public class TestOMFileAppendRequest extends OMKeyRequestTests {
 
   private OMClientResponse commit(long commitClientId, boolean hsync, boolean recovery, KeyArgs.Builder keyArgs)
       throws Exception {
+    return commit(ClientVersion.CURRENT, commitClientId, hsync, recovery, keyArgs);
+  }
+
+  private OMClientResponse commit(ClientVersion clientVersion, long commitClientId, boolean hsync, boolean recovery,
+      KeyArgs.Builder keyArgs) throws Exception {
     return execute(OMRequest.newBuilder()
+        .setVersion(clientVersion.toProtoValue())
         .setCmdType(Type.CommitKey)
         .setClientId(UUID.randomUUID().toString())
         .setUserInfo(CALLER)
