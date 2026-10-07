@@ -18,9 +18,15 @@
 package org.apache.hadoop.ozone.om.request.file;
 
 import static org.apache.hadoop.ozone.om.protocolPB.OzoneManagerProtocolClientSideTranslatorPB.setReplicationConfig;
+import static org.apache.hadoop.ozone.protocol.proto.OzoneManagerProtocolProtos.AppendSessionPhase.APPEND_ACTIVE;
+import static org.apache.hadoop.ozone.protocol.proto.OzoneManagerProtocolProtos.AppendSessionPhase.APPEND_RECOVERING;
+import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.mockito.ArgumentMatchers.anyLong;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.verify;
 
 import jakarta.annotation.Nonnull;
 import java.io.IOException;
@@ -28,6 +34,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
 import java.util.UUID;
+import java.util.concurrent.TimeUnit;
 import java.util.stream.Collectors;
 import org.apache.hadoop.hdds.client.RatisReplicationConfig;
 import org.apache.hadoop.hdds.protocol.proto.HddsProtos;
@@ -36,6 +43,7 @@ import org.apache.hadoop.ozone.OzoneConfigKeys;
 import org.apache.hadoop.ozone.OzoneConsts;
 import org.apache.hadoop.ozone.om.helpers.BucketLayout;
 import org.apache.hadoop.ozone.om.helpers.KeyValueUtil;
+import org.apache.hadoop.ozone.om.helpers.OmAppendSession;
 import org.apache.hadoop.ozone.om.helpers.OmKeyArgs;
 import org.apache.hadoop.ozone.om.helpers.OmKeyInfo;
 import org.apache.hadoop.ozone.om.helpers.OmKeyLocationInfo;
@@ -48,6 +56,7 @@ import org.apache.hadoop.ozone.om.request.key.OMKeyRequestTests;
 import org.apache.hadoop.ozone.om.response.OMClientResponse;
 import org.apache.hadoop.ozone.protocol.proto.OzoneManagerProtocolProtos;
 import org.apache.hadoop.ozone.protocol.proto.OzoneManagerProtocolProtos.AllocateBlockRequest;
+import org.apache.hadoop.ozone.protocol.proto.OzoneManagerProtocolProtos.AppendSessionPhase;
 import org.apache.hadoop.ozone.protocol.proto.OzoneManagerProtocolProtos.CommitKeyRequest;
 import org.apache.hadoop.ozone.protocol.proto.OzoneManagerProtocolProtos.KeyArgs;
 import org.apache.hadoop.ozone.protocol.proto.OzoneManagerProtocolProtos.KeyInfo;
@@ -56,8 +65,10 @@ import org.apache.hadoop.ozone.protocol.proto.OzoneManagerProtocolProtos.OMReque
 import org.apache.hadoop.ozone.protocol.proto.OzoneManagerProtocolProtos.OMResponse;
 import org.apache.hadoop.ozone.protocol.proto.OzoneManagerProtocolProtos.RecoverLeaseRequest;
 import org.apache.hadoop.ozone.protocol.proto.OzoneManagerProtocolProtos.RecoverLeaseResponse;
+import org.apache.hadoop.util.Time;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.CsvSource;
 import org.junit.jupiter.params.provider.ValueSource;
 
 /**
@@ -352,6 +363,148 @@ public class TestOMRecoverLeaseRequest extends OMKeyRequestTests {
     recoverLeaseResponse = omResponse.getRecoverLeaseResponse();
     keyInfo = recoverLeaseResponse.getKeyInfo();
     assertNotNull(keyInfo);
+  }
+
+  /**
+   * Recovery fences an append session before any allocation (empty suffix), with unpublished suffix blocks, and with
+   * a published suffix. Only blocks of the session get their pipeline refreshed, never a prefix block.
+   */
+  @ParameterizedTest
+  @CsvSource({"2,0,0", "1,0,1", "1,0,3", "1,2,1", "0,1,0"})
+  public void testRecoverAppendSession(int prefixBlocks, int publishedBlocks, int unpublishedBlocks) throws Exception {
+    long oldTime = Time.now() - 10_000;
+    addAppendSession(prefixBlocks, publishedBlocks, unpublishedBlocks, oldTime, oldTime, APPEND_ACTIVE);
+    ozoneManager.getConfiguration().set(OzoneConfigKeys.OZONE_OM_LEASE_SOFT_LIMIT, "1s");
+
+    OMResponse omResponse = validateAndUpdateCache().getOMResponse();
+    assertEquals(OzoneManagerProtocolProtos.Status.OK, omResponse.getStatus());
+
+    OmKeyInfo committed = OmKeyInfo.getFromProtobuf(omResponse.getRecoverLeaseResponse().getKeyInfo());
+    assertEquals(clientID, committed.getAppendOwnerSessionId());
+    List<OmKeyLocationInfo> committedBlocks = committed.getLatestVersionLocations().createLocationList();
+    assertThat(committedBlocks).hasSize(prefixBlocks + publishedBlocks);
+    assertThat(committedBlocks.subList(0, prefixBlocks)).allMatch(b -> b.getPipeline() == null);
+    if (publishedBlocks > 0) {
+      assertNotNull(committedBlocks.get(committedBlocks.size() - 1).getPipeline());
+    }
+
+    OmKeyInfo open = OmKeyInfo.getFromProtobuf(omResponse.getRecoverLeaseResponse().getOpenKeyInfo());
+    assertEquals(APPEND_RECOVERING, open.getAppendSession().getPhase());
+    assertEquals(prefixBlocks, open.getAppendSession().getPrefixBlockCount());
+    List<OmKeyLocationInfo> suffix = open.getLatestVersionLocations().createLocationList();
+    int suffixBlocks = publishedBlocks + unpublishedBlocks;
+    assertThat(suffix).hasSize(suffixBlocks);
+    int refreshed = Math.min(2, suffixBlocks);
+    assertThat(suffix.subList(suffixBlocks - refreshed, suffixBlocks)).allMatch(b -> b.getPipeline() != null);
+    for (int i = 0; i < prefixBlocks; i++) {
+      verify(scmContainerLocationProtocol, never()).getContainerWithPipeline(1000L + i);
+    }
+    if (suffixBlocks == 0) {
+      verify(scmContainerLocationProtocol, never()).getContainerWithPipeline(anyLong());
+    }
+
+    // The open record is fenced in place, without the hsync recovery markers, and stays in the session index.
+    String openKey = getOpenFileName();
+    OmKeyInfo fenced = omMetadataManager.getOpenKeyTable(getBucketLayout()).get(openKey);
+    assertEquals(APPEND_RECOVERING, fenced.getAppendSession().getPhase());
+    assertEquals(oldTime, fenced.getAppendSession().getLastRenewedAt());
+    assertEquals(100L, fenced.getUpdateID());
+    assertEquals(oldTime, fenced.getModificationTime());
+    assertThat(fenced.getMetadata()).doesNotContainKeys(OzoneConsts.LEASE_RECOVERY, OzoneConsts.HSYNC_CLIENT_ID);
+    assertEquals(openKey, omMetadataManager.getAppendSessionOpenKey(volumeName, bucketName, clientID));
+    OmKeyInfo owner = omMetadataManager.getKeyTable(getBucketLayout()).get(getFileName());
+    assertEquals(clientID, owner.getAppendOwnerSessionId());
+    assertEquals(oldTime, owner.getModificationTime());
+  }
+
+  /**
+   * The append soft limit is measured from the last lease renewal, not from the modification time.
+   */
+  @ParameterizedTest
+  @ValueSource(booleans = {true, false})
+  public void testLeaseSoftLimitForAppendSession(boolean force) throws Exception {
+    forceRecovery = force;
+    // old modification time, fresh renewal
+    addAppendSession(1, 1, 0, Time.now() - TimeUnit.DAYS.toMillis(1), Time.now(), APPEND_ACTIVE);
+    ozoneManager.getConfiguration().set(OzoneConfigKeys.OZONE_OM_LEASE_SOFT_LIMIT, "1h");
+
+    OMResponse omResponse = validateAndUpdateCache().getOMResponse();
+    AppendSessionPhase phase = omMetadataManager.getOpenKeyTable(getBucketLayout()).get(getOpenFileName())
+        .getAppendSession().getPhase();
+    if (force) {
+      assertEquals(OzoneManagerProtocolProtos.Status.OK, omResponse.getStatus());
+      assertEquals(APPEND_RECOVERING, phase);
+      // A later call without force joins the recovery although the lease is inside the soft limit.
+      forceRecovery = false;
+      omResponse = validateAndUpdateCache().getOMResponse();
+      assertEquals(OzoneManagerProtocolProtos.Status.OK, omResponse.getStatus());
+      OmKeyInfo joined = OmKeyInfo.getFromProtobuf(omResponse.getRecoverLeaseResponse().getOpenKeyInfo());
+      assertEquals(APPEND_RECOVERING, joined.getAppendSession().getPhase());
+    } else {
+      assertEquals(OzoneManagerProtocolProtos.Status.KEY_UNDER_LEASE_SOFT_LIMIT_PERIOD, omResponse.getStatus());
+      assertEquals(APPEND_ACTIVE, phase);
+    }
+  }
+
+  @Test
+  public void testRecoverAppendSessionIgnoresModificationTime() throws Exception {
+    // fresh modification time, old renewal
+    addAppendSession(1, 1, 0, Time.now(), Time.now() - TimeUnit.HOURS.toMillis(2), APPEND_ACTIVE);
+    ozoneManager.getConfiguration().set(OzoneConfigKeys.OZONE_OM_LEASE_SOFT_LIMIT, "1h");
+
+    assertEquals(OzoneManagerProtocolProtos.Status.OK, validateAndUpdateCache().getOMResponse().getStatus());
+    assertEquals(APPEND_RECOVERING, omMetadataManager.getOpenKeyTable(getBucketLayout()).get(getOpenFileName())
+        .getAppendSession().getPhase());
+  }
+
+  @Test
+  public void testRecoverAppendSessionWithoutIndexEntry() throws Exception {
+    addAppendSession(1, 0, 1, 0, 0, APPEND_ACTIVE);
+    omMetadataManager.removeAppendSession(volumeName, bucketName, clientID);
+
+    assertEquals(OzoneManagerProtocolProtos.Status.OK, validateAndUpdateCache().getOMResponse().getStatus());
+    assertEquals(APPEND_RECOVERING, omMetadataManager.getOpenKeyTable(getBucketLayout()).get(getOpenFileName())
+        .getAppendSession().getPhase());
+  }
+
+  @Test
+  public void testRecoverAppendSessionWithoutOpenRecord() throws Exception {
+    addAppendSession(1, 0, 0, 0, 0, APPEND_ACTIVE);
+    omMetadataManager.getOpenKeyTable(getBucketLayout()).delete(getOpenFileName());
+
+    assertEquals(OzoneManagerProtocolProtos.Status.KEY_NOT_FOUND, validateAndUpdateCache().getOMResponse().getStatus());
+    assertEquals(clientID,
+        omMetadataManager.getKeyTable(getBucketLayout()).get(getFileName()).getAppendOwnerSessionId());
+  }
+
+  /**
+   * Adds a file owned by append session {@code clientID} the way admission, allocation and hsync leave it: the
+   * committed record holds the prefix followed by the published suffix, the open record holds only the suffix.
+   */
+  private void addAppendSession(int prefixBlocks, int publishedBlocks, int unpublishedBlocks, long modificationTime,
+      long lastRenewedAt, AppendSessionPhase phase) throws Exception {
+    String parentDir = "c/d/e";
+    keyName = parentDir + "/f";
+    OMRequestTestUtils.addVolumeAndBucketToDB(volumeName, bucketName, omMetadataManager, getBucketLayout());
+    parentId = OMRequestTestUtils.addParentsToDirTable(volumeName, bucketName, parentDir, omMetadataManager);
+    List<OmKeyLocationInfo> blocks = getKeyLocation(prefixBlocks + publishedBlocks + unpublishedBlocks);
+
+    OmKeyInfo committed = OMRequestTestUtils.createOmKeyInfo(volumeName, bucketName, keyName, replicationConfig,
+            new OmKeyLocationInfoGroup(version, new ArrayList<>(), false))
+        .setParentObjectID(parentId).setModificationTime(modificationTime).setAppendOwnerSessionId(clientID).build();
+    committed.appendNewBlocks(blocks.subList(0, prefixBlocks + publishedBlocks), false);
+    OMRequestTestUtils.addFileToKeyTable(false, false, committed.getFileName(), committed, clientID,
+        committed.getUpdateID(), omMetadataManager);
+
+    OmKeyInfo open = OMRequestTestUtils.createOmKeyInfo(volumeName, bucketName, keyName, replicationConfig,
+            new OmKeyLocationInfoGroup(version, new ArrayList<>(), false))
+        .setParentObjectID(parentId).setModificationTime(modificationTime)
+        .setAppendSession(new OmAppendSession(phase, 200L * prefixBlocks, prefixBlocks, lastRenewedAt, lastRenewedAt))
+        .build();
+    open.appendNewBlocks(blocks.subList(prefixBlocks, blocks.size()), false);
+    String openKey = OMRequestTestUtils.addFileToKeyTable(true, false, open.getFileName(), open, clientID,
+        open.getUpdateID(), omMetadataManager);
+    omMetadataManager.putAppendSession(volumeName, bucketName, clientID, openKey);
   }
 
   private KeyArgs getNewKeyArgs(OmKeyInfo omKeyInfo, long deltaLength) throws IOException {

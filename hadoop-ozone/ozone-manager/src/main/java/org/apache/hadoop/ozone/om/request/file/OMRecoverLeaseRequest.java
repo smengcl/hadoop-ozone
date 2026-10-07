@@ -30,6 +30,7 @@ import static org.apache.hadoop.ozone.protocol.proto.OzoneManagerProtocolProtos.
 
 import java.io.IOException;
 import java.nio.file.InvalidPathException;
+import java.util.Collections;
 import java.util.EnumSet;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -46,6 +47,7 @@ import org.apache.hadoop.ozone.om.OzoneManager;
 import org.apache.hadoop.ozone.om.exceptions.OMException;
 import org.apache.hadoop.ozone.om.execution.flowcontrol.ExecutionContext;
 import org.apache.hadoop.ozone.om.helpers.BucketLayout;
+import org.apache.hadoop.ozone.om.helpers.OmAppendSession;
 import org.apache.hadoop.ozone.om.helpers.OmFSOFile;
 import org.apache.hadoop.ozone.om.helpers.OmKeyInfo;
 import org.apache.hadoop.ozone.om.helpers.OmKeyLocationInfo;
@@ -55,6 +57,7 @@ import org.apache.hadoop.ozone.om.request.util.OmResponseUtil;
 import org.apache.hadoop.ozone.om.response.OMClientResponse;
 import org.apache.hadoop.ozone.om.response.file.OMRecoverLeaseResponse;
 import org.apache.hadoop.ozone.om.upgrade.DisallowedUntilLayoutVersion;
+import org.apache.hadoop.ozone.protocol.proto.OzoneManagerProtocolProtos.AppendSessionPhase;
 import org.apache.hadoop.ozone.protocol.proto.OzoneManagerProtocolProtos.OMRequest;
 import org.apache.hadoop.ozone.protocol.proto.OzoneManagerProtocolProtos.OMResponse;
 import org.apache.hadoop.ozone.protocol.proto.OzoneManagerProtocolProtos.RecoverLeaseRequest;
@@ -203,6 +206,12 @@ public class OMRecoverLeaseRequest extends OMKeyRequest {
       throw new OMException("Key:" + keyName + " not found in keyTable.", KEY_NOT_FOUND);
     }
 
+    final Long appendSessionId = keyInfo.getAppendOwnerSessionId();
+    if (appendSessionId != null) {
+      startAppendRecovery(ozoneManager, fsoFile, appendSessionId, transactionLogIndex);
+      return buildResponse(ozoneManager, keyInfo);
+    }
+
     final String writerId = keyInfo.getMetadata().get(OzoneConsts.HSYNC_CLIENT_ID);
     if (writerId == null) {
       // if file is closed, do nothing and return right away.
@@ -237,6 +246,44 @@ public class OMRecoverLeaseRequest extends OMKeyRequest {
       omMetadataManager.getOpenKeyTable(getBucketLayout()).addCacheEntry(
           dbOpenFileKey, openKeyInfo, transactionLogIndex);
     }
+    return buildResponse(ozoneManager, keyInfo);
+  }
+
+  /**
+   * Fences the append session that owns the file: ACTIVE becomes RECOVERING once the lease is past the soft limit
+   * (or with force). A session already RECOVERING is joined. The session stays in the append session index.
+   */
+  private void startAppendRecovery(OzoneManager ozoneManager, OmFSOFile fsoFile, long sessionId,
+      long transactionLogIndex) throws IOException {
+    final String indexedOpenKey = omMetadataManager.getAppendSessionOpenKey(volumeName, bucketName, sessionId);
+    dbOpenFileKey = indexedOpenKey != null ? indexedOpenKey : fsoFile.getOpenFileName(sessionId);
+    openKeyInfo = omMetadataManager.getOpenKeyTable(getBucketLayout()).get(dbOpenFileKey);
+    final OmAppendSession session = openKeyInfo == null ? null : openKeyInfo.getAppendSession();
+    if (session == null || session.getPhase() == AppendSessionPhase.APPEND_INVALIDATED) {
+      throw new OMException("Open Key " + dbOpenFileKey + " of append session " + sessionId
+          + " not found in openKeyTable", KEY_NOT_FOUND);
+    }
+    if (!session.isActive()) {
+      LOG.debug("Key: {} is already under recovery", keyName);
+      return;
+    }
+    final long leaseSoftLimit = ozoneManager.getConfiguration()
+        .getTimeDuration(OZONE_OM_LEASE_SOFT_LIMIT, OZONE_OM_LEASE_SOFT_LIMIT_DEFAULT, TimeUnit.MILLISECONDS);
+    // ponytail: local clock read during apply like the hsync branch, so replicas can decide differently near the
+    // limit. Carry a leader supplied time in RecoverLeaseRequest once the proto can change.
+    if (!force && Time.now() < session.getLastRenewedAt() + leaseSoftLimit) {
+      throw new OMException("Append session " + sessionId + " of " + keyName
+          + " renewed recently and is inside soft limit period", KEY_UNDER_LEASE_SOFT_LIMIT_PERIOD);
+    }
+    // The file's modification time is left alone: fencing a writer publishes no data.
+    openKeyInfo = openKeyInfo.toBuilder()
+        .setAppendSession(session.withPhase(AppendSessionPhase.APPEND_RECOVERING))
+        .setUpdateID(transactionLogIndex)
+        .build();
+    omMetadataManager.getOpenKeyTable(getBucketLayout()).addCacheEntry(dbOpenFileKey, openKeyInfo, transactionLogIndex);
+  }
+
+  private RecoverLeaseResponse buildResponse(OzoneManager ozoneManager, OmKeyInfo keyInfo) throws IOException {
     // override key name with normalizedKeyPath
     keyInfo.setKeyName(keyName);
     openKeyInfo.setKeyName(keyName);
@@ -244,9 +291,14 @@ public class OMRecoverLeaseRequest extends OMKeyRequest {
     OmKeyLocationInfoGroup keyLatestVersionLocations = keyInfo.getLatestVersionLocations();
     List<OmKeyLocationInfo> keyLocationInfoList = keyLatestVersionLocations.createLocationList();
     OmKeyLocationInfoGroup openKeyLatestVersionLocations = openKeyInfo.getLatestVersionLocations();
-    List<OmKeyLocationInfo> openKeyLocationInfoList = openKeyLatestVersionLocations.createLocationList();
+    // An append session may not have allocated any block yet.
+    List<OmKeyLocationInfo> openKeyLocationInfoList = openKeyLatestVersionLocations == null
+        ? Collections.emptyList() : openKeyLatestVersionLocations.createLocationList();
 
-    if (!keyLocationInfoList.isEmpty()) {
+    // An append session owns only the blocks after its prefix. Never issue a write token for a prefix block.
+    final OmAppendSession appendSession = openKeyInfo.getAppendSession();
+    if (!keyLocationInfoList.isEmpty()
+        && (appendSession == null || keyLocationInfoList.size() > appendSession.getPrefixBlockCount())) {
       updateBlockInfo(ozoneManager, keyLocationInfoList.get(keyLocationInfoList.size() - 1));
     }
     if (openKeyLocationInfoList.size() > 1) {
