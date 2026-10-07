@@ -15,7 +15,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-#suite:HA-s3g
+#suite:secure-s3g
 
 set -u -o pipefail
 
