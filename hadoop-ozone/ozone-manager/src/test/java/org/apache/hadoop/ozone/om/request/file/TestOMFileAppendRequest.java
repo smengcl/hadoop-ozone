@@ -20,19 +20,24 @@ package org.apache.hadoop.ozone.om.request.file;
 import static org.apache.hadoop.ozone.protocol.proto.OzoneManagerProtocolProtos.Status.APPEND_NOT_SUPPORTED;
 import static org.apache.hadoop.ozone.protocol.proto.OzoneManagerProtocolProtos.Status.APPEND_SESSION_NOT_FOUND;
 import static org.apache.hadoop.ozone.protocol.proto.OzoneManagerProtocolProtos.Status.APPEND_WRITER_CONFLICT;
+import static org.apache.hadoop.ozone.protocol.proto.OzoneManagerProtocolProtos.Status.INVALID_REQUEST;
 import static org.apache.hadoop.ozone.protocol.proto.OzoneManagerProtocolProtos.Status.KEY_NOT_FOUND;
+import static org.apache.hadoop.ozone.protocol.proto.OzoneManagerProtocolProtos.Status.KEY_UNDER_LEASE_SOFT_LIMIT_PERIOD;
 import static org.apache.hadoop.ozone.protocol.proto.OzoneManagerProtocolProtos.Status.NOT_A_FILE;
 import static org.apache.hadoop.ozone.protocol.proto.OzoneManagerProtocolProtos.Status.OK;
 import static org.assertj.core.api.Assertions.assertThat;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
 import org.apache.hadoop.hdds.client.BlockID;
 import org.apache.hadoop.hdds.client.RatisReplicationConfig;
 import org.apache.hadoop.hdds.utils.db.BatchOperation;
 import org.apache.hadoop.hdds.utils.db.cache.CacheKey;
 import org.apache.hadoop.hdds.utils.db.cache.CacheValue;
+import org.apache.hadoop.ozone.OzoneAcl;
+import org.apache.hadoop.ozone.OzoneConfigKeys;
 import org.apache.hadoop.ozone.OzoneConsts;
 import org.apache.hadoop.ozone.om.OMConfigKeys;
 import org.apache.hadoop.ozone.om.helpers.BucketLayout;
@@ -40,22 +45,30 @@ import org.apache.hadoop.ozone.om.helpers.OmAppendSession;
 import org.apache.hadoop.ozone.om.helpers.OmKeyInfo;
 import org.apache.hadoop.ozone.om.helpers.OmKeyLocationInfo;
 import org.apache.hadoop.ozone.om.helpers.OmKeyLocationInfoGroup;
+import org.apache.hadoop.ozone.om.helpers.RepeatedOmKeyInfo;
 import org.apache.hadoop.ozone.om.request.OMRequestTestUtils;
 import org.apache.hadoop.ozone.om.request.key.OMAllocateBlockRequestWithFSO;
+import org.apache.hadoop.ozone.om.request.key.OMKeyCommitRequestWithFSO;
 import org.apache.hadoop.ozone.om.request.key.OMKeyRequestTests;
+import org.apache.hadoop.ozone.om.request.util.OmAppendUtil;
 import org.apache.hadoop.ozone.om.response.OMClientResponse;
+import org.apache.hadoop.ozone.om.response.key.OMKeyCommitResponse;
 import org.apache.hadoop.ozone.protocol.proto.OzoneManagerProtocolProtos.AllocateBlockRequest;
 import org.apache.hadoop.ozone.protocol.proto.OzoneManagerProtocolProtos.AppendConflictInfo;
 import org.apache.hadoop.ozone.protocol.proto.OzoneManagerProtocolProtos.AppendFileRequest;
 import org.apache.hadoop.ozone.protocol.proto.OzoneManagerProtocolProtos.AppendFileResponse;
 import org.apache.hadoop.ozone.protocol.proto.OzoneManagerProtocolProtos.AppendSessionPhase;
 import org.apache.hadoop.ozone.protocol.proto.OzoneManagerProtocolProtos.AppendWriterKind;
+import org.apache.hadoop.ozone.protocol.proto.OzoneManagerProtocolProtos.CommitKeyRequest;
 import org.apache.hadoop.ozone.protocol.proto.OzoneManagerProtocolProtos.KeyArgs;
+import org.apache.hadoop.ozone.protocol.proto.OzoneManagerProtocolProtos.KeyLocation;
 import org.apache.hadoop.ozone.protocol.proto.OzoneManagerProtocolProtos.OMRequest;
 import org.apache.hadoop.ozone.protocol.proto.OzoneManagerProtocolProtos.OMResponse;
 import org.apache.hadoop.ozone.protocol.proto.OzoneManagerProtocolProtos.Type;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 
 /**
  * Tests append sessions in OM: admission by {@link OMFileAppendRequest} and the session's later requests.
@@ -67,6 +80,7 @@ public class TestOMFileAppendRequest extends OMKeyRequestTests {
   private static final long PREFIX_CONTAINER_ID = 5000;
   private static final long SUFFIX_CONTAINER_ID = 6000;
   private static final long ORDINARY_CONTAINER_ID = 7000;
+  private static final OzoneAcl ACL = OzoneAcl.parseAcl("user:alice:r");
 
   private long parentId;
   private String dbFileKey;
@@ -240,6 +254,173 @@ public class TestOMFileAppendRequest extends OMKeyRequestTests {
     assertThat(openRecord(sessionId).getLatestVersionLocations().getLocationListCount()).isZero();
   }
 
+  @Test
+  public void testHsyncPublishesPrefixAndSuffix() throws Exception {
+    // A location version other than 0 shows that the suffix blocks join the committed version.
+    version = 2;
+    OmKeyInfo before = addCommittedFile(2);
+    long sessionId = admit();
+    allocate(sessionId);
+    allocate(sessionId);
+    long usedBytes = bucketUsedBytes();
+
+    OMClientResponse response = hsync(sessionId, 2 * BLOCK_LENGTH + 150, 150);
+
+    assertThat(response.getOMResponse().getStatus()).isEqualTo(OK);
+    flush(response);
+    // Read back from the DB: the block order must survive the codec.
+    OmKeyInfo committed = omMetadataManager.getKeyTable(getBucketLayout()).getSkipCache(dbFileKey);
+    assertThat(blockIds(committed)).containsExactly(prefixBlockId(0), prefixBlockId(1), suffixBlockId(0));
+    assertThat(committed.getDataSize()).isEqualTo(2 * BLOCK_LENGTH + 150);
+    assertThat(committed.getModificationTime()).isGreaterThan(before.getModificationTime());
+    assertThat(committed.getAppendOwnerSessionId()).isEqualTo(sessionId);
+    assertThat(committed.getMetadata()).doesNotContainKey(OzoneConsts.HSYNC_CLIENT_ID);
+    assertThat(blockIds(openRecord(sessionId))).containsExactly(suffixBlockId(0), suffixBlockId(1));
+    assertThat(omMetadataManager.getAppendSessionOpenKey(volumeName, bucketName, sessionId))
+        .isEqualTo(dbOpenKey(sessionId));
+    assertThat(bucketUsedBytes()).isEqualTo(usedBytes + 150);
+
+    // The same publication again changes nothing.
+    assertThat(hsync(sessionId, 2 * BLOCK_LENGTH + 150, 150).getOMResponse().getStatus()).isEqualTo(OK);
+    assertThat(bucketUsedBytes()).isEqualTo(usedBytes + 150);
+    assertThat(committedFile().getModificationTime()).isEqualTo(committed.getModificationTime());
+
+    // Published bytes cannot regress, and the length must match the blocks.
+    assertThat(hsync(sessionId, 2 * BLOCK_LENGTH + 100, 100).getOMResponse().getStatus()).isEqualTo(INVALID_REQUEST);
+    assertThat(hsync(sessionId, 2 * BLOCK_LENGTH + 150, 160).getOMResponse().getStatus()).isEqualTo(INVALID_REQUEST);
+    assertThat(committedFile().getDataSize()).isEqualTo(2 * BLOCK_LENGTH + 150);
+
+    // Only the delta of a later publication is charged.
+    assertThat(hsync(sessionId, 2 * BLOCK_LENGTH + 1050, 1000, 50).getOMResponse().getStatus()).isEqualTo(OK);
+    assertThat(blockIds(committedFile()))
+        .containsExactly(prefixBlockId(0), prefixBlockId(1), suffixBlockId(0), suffixBlockId(1));
+    assertThat(bucketUsedBytes()).isEqualTo(usedBytes + 1050);
+  }
+
+  @Test
+  public void testCloseEndsSessionAndReleasesPrivateBlocks() throws Exception {
+    addCommittedFile(2);
+    long sessionId = admit();
+    // An attribute update after admission must survive the publication.
+    OmKeyInfo reserved = committedFile();
+    omMetadataManager.getKeyTable(getBucketLayout()).addCacheEntry(new CacheKey<>(dbFileKey),
+        CacheValue.get(++txnId, reserved.toBuilder().addMetadata("updated", "yes").addAcl(ACL).build()));
+    allocate(sessionId);
+    allocate(sessionId);
+    allocate(sessionId);
+    long usedBytes = bucketUsedBytes();
+    assertThat(hsync(sessionId, 2 * BLOCK_LENGTH + 150, 150).getOMResponse().getStatus()).isEqualTo(OK);
+
+    OMClientResponse response = close(sessionId, 2 * BLOCK_LENGTH + 1030, 1000, 30);
+
+    assertThat(response.getOMResponse().getStatus()).isEqualTo(OK);
+    flush(response);
+    OmKeyInfo committed = omMetadataManager.getKeyTable(getBucketLayout()).getSkipCache(dbFileKey);
+    assertThat(committed.getAppendOwnerSessionId()).isNull();
+    assertThat(committed.getAppendSession()).isNull();
+    assertThat(blockIds(committed))
+        .containsExactly(prefixBlockId(0), prefixBlockId(1), suffixBlockId(0), suffixBlockId(1));
+    assertThat(committed.getDataSize()).isEqualTo(2 * BLOCK_LENGTH + 1030);
+    assertThat(committed.getMetadata()).containsEntry("updated", "yes");
+    assertThat(committed.getAcls()).contains(ACL);
+    assertThat(bucketUsedBytes()).isEqualTo(usedBytes + 1030);
+    assertThat(omMetadataManager.getOpenKeyTable(getBucketLayout()).getSkipCache(dbOpenKey(sessionId))).isNull();
+    assertThat(omMetadataManager.getAppendSessionOpenKey(volumeName, bucketName, sessionId)).isNull();
+    // Only the block that was never published is released.
+    assertThat(blocksToDelete(response)).containsExactly(suffixBlockId(2));
+    assertThat(omMetadataManager.getDeletedTable().isEmpty()).isFalse();
+
+    // The session is gone.
+    assertThat(close(sessionId, 2 * BLOCK_LENGTH + 1030, 1000, 30).getOMResponse().getStatus())
+        .isEqualTo(KEY_NOT_FOUND);
+  }
+
+  @ParameterizedTest
+  @ValueSource(ints = {0, 1})
+  public void testEmptyAppendCloseLeavesFileUnchanged(int prefixBlocks) throws Exception {
+    OmKeyInfo before = addCommittedFile(prefixBlocks);
+    long sessionId = admit();
+    allocate(sessionId);
+    long usedBytes = bucketUsedBytes();
+
+    OMClientResponse response = close(sessionId, prefixBlocks * BLOCK_LENGTH);
+
+    assertThat(response.getOMResponse().getStatus()).isEqualTo(OK);
+    OmKeyInfo committed = committedFile();
+    assertThat(committed.getAppendOwnerSessionId()).isNull();
+    assertThat(blockIds(committed)).isEqualTo(blockIds(before));
+    assertThat(committed.getDataSize()).isEqualTo(before.getDataSize());
+    assertThat(committed.getModificationTime()).isEqualTo(before.getModificationTime());
+    assertThat(bucketUsedBytes()).isEqualTo(usedBytes);
+    assertThat(openRecord(sessionId)).isNull();
+    assertThat(blocksToDelete(response)).containsExactly(suffixBlockId(0));
+  }
+
+  @ParameterizedTest
+  @ValueSource(booleans = {true, false})
+  public void testRecoveryCommitKeepsPublishedSuffix(boolean bySessionId) throws Exception {
+    addCommittedFile(1);
+    long sessionId = admit();
+    allocate(sessionId);
+    allocate(sessionId);
+    assertThat(hsync(sessionId, BLOCK_LENGTH + 150, 150).getOMResponse().getStatus()).isEqualTo(OK);
+    setPhase(sessionId, AppendSessionPhase.APPEND_RECOVERING);
+
+    // The fenced writer can no longer publish.
+    assertThat(hsync(sessionId, BLOCK_LENGTH + 160, 160).getOMResponse().getStatus())
+        .isEqualTo(APPEND_SESSION_NOT_FOUND);
+    assertThat(close(sessionId, BLOCK_LENGTH + 160, 160).getOMResponse().getStatus())
+        .isEqualTo(APPEND_SESSION_NOT_FOUND);
+
+    // An empty suffix keeps what was published and drops the rest. The existing client sends client ID 0.
+    OMClientResponse response = commit(bySessionId ? sessionId : 0, false, true, BLOCK_LENGTH + 150);
+
+    assertThat(response.getOMResponse().getStatus()).isEqualTo(OK);
+    OmKeyInfo committed = committedFile();
+    assertThat(committed.getAppendOwnerSessionId()).isNull();
+    assertThat(blockIds(committed)).containsExactly(prefixBlockId(0), suffixBlockId(0));
+    assertThat(committed.getDataSize()).isEqualTo(BLOCK_LENGTH + 150);
+    assertThat(openRecord(sessionId)).isNull();
+    assertThat(omMetadataManager.getAppendSessionOpenKey(volumeName, bucketName, sessionId)).isNull();
+    assertThat(blocksToDelete(response)).containsExactly(suffixBlockId(1));
+  }
+
+  @Test
+  public void testRecoveryCommitOfActiveSessionNeedsExpiredLease() throws Exception {
+    addCommittedFile(1);
+    long sessionId = admit();
+    allocate(sessionId);
+
+    assertThat(commit(sessionId, false, true, BLOCK_LENGTH + 120, 120).getOMResponse().getStatus())
+        .isEqualTo(KEY_UNDER_LEASE_SOFT_LIMIT_PERIOD);
+    assertThat(committedFile().getAppendOwnerSessionId()).isEqualTo(sessionId);
+
+    ozoneManager.getConfiguration().set(OzoneConfigKeys.OZONE_OM_LEASE_SOFT_LIMIT, "0s");
+    assertThat(commit(sessionId, false, true, BLOCK_LENGTH + 120, 120).getOMResponse().getStatus()).isEqualTo(OK);
+    OmKeyInfo committed = committedFile();
+    assertThat(committed.getAppendOwnerSessionId()).isNull();
+    assertThat(blockIds(committed)).containsExactly(prefixBlockId(0), suffixBlockId(0));
+    assertThat(committed.getDataSize()).isEqualTo(BLOCK_LENGTH + 120);
+  }
+
+  @Test
+  public void testCommitOfInvalidatedSession() throws Exception {
+    addCommittedFile(1);
+    long sessionId = admit();
+    allocate(sessionId);
+    // What deleting the file does to its append session.
+    OmKeyInfo open = openRecord(sessionId);
+    omMetadataManager.getOpenKeyTable(getBucketLayout()).addCacheEntry(new CacheKey<>(dbOpenKey(sessionId)),
+        CacheValue.get(++txnId, OmAppendUtil.invalidate(open, committedFile(), txnId)));
+    omMetadataManager.getKeyTable(getBucketLayout()).addCacheEntry(new CacheKey<>(dbFileKey),
+        CacheValue.get(++txnId));
+    omMetadataManager.removeAppendSession(volumeName, bucketName, sessionId);
+
+    assertThat(close(sessionId, BLOCK_LENGTH + 120, 120).getOMResponse().getStatus())
+        .isEqualTo(APPEND_SESSION_NOT_FOUND);
+    assertThat(committedFile()).isNull();
+  }
+
   private static AppendConflictInfo assertConflict(OMClientResponse response, AppendWriterKind kind) {
     OMResponse omResponse = response.getOMResponse();
     assertThat(omResponse.getStatus()).isEqualTo(APPEND_WRITER_CONFLICT);
@@ -282,6 +463,50 @@ public class TestOMFileAppendRequest extends OMKeyRequestTests {
         .build();
     return new OMAllocateBlockRequestWithFSO(request, getBucketLayout()).validateAndUpdateCache(ozoneManager,
         ++txnId);
+  }
+
+  private OMClientResponse hsync(long sessionId, long fileLength, long... suffixBlockLengths) throws Exception {
+    return commit(sessionId, true, false, fileLength, suffixBlockLengths);
+  }
+
+  private OMClientResponse close(long sessionId, long fileLength, long... suffixBlockLengths) throws Exception {
+    return commit(sessionId, false, false, fileLength, suffixBlockLengths);
+  }
+
+  /** Commits the first suffix blocks of the session with the given lengths. */
+  private OMClientResponse commit(long commitClientId, boolean hsync, boolean recovery, long fileLength,
+      long... suffixBlockLengths) throws Exception {
+    KeyArgs.Builder keyArgs = keyArgs().setDataSize(fileLength);
+    for (int i = 0; i < suffixBlockLengths.length; i++) {
+      keyArgs.addKeyLocations(KeyLocation.newBuilder()
+          .setBlockID(suffixBlockId(i).getProtobuf()).setOffset(0).setLength(suffixBlockLengths[i]));
+    }
+    OMRequest request = OMRequest.newBuilder()
+        .setCmdType(Type.CommitKey)
+        .setClientId(UUID.randomUUID().toString())
+        .setCommitKeyRequest(CommitKeyRequest.newBuilder()
+            .setKeyArgs(keyArgs).setClientID(commitClientId).setHsync(hsync).setRecovery(recovery))
+        .build();
+    request = new OMKeyCommitRequestWithFSO(request, getBucketLayout()).preExecute(ozoneManager);
+    return new OMKeyCommitRequestWithFSO(request, getBucketLayout()).validateAndUpdateCache(ozoneManager, ++txnId);
+  }
+
+  private static List<BlockID> blocksToDelete(OMClientResponse response) {
+    List<BlockID> ids = new ArrayList<>();
+    Map<String, RepeatedOmKeyInfo> keysToDelete = ((OMKeyCommitResponse) response).getKeysToDelete();
+    if (keysToDelete != null) {
+      keysToDelete.values().forEach(keys -> keys.getOmKeyInfoList().forEach(key -> ids.addAll(blockIds(key))));
+    }
+    return ids;
+  }
+
+  private long bucketUsedBytes() throws Exception {
+    return omMetadataManager.getBucketTable().get(omMetadataManager.getBucketKey(volumeName, bucketName))
+        .getUsedBytes();
+  }
+
+  private static BlockID prefixBlockId(int index) {
+    return new BlockID(PREFIX_CONTAINER_ID + index, LOCAL_ID + index);
   }
 
   private static BlockID suffixBlockId(int index) {
@@ -337,6 +562,7 @@ public class TestOMFileAppendRequest extends OMKeyRequestTests {
             new OmKeyLocationInfoGroup(version, locations))
         .setObjectID(parentId + 100)
         .setParentObjectID(parentId)
+        .setModificationTime(1)
         .setDataSize(locations.size() * BLOCK_LENGTH);
   }
 
