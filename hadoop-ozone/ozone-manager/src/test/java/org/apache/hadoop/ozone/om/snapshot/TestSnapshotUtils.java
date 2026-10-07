@@ -17,6 +17,7 @@
 
 package org.apache.hadoop.ozone.om.snapshot;
 
+import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -167,5 +168,62 @@ public class TestSnapshotUtils {
     OmKeyInfo prev = createOmKeyInfo(false, prevGroup);
     OmKeyInfo del = createOmKeyInfo(false, delGroup);
     assertFalse(SnapshotUtils.isBlockLocationInfoSame(prev, del));
+  }
+
+  @Test
+  public void testHasSharedBlocksNull() {
+    OmKeyInfo keyInfo = createOmKeyInfo(false, createLocationGroup(createLocation(1, 100)));
+    assertThat(SnapshotUtils.hasSharedBlocks(null, null)).isFalse();
+    assertThat(SnapshotUtils.hasSharedBlocks(keyInfo, null)).isFalse();
+    assertThat(SnapshotUtils.hasSharedBlocks(null, keyInfo)).isFalse();
+  }
+
+  /**
+   * An appended file keeps the blocks captured by the snapshot and adds new ones. Snapshot diff must keep reporting it
+   * as modified while reclamation must see the shared prefix.
+   */
+  @Test
+  public void testHasSharedBlocksAppendedPrefix() {
+    OmKeyInfo prev = createOmKeyInfo(false, createLocationGroup(createLocation(1, 100)));
+    OmKeyInfo del = createOmKeyInfo(false, createLocationGroup(createLocation(1, 100), createLocation(2, 200)));
+    assertThat(SnapshotUtils.isBlockLocationInfoSame(prev, del)).isFalse();
+    assertThat(SnapshotUtils.hasSharedBlocks(prev, del)).isTrue();
+    assertThat(SnapshotUtils.hasSharedBlocks(del, prev)).isTrue();
+  }
+
+  @Test
+  public void testHasSharedBlocksDisjointAndEmpty() {
+    OmKeyInfo prev = createOmKeyInfo(false, createLocationGroup(createLocation(1, 100)));
+    OmKeyInfo del = createOmKeyInfo(false, createLocationGroup(createLocation(2, 100), createLocation(3, 100)));
+    OmKeyInfo empty = createOmKeyInfo(false, createLocationGroup());
+    assertThat(SnapshotUtils.hasSharedBlocks(prev, del)).isFalse();
+    assertThat(SnapshotUtils.hasSharedBlocks(prev, empty)).isFalse();
+    assertThat(SnapshotUtils.hasSharedBlocks(empty, del)).isFalse();
+    assertThat(SnapshotUtils.hasSharedBlocks(empty, empty)).isFalse();
+  }
+
+  /**
+   * Blocks are matched by container and local ID only: a different position or length is still the same block.
+   */
+  @Test
+  public void testHasSharedBlocksIgnoresPositionAndLength() {
+    OmKeyInfo prev = createOmKeyInfo(false, createLocationGroup(createLocation(2, 200)));
+    OmKeyInfo del = createOmKeyInfo(false,
+        createLocationGroup(createLocation(1, 100), createLocation(3, 300), createLocation(2, 50)));
+    assertThat(SnapshotUtils.hasSharedBlocks(prev, del)).isTrue();
+  }
+
+  /**
+   * Key deletion releases the blocks of every location version, so all of them take part in the comparison.
+   */
+  @Test
+  public void testHasSharedBlocksInOlderLocationVersion() {
+    OmKeyLocationInfoGroup oldVersion = createLocationGroup(createLocation(1, 100));
+    OmKeyLocationInfoGroup newVersion = new OmKeyLocationInfoGroup(1, Arrays.asList(createLocation(2, 200)));
+    OmKeyInfo prev = createOmKeyInfo(false, oldVersion);
+    OmKeyInfo del = createOmKeyInfo(false, Arrays.asList(oldVersion, newVersion), 0);
+    assertThat(SnapshotUtils.isBlockLocationInfoSame(prev, del)).isFalse();
+    assertThat(SnapshotUtils.hasSharedBlocks(prev, del)).isTrue();
+    assertThat(SnapshotUtils.getContainerBlockIds(del)).hasSize(2);
   }
 }

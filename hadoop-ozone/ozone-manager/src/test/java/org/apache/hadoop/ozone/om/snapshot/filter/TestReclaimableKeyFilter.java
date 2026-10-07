@@ -21,6 +21,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.spy;
 import static org.mockito.Mockito.when;
 
 import java.io.IOException;
@@ -28,6 +29,11 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.stream.Collectors;
+import java.util.stream.LongStream;
+import org.apache.hadoop.hdds.client.BlockID;
+import org.apache.hadoop.hdds.client.RatisReplicationConfig;
+import org.apache.hadoop.hdds.protocol.proto.HddsProtos.ReplicationFactor;
 import org.apache.hadoop.hdds.utils.db.Table;
 import org.apache.hadoop.ozone.om.KeyManager;
 import org.apache.hadoop.ozone.om.OMMetadataManager;
@@ -37,6 +43,8 @@ import org.apache.hadoop.ozone.om.OzoneManager;
 import org.apache.hadoop.ozone.om.SnapshotChainManager;
 import org.apache.hadoop.ozone.om.helpers.OmBucketInfo;
 import org.apache.hadoop.ozone.om.helpers.OmKeyInfo;
+import org.apache.hadoop.ozone.om.helpers.OmKeyLocationInfo;
+import org.apache.hadoop.ozone.om.helpers.OmKeyLocationInfoGroup;
 import org.apache.hadoop.ozone.om.helpers.SnapshotInfo;
 import org.apache.hadoop.ozone.om.lock.IOzoneManagerLock;
 import org.apache.hadoop.ozone.om.snapshot.SnapshotUtils;
@@ -164,6 +172,23 @@ public class TestReclaimableKeyFilter extends AbstractReclaimableFilterTest {
   }
 
   /**
+   * Returns a real key (spied only so that the common test method can stub its volume and bucket) with one block of
+   * 100 bytes per given local ID, so that the block comparison of the filter runs unmocked.
+   */
+  private OmKeyInfo getOmKeyInfoWithBlocks(long objectId, long... localIds) {
+    List<OmKeyLocationInfo> locations = LongStream.of(localIds)
+        .mapToObj(localId -> new OmKeyLocationInfo.Builder().setBlockID(new BlockID(1L, localId)).setLength(100)
+            .build())
+        .collect(Collectors.toList());
+    List<OmKeyLocationInfoGroup> locationVersions = new ArrayList<>();
+    locationVersions.add(new OmKeyLocationInfoGroup(0, locations));
+    return spy(new OmKeyInfo.Builder().setVolumeName("vol").setBucketName("bucket").setKeyName("key")
+        .setObjectID(objectId).setDataSize(100L * localIds.length)
+        .setReplicationConfig(RatisReplicationConfig.getInstance(ReplicationFactor.THREE))
+        .setOmKeyLocationInfos(locationVersions).build());
+  }
+
+  /**
    * Tests that a key present in prior snapshots is not reclaimable.
    *
    * @param actualNumberOfSnapshots the total number of snapshots in the chain.
@@ -222,7 +247,8 @@ public class TestReclaimableKeyFilter extends AbstractReclaimableFilterTest {
   }
 
   /**
-   * Tests the filter behavior when block location information differs between snapshots.
+   * Tests that a key with the same object ID as the previous snapshot's key but none of its blocks (an overwritten
+   * key) is reclaimable.
    *
    * @param actualNumberOfSnapshots the total number of snapshots in the chain.
    * @param index the snapshot chain index used for testing.
@@ -237,15 +263,53 @@ public class TestReclaimableKeyFilter extends AbstractReclaimableFilterTest {
     String volume = getVolumes().get(3);
     String bucket = getBuckets().get(1);
     index = Math.min(index, actualNumberOfSnapshots);
-    OmKeyInfo keyInfo = getMockedOmKeyInfo(1);
-    OmKeyInfo prevKeyInfo = index - 1 >= 0 ? getMockedOmKeyInfo(1) : null;
+    OmKeyInfo keyInfo = getOmKeyInfoWithBlocks(1, 2, 3);
+    OmKeyInfo prevKeyInfo = index - 1 >= 0 ? getOmKeyInfoWithBlocks(1, 1) : null;
     OmKeyInfo prevPrevKeyInfo = index - 2 >= 0 ? getMockedOmKeyInfo(3) : null;
-    if (prevKeyInfo != null) {
-      getMockedSnapshotUtils().when(() -> SnapshotUtils.isBlockLocationInfoSame(eq(prevKeyInfo), eq(keyInfo)))
-          .thenReturn(false);
-    }
     testReclaimableKeyFilter(volume, bucket, index, keyInfo, prevKeyInfo, prevPrevKeyInfo,
         true, Optional.empty(), Optional.empty());
+  }
+
+  /**
+   * Tests that a key sharing some but not all blocks with the previous snapshot's key of the same object ID (an
+   * appended file) is not reclaimable, since reclaiming it would delete blocks the snapshot still references.
+   * The previous snapshot's key counts towards the exclusive size of that snapshot only when the snapshot before it
+   * has no version sharing blocks with it.
+   *
+   * @param actualNumberOfSnapshots the total number of snapshots in the chain.
+   * @param index the snapshot chain index used for testing.
+   * @throws IOException if an I/O error occurs during the test.
+   * @throws RocksDBException if RocksDB encounters an error.
+   */
+  @ParameterizedTest
+  @MethodSource("testReclaimableFilterArguments")
+  public void testNonReclaimableKeyWithSharedBlockIds(int actualNumberOfSnapshots, int index)
+      throws IOException, RocksDBException {
+    setup(2, actualNumberOfSnapshots, index, 4, 2);
+    String volume = getVolumes().get(3);
+    String bucket = getBuckets().get(1);
+    index = Math.min(index, actualNumberOfSnapshots);
+    // Blocks [1] captured by the oldest snapshot, [1, 2] by the previous one, [1, 2, 3] when the key was deleted.
+    OmKeyInfo keyInfo = getOmKeyInfoWithBlocks(1, 1, 2, 3);
+    OmKeyInfo prevKeyInfo = index - 1 >= 0 ? getOmKeyInfoWithBlocks(1, 1, 2) : null;
+    OmKeyInfo prevPrevKeyInfo = index - 2 >= 0 ? getOmKeyInfoWithBlocks(1, 1) : null;
+    Optional<AtomicLong> size = Optional.ofNullable(prevKeyInfo)
+        .map(i -> prevPrevKeyInfo == null ? new AtomicLong(200) : null);
+    Optional<AtomicLong> replicatedSize = Optional.ofNullable(prevKeyInfo)
+        .map(i -> prevPrevKeyInfo == null ? new AtomicLong(600) : null);
+    testReclaimableKeyFilter(volume, bucket, index, keyInfo, prevKeyInfo, prevPrevKeyInfo,
+        prevKeyInfo == null, size, replicatedSize);
+
+    // The snapshot before the previous one holds an unrelated key at that path.
+    OmKeyInfo unrelatedPrevPrevKeyInfo = index - 2 >= 0 ? getMockedOmKeyInfo(3) : null;
+    if (prevKeyInfo != null) {
+      size = Optional.of(size.orElse(new AtomicLong()));
+      replicatedSize = Optional.of(replicatedSize.orElse(new AtomicLong()));
+      size.get().addAndGet(200L);
+      replicatedSize.get().addAndGet(600L);
+    }
+    testReclaimableKeyFilter(volume, bucket, index, keyInfo, prevKeyInfo, unrelatedPrevPrevKeyInfo,
+        prevKeyInfo == null, size, replicatedSize);
   }
 
   /**

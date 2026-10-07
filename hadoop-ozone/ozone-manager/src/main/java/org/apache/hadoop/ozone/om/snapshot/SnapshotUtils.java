@@ -24,11 +24,15 @@ import static org.apache.hadoop.ozone.om.exceptions.OMException.ResultCodes.TIME
 import java.io.File;
 import java.io.IOException;
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.List;
 import java.util.NoSuchElementException;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.Set;
 import java.util.UUID;
+import java.util.stream.Collectors;
+import org.apache.hadoop.hdds.client.ContainerBlockID;
 import org.apache.hadoop.hdds.utils.db.managed.ManagedRocksDB;
 import org.apache.hadoop.ozone.om.OMMetadataManager;
 import org.apache.hadoop.ozone.om.OzoneManager;
@@ -335,5 +339,28 @@ public final class SnapshotUtils {
       }
     }
     return true;
+  }
+
+  /**
+   * Returns the blocks of every location version of the key, i.e. everything key deletion would release.
+   */
+  public static Set<ContainerBlockID> getContainerBlockIds(OmKeyInfo keyInfo) {
+    return keyInfo.getKeyLocationVersions().stream()
+        .map(OmKeyLocationInfoGroup::getLocationLists).flatMap(Collection::stream).flatMap(List::stream)
+        .map(location -> location.getBlockID().getContainerBlockID()).collect(Collectors.toSet());
+  }
+
+  /**
+   * Checks whether the deleted key releases any block that the previous snapshot's key still references. Unlike
+   * {@link #isBlockLocationInfoSame}, blocks are matched by container and local ID alone, regardless of their position,
+   * length or version, so an appended file overlaps the shorter version captured by a snapshot.
+   * @return true if at least one block is common to both keys.
+   */
+  public static boolean hasSharedBlocks(OmKeyInfo prevKeyInfo, OmKeyInfo deletedKeyInfo) {
+    if (prevKeyInfo == null || deletedKeyInfo == null) {
+      return false;
+    }
+    Set<ContainerBlockID> prevBlocks = getContainerBlockIds(prevKeyInfo);
+    return !prevBlocks.isEmpty() && getContainerBlockIds(deletedKeyInfo).stream().anyMatch(prevBlocks::contains);
   }
 }

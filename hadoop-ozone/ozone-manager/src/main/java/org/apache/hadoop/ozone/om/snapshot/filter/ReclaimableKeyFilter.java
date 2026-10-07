@@ -17,6 +17,7 @@
 
 package org.apache.hadoop.ozone.om.snapshot.filter;
 
+import static org.apache.hadoop.ozone.om.snapshot.SnapshotUtils.hasSharedBlocks;
 import static org.apache.hadoop.ozone.om.snapshot.SnapshotUtils.isBlockLocationInfoSame;
 
 import java.io.IOException;
@@ -166,6 +167,10 @@ public class ReclaimableKeyFilter extends ReclaimableFilter<OmKeyInfo> {
     if (prevKeyInfo == null || prevKeyInfo.getObjectID() != keyInfo.getObjectID()) {
       return Optional.empty();
     }
-    return isBlockLocationInfoSame(prevKeyInfo, keyInfo) ? Optional.of(prevKeyInfo) : Optional.empty();
+    // A version sharing only some blocks with the previous snapshot (an appended file) is retained as a whole.
+    // ponytail: whole version exclusive size, a previous version sharing any block with the one before it counts as
+    // not exclusive, so its unshared suffix is left out; per block exclusive size is AP-31.
+    return isBlockLocationInfoSame(prevKeyInfo, keyInfo) || hasSharedBlocks(prevKeyInfo, keyInfo)
+        ? Optional.of(prevKeyInfo) : Optional.empty();
   }
 }
