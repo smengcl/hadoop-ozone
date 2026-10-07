@@ -20,6 +20,8 @@ package org.apache.hadoop.ozone.om.service;
 import static org.apache.hadoop.hdds.HddsConfigKeys.HDDS_CONTAINER_REPORT_INTERVAL;
 import static org.apache.hadoop.hdds.protocol.proto.HddsProtos.ReplicationFactor.THREE;
 import static org.apache.hadoop.ozone.OzoneConfigKeys.OZONE_BLOCK_DELETING_SERVICE_INTERVAL;
+import static org.apache.hadoop.ozone.OzoneConfigKeys.OZONE_FS_HSYNC_ENABLED;
+import static org.apache.hadoop.ozone.OzoneConfigKeys.OZONE_HBASE_ENHANCEMENTS_ALLOWED;
 import static org.apache.hadoop.ozone.OzoneConfigKeys.OZONE_MANAGER_STRIPED_LOCK_SIZE_PREFIX;
 import static org.apache.hadoop.ozone.OzoneConfigKeys.OZONE_SNAPSHOT_DELETING_SERVICE_INTERVAL;
 import static org.apache.hadoop.ozone.om.OMConfigKeys.OZONE_DIR_DELETING_SERVICE_INTERVAL;
@@ -201,6 +203,8 @@ class TestKeyDeletingService extends OzoneTestBase {
     conf.setTimeDuration(HDDS_CONTAINER_REPORT_INTERVAL,
         200, TimeUnit.MILLISECONDS);
     conf.setBoolean(OZONE_SNAPSHOT_DEEP_CLEANING_ENABLED, true);
+    conf.setBoolean(OZONE_HBASE_ENHANCEMENTS_ALLOWED, true);
+    conf.setBoolean(OZONE_FS_HSYNC_ENABLED, true);
     conf.setQuietMode(false);
   }
 
@@ -1011,6 +1015,72 @@ class TestKeyDeletingService extends OzoneTestBase {
       assertThat(scmBlockTestingClient.getDeletedBlocks()).contains(blockA);
       assertThat(getBucketInfo(volumeName, bucketName).getSnapshotUsedBytes()).isZero();
       assertThat(getBucketInfo(volumeName, bucketName).getSnapshotUsedNamespace()).isZero();
+    }
+
+    /**
+     * A file is hsync'ed with blocks A and B and captured by a snapshot. The writer replaces B with block C and hsyncs,
+     * a second snapshot captures A and C, and the file is closed, which releases B as an uncommitted block. B is not
+     * reclaimed until the first snapshot is deleted, even while the previous snapshot is the one that does not list it.
+     */
+    @Test
+    void testUncommittedBlockOfHsyncedKeyRetainedBySnapshot() throws Exception {
+      keyDeletingService.suspend();
+      final String volumeName = getTestName();
+      final String bucketName = uniqueObjectName("bucket");
+      final String keyName = uniqueObjectName("key");
+      createVolumeAndBucket(volumeName, bucketName, false);
+      OmKeyArgs keyArg = newKeyArgs(volumeName, bucketName, keyName);
+      OpenKeySession session = writeClient.openKey(keyArg);
+      OmKeyLocationInfo locationA =
+          session.getKeyInfo().getLatestVersionLocations().getBlocksLatestVersionOnly().get(0);
+      OmKeyLocationInfo locationB = writeClient.allocateBlock(keyArg, session.getId(), new ExcludeList());
+      keyArg.setLocationInfoList(Arrays.asList(locationA, locationB));
+      keyArg.setDataSize(locationA.getLength() + locationB.getLength());
+      writeClient.hsyncKey(keyArg, session.getId());
+      String snap1 = uniqueObjectName("snap");
+      writeClient.createSnapshot(volumeName, bucketName, snap1);
+      OmKeyLocationInfo locationC = writeClient.allocateBlock(keyArg, session.getId(), new ExcludeList());
+      keyArg.setLocationInfoList(Arrays.asList(locationA, locationC));
+      keyArg.setDataSize(locationA.getLength() + locationC.getLength());
+      writeClient.hsyncKey(keyArg, session.getId());
+      String snap2 = uniqueObjectName("snap");
+      writeClient.createSnapshot(volumeName, bucketName, snap2);
+      writeClient.commitKey(keyArg, session.getId());
+      om.awaitDoubleBufferFlush();
+      ContainerBlockID blockA = locationA.getBlockID().getContainerBlockID();
+      ContainerBlockID blockB = locationB.getBlockID().getContainerBlockID();
+      ContainerBlockID blockC = locationC.getBlockID().getContainerBlockID();
+      assertThat(Arrays.asList(blockA, blockB, blockC)).doesNotHaveDuplicates();
+
+      String dbKey = metadataManager.getOzoneKey(volumeName, bucketName, keyName);
+      assertThat(getSnapshotKeyBlocks(volumeName, bucketName, snap1, dbKey)).containsExactlyInAnyOrder(blockA, blockB);
+      assertThat(getSnapshotKeyBlocks(volumeName, bucketName, snap2, dbKey)).containsExactlyInAnyOrder(blockA, blockC);
+      Table<String, RepeatedOmKeyInfo> deletedTable = metadataManager.getDeletedTable();
+      List<Table.KeyValue<String, RepeatedOmKeyInfo>> deletedRows = deletedTable.getRangeKVs(null, 10, dbKey);
+      assertThat(deletedRows).hasSize(1);
+      String deletedKey = deletedRows.get(0).getKey();
+      assertThat(getDeletedKeyBlocks(deletedTable, deletedKey)).containsExactly(newSet(blockB));
+
+      // The previous snapshot does not list B, but it holds an hsync'ed version of the key, so an older one may.
+      long runCount = getRunCount();
+      keyDeletingService.resume();
+      GenericTestUtils.waitFor(() -> getRunCount() > runCount + 5, 100, 10000);
+      assertThat(scmBlockTestingClient.getDeletedBlocks()).doesNotContain(blockA, blockB, blockC);
+      assertThat(getDeletedKeyBlocks(deletedTable, deletedKey)).containsExactly(newSet(blockB));
+
+      // The first snapshot references B.
+      Table<String, SnapshotInfo> snapshotInfoTable = metadataManager.getSnapshotInfoTable();
+      long snapshotCount = metadataManager.countRowsInTable(snapshotInfoTable);
+      writeClient.deleteSnapshot(volumeName, bucketName, snap2);
+      assertTableRowCount(snapshotInfoTable, snapshotCount - 1, metadataManager);
+      long runCountWithoutSnap2 = getRunCount();
+      GenericTestUtils.waitFor(() -> getRunCount() > runCountWithoutSnap2 + 5, 100, 10000);
+      assertThat(scmBlockTestingClient.getDeletedBlocks()).doesNotContain(blockA, blockB, blockC);
+      assertThat(getDeletedKeyBlocks(deletedTable, deletedKey)).containsExactly(newSet(blockB));
+
+      writeClient.deleteSnapshot(volumeName, bucketName, snap1);
+      GenericTestUtils.waitFor(() -> getDeletedKeyBlocks(deletedTable, deletedKey).isEmpty(), 1000, 120000);
+      assertThat(scmBlockTestingClient.getDeletedBlocks()).contains(blockB).doesNotContain(blockA, blockC);
     }
 
     @Test
@@ -1955,6 +2025,15 @@ class TestKeyDeletingService extends OzoneTestBase {
     }
   }
 
+  private Set<ContainerBlockID> getSnapshotKeyBlocks(String volumeName, String bucketName, String snapshotName,
+      String dbKey) throws IOException {
+    try (UncheckedAutoCloseableSupplier<OmSnapshot> snapshot =
+        om.getOmSnapshotManager().getSnapshot(volumeName, bucketName, snapshotName)) {
+      return SnapshotUtils.getContainerBlockIds(
+          snapshot.get().getMetadataManager().getKeyTable(BucketLayout.DEFAULT).get(dbKey));
+    }
+  }
+
   private OmBucketInfo getBucketInfo(String volumeName, String bucketName) throws IOException {
     return metadataManager.getBucketTable().get(metadataManager.getBucketKey(volumeName, bucketName));
   }
@@ -1990,6 +2069,19 @@ class TestKeyDeletingService extends OzoneTestBase {
     writeClient.renameKey(keyArg, toKeyName);
   }
 
+  private static OmKeyArgs newKeyArgs(String volumeName, String bucketName, String keyName) {
+    return new OmKeyArgs.Builder()
+        .setVolumeName(volumeName)
+        .setBucketName(bucketName)
+        .setKeyName(keyName)
+        .setAcls(Collections.emptyList())
+        .setReplicationConfig(RatisReplicationConfig.getInstance(THREE))
+        .setDataSize(1000L)
+        .setLocationInfoList(new ArrayList<>())
+        .setOwnerName("user" + RandomStringUtils.secure().nextNumeric(5))
+        .build();
+  }
+
   private OmKeyArgs createAndCommitKey(String volumeName,
       String bucketName, String keyName, int numBlocks) throws IOException {
     return createAndCommitKey(volumeName, bucketName, keyName, numBlocks, 0, this.writeClient);
@@ -2004,16 +2096,7 @@ class TestKeyDeletingService extends OzoneTestBase {
       String bucketName, String keyName, int numBlocks, int numUncommitted,
       OzoneManagerProtocol customWriteClient) throws IOException {
 
-    OmKeyArgs keyArg = new OmKeyArgs.Builder()
-        .setVolumeName(volumeName)
-        .setBucketName(bucketName)
-        .setKeyName(keyName)
-        .setAcls(Collections.emptyList())
-        .setReplicationConfig(RatisReplicationConfig.getInstance(THREE))
-        .setDataSize(1000L)
-        .setLocationInfoList(new ArrayList<>())
-        .setOwnerName("user" + RandomStringUtils.secure().nextNumeric(5))
-        .build();
+    OmKeyArgs keyArg = newKeyArgs(volumeName, bucketName, keyName);
 
     // Open and Commit the Key in the Key Manager.
     OpenKeySession session = customWriteClient.openKey(keyArg);
