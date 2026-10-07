@@ -58,7 +58,9 @@ import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.mockito.Mockito.CALLS_REAL_METHODS;
 import static org.mockito.Mockito.any;
+import static org.mockito.Mockito.anyBoolean;
 import static org.mockito.Mockito.anyInt;
+import static org.mockito.Mockito.anyLong;
 import static org.mockito.Mockito.doReturn;
 import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.mock;
@@ -101,6 +103,8 @@ import org.apache.hadoop.ozone.client.OzoneClient;
 import org.apache.hadoop.ozone.client.OzoneKeyDetails;
 import org.apache.hadoop.ozone.client.OzoneVolume;
 import org.apache.hadoop.ozone.client.protocol.ClientProtocol;
+import org.apache.hadoop.ozone.om.exceptions.OMException;
+import org.apache.hadoop.ozone.om.exceptions.OMException.ResultCodes;
 import org.apache.hadoop.ozone.om.helpers.BucketLayout;
 import org.apache.hadoop.ozone.s3.HeaderPreprocessor;
 import org.apache.hadoop.ozone.s3.exception.OS3Exception;
@@ -1051,6 +1055,17 @@ class TestObjectPut {
     // THEN
     OzoneKeyDetails key = fsoBucket.getKey(path);
     assertThat(key.isFile()).as("directory").isFalse();
+  }
+
+  @Test
+  void testPutObjectOverKeyReservedByAppend() throws Exception {
+    objectEndpoint.init();
+    ClientProtocol protocol = spy(objectEndpoint.getClientProtocol());
+    doReturn(protocol).when(objectEndpoint).getClientProtocol();
+    doThrow(new OMException("File is reserved by append session 1", ResultCodes.APPEND_WRITER_CONFLICT))
+        .when(protocol).createKey(any(), any(), any(), anyLong(), any(), any(), any(), anyBoolean());
+
+    assertErrorResponse(S3ErrorTable.CONDITIONAL_REQUEST_CONFLICT, () -> putObject(CONTENT));
   }
 
   @Test

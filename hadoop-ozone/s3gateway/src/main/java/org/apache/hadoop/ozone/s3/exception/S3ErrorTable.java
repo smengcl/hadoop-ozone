@@ -264,6 +264,7 @@ public enum S3ErrorTable {
     case PERMISSION_DENIED:
     case REVOKED_TOKEN:
       return ACCESS_DENIED;
+    case APPEND_WRITER_CONFLICT:
     case ATOMIC_WRITE_CONFLICT:
       return CONDITIONAL_REQUEST_CONFLICT;
     case BUCKET_ALREADY_EXISTS:
