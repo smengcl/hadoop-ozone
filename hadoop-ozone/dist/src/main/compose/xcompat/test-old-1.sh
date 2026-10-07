@@ -15,30 +15,21 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-#suite:HA-secure-s3g
+#suite:compat-old-1
 
 set -u -o pipefail
 
 COMPOSE_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" >/dev/null 2>&1 && pwd )"
 export COMPOSE_DIR
 
-export SECURITY_ENABLED=true
-export OM_SERVICE_ID="omservice"
-export SCM=scm1.org
-export COMPOSE_FILE=docker-compose.yaml:s3-haproxy.yaml
+# shellcheck source=hadoop-ozone/dist/src/main/compose/xcompat/lib.sh
+source "${COMPOSE_DIR}/lib.sh"
 
-: ${OZONE_BUCKET_KEY_NAME:=key1}
-
-# shellcheck source=/dev/null
-source "$COMPOSE_DIR/../testlib.sh"
-
-start_docker_env
-
-execute_command_in_container kms hadoop key create ${OZONE_BUCKET_KEY_NAME}
-
-exclude=""
-for bucket in encrypted; do
-  execute_robot_test recon -v BUCKET:${bucket} -N s3-${bucket} ${exclude} s3
-  # some tests are independent of the bucket type, only need to be run once
-  exclude="--exclude no-bucket-type"
+# old cluster (before 2.0.0) with clients: same version and current version
+for cluster_version in ${old_versions}; do
+  if [[ "${cluster_version}" < "2.0.0" ]]; then
+    export OZONE_VERSION=${cluster_version}
+    export COMPOSE_FILE=old-cluster.yaml:clients.yaml
+    test_cross_compatibility ${cluster_version} ${current_version}
+  fi
 done

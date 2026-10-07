@@ -15,7 +15,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-#suite:compat-old
+#suite:compat-old-2
 
 set -u -o pipefail
 
@@ -25,9 +25,11 @@ export COMPOSE_DIR
 # shellcheck source=hadoop-ozone/dist/src/main/compose/xcompat/lib.sh
 source "${COMPOSE_DIR}/lib.sh"
 
-# old cluster with clients: same version and current version
+# old cluster (2.0.0 or later) with clients: same version and current version
 for cluster_version in ${old_versions}; do
-  export OZONE_VERSION=${cluster_version}
-  export COMPOSE_FILE=old-cluster.yaml:clients.yaml
-  test_cross_compatibility ${cluster_version} ${current_version}
+  if [[ ! "${cluster_version}" < "2.0.0" ]]; then
+    export OZONE_VERSION=${cluster_version}
+    export COMPOSE_FILE=old-cluster.yaml:clients.yaml
+    test_cross_compatibility ${cluster_version} ${current_version}
+  fi
 done
