@@ -2913,6 +2913,11 @@
                 <include>org.apache.hadoop.ozone.client.**</include>
                 <include>org.apache.hadoop.security_.**</include>
               </includes>
+              <excludes>
+                <exclude>org.apache.hadoop.ozone.client.rpc.read.**</exclude>
+                <!-- default excludes -->
+                <exclude>**/*$*</exclude>
+              </excludes>
               <excludedGroups>${unstable-test-groups}</excludedGroups>
             </configuration>
           </plugin>
@@ -2928,7 +2933,6 @@
             <artifactId>maven-surefire-plugin</artifactId>
             <configuration>
               <includes>
-                <include>org.apache.hadoop.hdds.scm.container.**</include>
                 <include>org.apache.hadoop.ozone.container.**</include>
               </includes>
               <excludedGroups>${unstable-test-groups}</excludedGroups>
@@ -3027,11 +3031,15 @@
             <configuration>
               <includes>
                 <include>org.apache.hadoop.hdds.**</include>
+                <include>org.apache.hadoop.ozone.client.rpc.read.**</include>
               </includes>
               <excludes>
                 <exclude>org.apache.hadoop.hdds.scm.Test*</exclude>
+                <exclude>org.apache.hadoop.hdds.scm.block.**</exclude>
                 <exclude>org.apache.hadoop.hdds.scm.container.**</exclude>
                 <exclude>org.apache.hadoop.hdds.scm.node.**</exclude>
+                <exclude>org.apache.hadoop.hdds.scm.pipeline.**</exclude>
+                <exclude>org.apache.hadoop.hdds.scm.safemode.**</exclude>
                 <!-- default excludes -->
                 <exclude>**/*$*</exclude>
               </excludes>
@@ -3042,7 +3050,7 @@
       </build>
     </profile>
     <profile>
-      <!-- classes directly in the scm package and scm.node, other subpackages are in test-hdds and test-container -->
+      <!-- only classes directly in the scm package, its subpackages are in test-scmsub and test-hdds -->
       <id>test-scm</id>
       <build>
         <plugins>
@@ -3052,7 +3060,27 @@
             <configuration>
               <includes>
                 <include>org.apache.hadoop.hdds.scm.Test*</include>
+              </includes>
+              <excludedGroups>${unstable-test-groups}</excludedGroups>
+            </configuration>
+          </plugin>
+        </plugins>
+      </build>
+    </profile>
+    <profile>
+      <id>test-scmsub</id>
+      <build>
+        <plugins>
+          <plugin>
+            <groupId>org.apache.maven.plugins</groupId>
+            <artifactId>maven-surefire-plugin</artifactId>
+            <configuration>
+              <includes>
+                <include>org.apache.hadoop.hdds.scm.block.**</include>
+                <include>org.apache.hadoop.hdds.scm.container.**</include>
                 <include>org.apache.hadoop.hdds.scm.node.**</include>
+                <include>org.apache.hadoop.hdds.scm.pipeline.**</include>
+                <include>org.apache.hadoop.hdds.scm.safemode.**</include>
               </includes>
               <excludedGroups>${unstable-test-groups}</excludedGroups>
             </configuration>
