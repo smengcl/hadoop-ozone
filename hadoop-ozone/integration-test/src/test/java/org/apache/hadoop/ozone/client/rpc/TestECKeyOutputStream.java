@@ -29,6 +29,8 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.fail;
 import static org.mockito.ArgumentMatchers.any;
 
+import com.google.common.io.ByteStreams;
+import com.google.common.primitives.Bytes;
 import java.io.IOException;
 import java.util.Arrays;
 import java.util.HashMap;
@@ -68,6 +70,7 @@ import org.apache.hadoop.ozone.client.OzoneClient;
 import org.apache.hadoop.ozone.client.OzoneClientFactory;
 import org.apache.hadoop.ozone.client.OzoneKey;
 import org.apache.hadoop.ozone.client.OzoneKeyDetails;
+import org.apache.hadoop.ozone.client.OzoneKeyLocation;
 import org.apache.hadoop.ozone.client.OzoneVolume;
 import org.apache.hadoop.ozone.client.io.ECKeyOutputStream;
 import org.apache.hadoop.ozone.client.io.KeyOutputStream;
@@ -75,6 +78,7 @@ import org.apache.hadoop.ozone.client.io.OzoneInputStream;
 import org.apache.hadoop.ozone.client.io.OzoneOutputStream;
 import org.apache.hadoop.ozone.container.OzoneTestHelper;
 import org.apache.hadoop.ozone.container.common.interfaces.Handler;
+import org.apache.hadoop.ozone.om.OMConfigKeys;
 import org.apache.hadoop.ozone.om.helpers.OmKeyLocationInfo;
 import org.apache.ozone.test.GenericTestUtils;
 import org.apache.ozone.test.tag.Unhealthy;
@@ -135,6 +139,7 @@ public class TestECKeyOutputStream {
     configuration.setBoolean(OzoneConfigKeys.OZONE_HBASE_ENHANCEMENTS_ALLOWED, true);
     configuration.setBoolean("ozone.client.hbase.enhancements.allowed", true);
     configuration.setBoolean(OzoneConfigKeys.OZONE_FS_HSYNC_ENABLED, true);
+    configuration.setBoolean(OMConfigKeys.OZONE_OM_APPEND_ENABLED, true);
 
     ClientConfigForTesting.newBuilder(StorageUnit.BYTES)
         .setBlockSize(blockSize)
@@ -547,6 +552,39 @@ public class TestECKeyOutputStream {
           assertEquals(new String(inputData, UTF_8),
               new String(fileContent, UTF_8));
         }
+      }
+    } finally {
+      cluster.restartHddsDatanode(nodeToKill, true);
+    }
+  }
+
+  @Test
+  public void testDegradedReadAfterAppend() throws Exception {
+    final OzoneBucket bucket = getOzoneBucket();
+    final String keyName = "testDegradedReadAfterAppend";
+    final ReplicationConfig ecConfig = new ECReplicationConfig(3, 2, ECReplicationConfig.EcCodec.RS, chunkSize);
+    // The prefix ends in a partial stripe. The append starts a new block group after it.
+    final byte[] prefix = RandomUtils.secure().randomBytes(chunkSize + 100);
+    final byte[] suffix = RandomUtils.secure().randomBytes(2 * chunkSize + 100);
+    try (OzoneOutputStream out = bucket.createKey(keyName, prefix.length, ecConfig, new HashMap<>())) {
+      out.write(prefix);
+    }
+    try (OzoneOutputStream out = bucket.appendFile(keyName)) {
+      out.write(suffix);
+    }
+    assertThat(bucket.getKey(keyName).getOzoneKeyLocations()).extracting(OzoneKeyLocation::getLength)
+        .containsExactly((long) prefix.length, (long) suffix.length);
+    // The node with the first data chunk of the block group that the append wrote.
+    final Pipeline suffixPipeline = objectStore.getClientProxy()
+        .getKeyInfo(bucket.getVolumeName(), bucket.getName(), keyName, false)
+        .getLatestVersionLocations().getBlocksLatestVersionOnly().get(1).getPipeline();
+    final DatanodeDetails nodeToKill = suffixPipeline.getNodes().stream()
+        .filter(node -> suffixPipeline.getReplicaIndex(node) == 1).findFirst().get();
+
+    cluster.shutdownHddsDatanode(nodeToKill);
+    try {
+      try (OzoneInputStream is = bucket.readKey(keyName)) {
+        assertArrayEquals(Bytes.concat(prefix, suffix), ByteStreams.toByteArray(is));
       }
     } finally {
       cluster.restartHddsDatanode(nodeToKill, true);

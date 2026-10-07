@@ -72,6 +72,7 @@ import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.stream.Stream;
+import org.apache.commons.lang3.NotImplementedException;
 import org.apache.commons.lang3.RandomStringUtils;
 import org.apache.hadoop.crypto.CipherSuite;
 import org.apache.hadoop.crypto.CryptoCodec;
@@ -111,9 +112,11 @@ import org.apache.hadoop.ozone.client.BucketArgs;
 import org.apache.hadoop.ozone.client.OzoneBucket;
 import org.apache.hadoop.ozone.client.OzoneClient;
 import org.apache.hadoop.ozone.client.OzoneKeyDetails;
+import org.apache.hadoop.ozone.client.OzoneKeyLocation;
 import org.apache.hadoop.ozone.client.OzoneVolume;
 import org.apache.hadoop.ozone.client.io.ECKeyOutputStream;
 import org.apache.hadoop.ozone.client.io.KeyOutputStream;
+import org.apache.hadoop.ozone.client.io.OzoneDataStreamOutput;
 import org.apache.hadoop.ozone.client.io.OzoneInputStream;
 import org.apache.hadoop.ozone.client.io.OzoneOutputStream;
 import org.apache.hadoop.ozone.container.OzoneTestHelper;
@@ -127,6 +130,7 @@ import org.apache.hadoop.ozone.om.exceptions.OMException;
 import org.apache.hadoop.ozone.om.helpers.BucketLayout;
 import org.apache.hadoop.ozone.om.helpers.OmKeyInfo;
 import org.apache.hadoop.ozone.om.helpers.OmKeyLocationInfo;
+import org.apache.hadoop.ozone.om.helpers.QuotaUtil;
 import org.apache.hadoop.ozone.om.helpers.RepeatedOmKeyInfo;
 import org.apache.hadoop.ozone.om.service.OpenKeyCleanupService;
 import org.apache.hadoop.ozone.protocol.proto.OzoneManagerProtocolProtos.AppendWriterKind;
@@ -1955,6 +1959,259 @@ public class TestHSync {
 
       assertFileContent(reader, file, prefix, suffix);
     }
+  }
+
+  /** RATIS streaming append through the client API: the filesystem does not select it. */
+  @Test
+  public void testStreamingAppend() throws Exception {
+    try (FileSystem fs = newOfs()) {
+      final Path file = newPath(fs);
+      // The prefix is a full block and a partial block. The append does not write to them.
+      final byte[] prefix = createFile(fs, file, BLOCK_SIZE + 100);
+      byte[] expected = prefix;
+
+      try (OzoneDataStreamOutput out = bucket.appendStreamFile(file.getName())) {
+        assertThat(out.getKeyDataStreamOutput()).isNotNull();
+        assertThat(out.getAppendPrefixLength()).isEqualTo(prefix.length);
+        // Several hsyncs within each block, and a block boundary.
+        for (int i = 0; i < 5; i++) {
+          final byte[] data = randomBytes(BLOCK_SIZE / 3 + i);
+          out.write(data);
+          // As the filesystem adapters do for create: hsync of the wrapper only flushes.
+          out.getByteBufStreamOutput().hsync();
+          expected = Bytes.concat(expected, data);
+          // Another client reads the synced bytes while the appender is still open. A streaming hsync publishes
+          // closed blocks only: datanodes hold the tail of an open block in memory.
+          final int published = prefix.length + (expected.length - prefix.length) / BLOCK_SIZE * BLOCK_SIZE;
+          assertHsyncedContent(fs, file, Arrays.copyOf(expected, published));
+          assertThat(((LeaseRecoverable) fs).isFileClosed(file)).isFalse();
+        }
+        // Not synced, crosses one more block boundary.
+        final byte[] data = randomBytes(BLOCK_SIZE);
+        out.write(data);
+        expected = Bytes.concat(expected, data);
+      }
+
+      assertFileContent(fs, file, expected);
+      assertThat(((LeaseRecoverable) fs).isFileClosed(file)).isTrue();
+      assertThat(bucket.getKey(file.getName()).getOzoneKeyLocations()).hasSizeGreaterThanOrEqualTo(5);
+
+      // An append that writes nothing leaves the file as it was and releases it.
+      bucket.appendStreamFile(file.getName()).close();
+      assertFileContent(fs, file, expected);
+      assertThat(((LeaseRecoverable) fs).isFileClosed(file)).isTrue();
+
+      // ozone.fs.datastream.enabled does not make FileSystem.append a streaming append.
+      try (FileSystem streamingFs = newOfs(OZONE_FS_DATASTREAM_ENABLED, "true");
+           FSDataOutputStream out = streamingFs.append(file)) {
+        assertThat(((OzoneFSOutputStream) out.getWrappedStream()).getWrappedOutputStream().getKeyOutputStream())
+            .isInstanceOf(KeyOutputStream.class);
+      }
+    }
+  }
+
+  @Test
+  public void testRecoverLeaseOfAbandonedStreamingAppender() throws Exception {
+    try (FileSystem fs = newOfs()) {
+      final Path file = newPath(fs);
+      final byte[] prefix = createFile(fs, file, 100);
+      final byte[] synced = randomBytes(BLOCK_SIZE);
+      final byte[] more = randomBytes(100);
+      final OzoneDataStreamOutput abandoned = bucket.appendStreamFile(file.getName());
+      try {
+        abandoned.write(synced);
+        abandoned.getByteBufStreamOutput().hsync();
+        // Stays in the client buffer, so it is lost with the writer.
+        abandoned.write(randomBytes(100));
+        assertThat(((LeaseRecoverable) fs).isFileClosed(file)).isFalse();
+
+        assertThat(((LeaseRecoverable) fs).recoverLease(file)).isTrue();
+
+        assertThat(((LeaseRecoverable) fs).isFileClosed(file)).isTrue();
+        assertFileContent(fs, file, prefix, synced);
+        try (OzoneDataStreamOutput out = bucket.appendStreamFile(file.getName())) {
+          assertThat(out.getAppendPrefixLength()).isEqualTo(prefix.length + synced.length);
+          out.write(more);
+        }
+        // The fenced writer cannot publish any more.
+        assertThatThrownBy(abandoned::close).isInstanceOf(IOException.class);
+      } finally {
+        IOUtils.closeQuietly(abandoned);
+      }
+      assertFileContent(fs, file, prefix, synced, more);
+
+      // A fenced writer with nothing to flush and no block closed since its last hsync: only OM can tell it.
+      final OzoneDataStreamOutput idle = bucket.appendStreamFile(file.getName());
+      try {
+        idle.getByteBufStreamOutput().hsync();
+        assertThat(((LeaseRecoverable) fs).recoverLease(file)).isTrue();
+        assertThatThrownBy(() -> idle.getByteBufStreamOutput().hsync()).isInstanceOf(OMException.class);
+        assertThatThrownBy(idle::close).isInstanceOf(OMException.class);
+      } finally {
+        IOUtils.closeQuietly(idle);
+      }
+      assertFileContent(fs, file, prefix, synced, more);
+    }
+  }
+
+  /**
+   * The block size of this cluster is smaller than the EC chunk size, so a block group holds one stripe: 3 MB of
+   * data fill a stripe and its block group.
+   */
+  @ParameterizedTest
+  @ValueSource(ints = {(int) OzoneConsts.MB + 100, 3 * (int) OzoneConsts.MB})
+  public void testAppendECFileAcrossBlockGroups(int prefixLength) throws Exception {
+    final int stripe = 3 * (int) OzoneConsts.MB;
+    final OzoneBucket ecBucket = createECBucket();
+    try (FileSystem fs = newOfs(); FileSystem reader = newOfs()) {
+      final Path file = new Path(ofsBucketPath(ecBucket.getName()), "file");
+      final byte[] prefix = createFile(fs, file, prefixLength);
+      final OzoneKeyLocation prefixBlockGroup = ecBucket.getKey(file.getName()).getOzoneKeyLocations().get(0);
+      final byte[] suffix = randomBytes(stripe + 1000);
+
+      try (FSDataOutputStream out = fs.append(file)) {
+        assertThat(out.getPos()).isEqualTo(prefix.length);
+        out.write(suffix);
+      }
+
+      assertFileContent(reader, file, prefix, suffix);
+      // A read that starts in the last stripe of the prefix and ends in the first stripe of the suffix.
+      final byte[] acrossBoundary = new byte[2000];
+      try (FSDataInputStream in = reader.open(file)) {
+        in.readFully(prefix.length - 1000, acrossBoundary);
+      }
+      assertThat(acrossBoundary).isEqualTo(
+          Arrays.copyOfRange(Bytes.concat(prefix, suffix), prefix.length - 1000, prefix.length + 1000));
+      final OzoneKeyDetails key = ecBucket.getKey(file.getName());
+      assertThat(key.getReplicationConfig()).isEqualTo(ecReplicationConfig());
+      // The block group of the prefix is kept as it was, also when its stripe is partial. The suffix has its own.
+      assertThat(key.getOzoneKeyLocations()).extracting(OzoneKeyLocation::getLength)
+          .containsExactly((long) prefix.length, (long) stripe, 1000L);
+      assertThat(key.getOzoneKeyLocations().get(0).getContainerID()).isEqualTo(prefixBlockGroup.getContainerID());
+      assertThat(key.getOzoneKeyLocations().get(0).getLocalID()).isEqualTo(prefixBlockGroup.getLocalID());
+    }
+  }
+
+  @Test
+  public void testRepeatedAppendECFile() throws Exception {
+    final int mb = (int) OzoneConsts.MB;
+    final OzoneBucket ecBucket = createECBucket();
+    final OzoneVolume volume = client.getObjectStore().getVolume(ecBucket.getVolumeName());
+    try (FileSystem fs = newOfs(); FileSystem reader = newOfs()) {
+      final Path file = new Path(ofsBucketPath(ecBucket.getName()), "file");
+      byte[] expected = createFile(fs, file, mb);
+      for (int length : new int[] {mb, 100, 2 * mb + 10}) {
+        final byte[] data = randomBytes(length);
+        try (FSDataOutputStream out = fs.append(file)) {
+          assertThat(out.getPos()).isEqualTo(expected.length);
+          out.write(data);
+        }
+        expected = Bytes.concat(expected, data);
+        assertFileContent(reader, file, expected);
+      }
+
+      // Every append starts a block group with its own parity: two cells as long as the first data cell.
+      final List<OzoneKeyLocation> blockGroups = ecBucket.getKey(file.getName()).getOzoneKeyLocations();
+      assertThat(blockGroups).extracting(OzoneKeyLocation::getLength)
+          .containsExactly((long) mb, (long) mb, 100L, 2L * mb + 10);
+      final long replicatedSize = blockGroups.stream()
+          .mapToLong(group -> QuotaUtil.getReplicatedSize(group.getLength(), ecReplicationConfig())).sum();
+      assertThat(replicatedSize).isEqualTo(3L * mb + 3L * mb + 300 + 4L * mb + 10);
+      // The formula for a file written in one go gives 8 MB + 110 for these 4 MB + 110 of data.
+      assertThat(volume.getBucket(ecBucket.getName()).getUsedBytes()).isEqualTo(replicatedSize);
+
+      // Delete and purge release the replicated size of each block group, which is what the appends charged.
+      assertThat(fs.delete(file, false)).isTrue();
+      GenericTestUtils.waitFor(() -> {
+        try {
+          return volume.getBucket(ecBucket.getName()).getUsedBytes() == 0;
+        } catch (IOException e) {
+          throw new UncheckedIOException(e);
+        }
+      }, 100, 30000);
+    }
+  }
+
+  @Test
+  public void testAppendECFileHasNoHsync() throws Exception {
+    final OzoneBucket ecBucket = createECBucket();
+    // Append does not select RATIS streaming, so with streaming enabled the append stream is the same.
+    try (FileSystem fs = newOfs(); FileSystem streamingFs = newOfs(OZONE_FS_DATASTREAM_ENABLED, "true");
+         FileSystem reader = newOfs()) {
+      final Path file = new Path(ofsBucketPath(ecBucket.getName()), "file");
+      byte[] expected = createFile(fs, file, 1000);
+      try (FSDataOutputStream created = fs.create(new Path(file.getParent(), "created"))) {
+        assertThatThrownBy(created::hsync).isInstanceOf(NotImplementedException.class);
+      }
+
+      for (FileSystem writer : Arrays.asList(fs, streamingFs)) {
+        final byte[] data = randomBytes(2000);
+        try (FSDataOutputStream out = writer.append(file)) {
+          assertThat(out.getPos()).isEqualTo(expected.length);
+          assertThat(out.hasCapability(StreamCapabilities.HSYNC)).isFalse();
+          assertThat(out.hasCapability(StreamCapabilities.HFLUSH)).isFalse();
+          out.write(data, 0, 1500);
+          // Fails like the EC stream of create(), publishes nothing and leaves the stream usable.
+          assertThatThrownBy(out::hsync).isInstanceOf(NotImplementedException.class);
+          assertThatThrownBy(out::hflush).isInstanceOf(NotImplementedException.class);
+          assertFileContent(reader, file, expected);
+          out.write(data, 1500, 500);
+        }
+        expected = Bytes.concat(expected, data);
+        assertFileContent(reader, file, expected);
+      }
+    }
+  }
+
+  @Test
+  public void testRecoverLeaseOfAbandonedECAppender() throws Exception {
+    final OzoneBucket ecBucket = createECBucket();
+    try (FileSystem writerFs = newOfs(); FileSystem fs = newOfs()) {
+      final Path file = new Path(ofsBucketPath(ecBucket.getName()), "file");
+      final byte[] prefix = createFile(fs, file, 1000);
+      final byte[] published = randomBytes(2000);
+      try (FSDataOutputStream out = fs.append(file)) {
+        out.write(published);
+      }
+      final FSDataOutputStream abandoned = writerFs.append(file);
+      try {
+        // One stripe is written to its block group on the datanodes, the rest stays in the client.
+        // EC publishes on close only, so recovery discards both.
+        abandoned.write(randomBytes(3 * (int) OzoneConsts.MB + 1000));
+        abandoned.flush();
+        assertFileContent(fs, file, prefix, published);
+        assertThat(((LeaseRecoverable) fs).isFileClosed(file)).isFalse();
+
+        assertThat(((LeaseRecoverable) fs).recoverLease(file)).isTrue();
+
+        assertThat(((LeaseRecoverable) fs).isFileClosed(file)).isTrue();
+        assertFileContent(fs, file, prefix, published);
+        final byte[] more = randomBytes(3000);
+        try (FSDataOutputStream out = fs.append(file)) {
+          assertThat(out.getPos()).isEqualTo(prefix.length + published.length);
+          out.write(more);
+        }
+        // The fenced writer cannot publish any more.
+        assertThatThrownBy(abandoned::close).isInstanceOf(IOException.class);
+        assertFileContent(fs, file, prefix, published, more);
+        assertThat(ecBucket.getKey(file.getName()).getOzoneKeyLocations()).extracting(OzoneKeyLocation::getLength)
+            .containsExactly((long) prefix.length, (long) published.length, (long) more.length);
+      } finally {
+        IOUtils.closeQuietly(abandoned);
+      }
+    }
+  }
+
+  private static ECReplicationConfig ecReplicationConfig() {
+    return new ECReplicationConfig(3, 2, ECReplicationConfig.EcCodec.RS, (int) OzoneConsts.MB);
+  }
+
+  /** @return a new FSO bucket in the test volume whose files are RS-3-2-1024k by default. */
+  private static OzoneBucket createECBucket() throws IOException {
+    return DataTestUtil.createBucket(client, bucket.getVolumeName(), BucketArgs.newBuilder()
+        .setBucketLayout(BucketLayout.FILE_SYSTEM_OPTIMIZED)
+        .setDefaultReplicationConfig(new DefaultReplicationConfig(ecReplicationConfig()))
+        .build(), uniqueObjectName("ec"));
   }
 
   @Test
