@@ -32,10 +32,13 @@ execute_robot_test ${SCM} -v PREFIX:pre smoketest/freon/generate.robot
 execute_robot_test ${SCM} -v PREFIX:pre smoketest/freon/validate.robot
 
 # restart datanodes
+old_pipelines=$(get_open_pipeline_ids)
 kubectl delete pod datanode-0 datanode-1 datanode-2
 
 wait_for_startup
-wait_for_pipeline
+# SCM closes pipelines of restarted datanodes only when they re-register with new IP,
+# so wait for a pipeline created after all of them did
+wait_for_pipeline "${old_pipelines}"
 
 execute_robot_test ${SCM} -v PREFIX:pre smoketest/freon/validate.robot
 execute_robot_test ${SCM} -v PREFIX:post smoketest/freon/generate.robot

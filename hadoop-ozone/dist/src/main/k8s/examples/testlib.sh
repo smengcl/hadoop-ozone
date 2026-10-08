@@ -51,7 +51,11 @@ wait_for_startup(){
 }
 
 wait_for_pipeline() {
-  retry assert_pipeline_exists
+  retry assert_pipeline_exists "$@"
+}
+
+get_open_pipeline_ids() {
+   execute_command_in_container scm-0 ozone admin pipeline list --state OPEN --filter-by-factor THREE --json | jq -c '[.[].id]'
 }
 
 execute_command_in_container() {
@@ -61,9 +65,10 @@ execute_command_in_container() {
    kubectl exec "${CONTAINER}" -- "$@"
 }
 
+# optional argument: JSON array of pipeline IDs to ignore (from get_open_pipeline_ids)
 assert_pipeline_exists() {
    local count
-   count=$(execute_command_in_container scm-0 ozone admin pipeline list --state OPEN --filter-by-factor THREE --json | jq -r 'length')
+   count=$(execute_command_in_container scm-0 ozone admin pipeline list --state OPEN --filter-by-factor THREE --json | jq -r --argjson ignored "${1:-[]}" '[.[] | select(.id | IN($ignored[]) | not)] | length')
    [[ $count -gt 0 ]]
 }
 
