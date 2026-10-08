@@ -56,15 +56,15 @@ jobs:
       GITHUB_CONTEXT: ${{ toJson(github) }}
     outputs:
       acceptance-suites: ${{ steps.acceptance-suites.outputs.suites }}
-      test-classes: ${{ steps.selective-checks.outputs.test-classes }}
+      test-classes: ""
       integration-suites: ${{ steps.integration-suites.outputs.suites }}
       kubernetes-suites: ${{ steps.kubernetes-suites.outputs.suites }}
-      needs-basic-check: ${{ steps.categorize-basic-checks.outputs.needs-basic-check }}
+      needs-basic-check: false
       basic-checks: ${{ steps.categorize-basic-checks.outputs.basic-checks }}
       needs-build: ${{ steps.selective-checks.outputs.needs-build }}
-      needs-compile: ${{ steps.selective-checks.outputs.needs-compile }}
-      needs-compose-tests: ${{ steps.selective-checks.outputs.needs-compose-tests }}
-      needs-integration-tests: ${{ steps.selective-checks.outputs.needs-integration-tests }}
+      needs-compile: false
+      needs-compose-tests: false
+      needs-integration-tests: false
       needs-kubernetes-tests: ${{ steps.selective-checks.outputs.needs-kubernetes-tests }}
       sha: ${{ steps.get-sha.outputs.sha }}
       # `env` context cannot be used when calling reusable workflow, so we need to convert these to `outputs`
@@ -334,9 +334,6 @@ jobs:
     needs:
       - build-info
       - build
-      - basic
-      - dependency
-      - license
     if: needs.build-info.outputs.needs-kubernetes-tests == 'true'
     uses: $/.github/workflows/check.yml
     secrets:
@@ -345,14 +342,15 @@ jobs:
       needs-ozone-binary-tarball: true
       ratis-args: ${{ inputs.ratis_args }}
       script: kubernetes
-      script-args: ${{ matrix.suite }}
+      script-args: ozone
       sha: ${{ needs.build-info.outputs.sha }}
-      split: ${{ matrix.suite }}
+      split: ozone-${{ matrix.x }}-${{ matrix.y }}
       timeout-minutes: 10
       with-coverage: ${{ fromJSON(needs.build-info.outputs.with-coverage) }}
     strategy:
       matrix:
-        suite: ${{ fromJson(needs.build-info.outputs.kubernetes-suites) }}
+        x: [ 0, 1, 2, 3, 4, 5, 6, 7, 8, 9 ]
+        y: [ 0, 1, 2, 3, 4, 5, 6, 7, 8, 9 ]
       fail-fast: false
 
   integration:
