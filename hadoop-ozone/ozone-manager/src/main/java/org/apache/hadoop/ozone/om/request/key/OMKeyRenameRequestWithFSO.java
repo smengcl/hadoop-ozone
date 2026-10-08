@@ -100,10 +100,7 @@ public class OMKeyRenameRequestWithFSO extends OMKeyRenameRequest {
       PreparedRename prepared = prepareRename(ozoneManager, renameKeyRequest);
 
       if (prepared != null) {
-        // Phase 2 (bucket write lock): re-check the source, then apply the cache mutations. The lock
-        // is held only for this mutation tail, so bucket read-lock holders still observe each
-        // transaction atomically (all mutations or none), but are no longer blocked for the Phase 1
-        // path walks.
+        // Publish the resolved rename under the bucket write lock.
         mergeOmLockDetails(omMetadataManager.getLock()
             .acquireWriteLock(BUCKET_LOCK, volumeName, bucketName));
         acquiredLock = getOmLockDetails().isLockAcquired();
@@ -129,28 +126,34 @@ public class OMKeyRenameRequestWithFSO extends OMKeyRenameRequest {
       }
     }
 
-    auditAndLogResult(ozoneManager, renameKeyRequest, auditMap, exception, result);
+    markForAudit(ozoneManager.getAuditLogger(), buildAuditMessage(OMAction.RENAME_KEY, auditMap,
+            exception, getOmRequest().getUserInfo()));
+
+    String toKeyName = renameKeyRequest.getToKeyName();
+
+    switch (result) {
+    case SUCCESS:
+      LOG.debug("Rename Key is successfully completed for volume:{} bucket:{}" +
+                      " fromKey:{} toKey:{}. ", volumeName, bucketName,
+              fromKeyName, toKeyName);
+      break;
+    case FAILURE:
+      ozoneManager.getMetrics().incNumKeyRenameFails();
+      LOG.error("Rename key failed for volume:{} bucket:{} fromKey:{} " +
+                      "toKey:{}. Exception: {}.", volumeName, bucketName,
+              fromKeyName, toKeyName, exception.getMessage());
+      break;
+    default:
+      LOG.error("Unrecognized Result for OMKeyRenameRequest: {}",
+              renameKeyRequest);
+    }
     return omClientResponse;
   }
 
   /**
-   * Phase 1 (no bucket lock): resolves the source, the destination and both parent directories. All
-   * of this reads committed state only. The OM apply path is single-threaded
-   * (OzoneManagerStateMachine uses a single-thread executor), so no other transaction can change what
-   * these reads observe before Phase 2 mutates; the double-buffer flush/cleanup threads only
-   * materialize already-committed epochs and never alter a key's visible value.
-   * <p>
-   * Keeping these walks out of the bucket write lock is the point of HDDS-16289: it stops the lone
-   * apply thread from gating readers of a hot bucket (getBucketInfo/getFileStatus/lookupKey) while the
-   * path is resolved segment by segment. This rests on the serial-apply invariant, and rename needs it
-   * more than the other FSO writers: verifyToDirIsASubDirOfFromDirectory below is a predicate over the
-   * directory tree, not over a key, so no re-check on a single key can restore it. If OM ever applies
-   * transactions in parallel per bucket/key, the re-check in {@link #renameKey} is not enough - rename
-   * then has to hold a lock covering both subtrees (KEY_PATH_LOCK/PREFIX_LOCK) rather than narrow the
-   * bucket lock.
-   *
-   * @return the resolved rename, or {@code null} when there is nothing to apply (case-3, source and
-   *         destination are the same file), in which case the caller takes no lock at all
+   * Resolves the source, destination and parents; returns null for a same-file rename.
+   * Serial OM apply keeps these reads stable; flush/cleanup only persists and evicts committed entries.
+   * Parallel apply would need to coordinate both subtrees and repeat the ancestor checks, not just recheck the leaf.
    */
   private PreparedRename prepareRename(OzoneManager ozoneManager, RenameKeyRequest renameKeyRequest)
       throws IOException {
@@ -258,10 +261,7 @@ public class OMKeyRenameRequestWithFSO extends OMKeyRenameRequest {
       renameToKeyName = toKeyName;
     }
 
-    // The source's parent directory also gets its modification time bumped, so resolve it here
-    // instead of inside renameKey: that keeps the last path walk out of the write lock, and it makes
-    // this walk's KEY_RENAME_ERROR precede every cache mutation rather than follow the destination
-    // parent's.
+    // Resolve the source parent before taking the write lock or changing the destination parent.
     OmKeyInfo fromKeyParent = OMFileRequest.getKeyParentDir(volumeName,
             bucketName, fromKeyName, ozoneManager, omMetadataManager);
 
@@ -269,11 +269,7 @@ public class OMKeyRenameRequestWithFSO extends OMKeyRenameRequest {
         fromKeyParent);
   }
 
-  /**
-   * Phase 1 output of {@link #prepareRename}, consumed by {@link #renameKey} under the bucket write
-   * lock: the resolved source, the destination parent and name, and the source's parent whose
-   * modification time is bumped with it.
-   */
+  /** Resolved rename data passed to the mutation phase. */
   private static final class PreparedRename {
     private final OmKeyInfo fromKeyValue;
     private final boolean isRenameDirectory;
@@ -319,11 +315,7 @@ public class OMKeyRenameRequestWithFSO extends OMKeyRenameRequest {
     return resolvedArgs;
   }
 
-  /**
-   * Phase 2 (under the bucket write lock): re-checks the source resolved by {@link #prepareRename},
-   * then applies the dir-or-key table cache entries, the parent modification times and the bucket
-   * copy.
-   */
+  /** Publishes the resolved rename and parent modification times under the bucket write lock. */
   private OMClientResponse renameKey(PreparedRename prepared, String fromKeyName,
       long modificationTime, OzoneManager ozoneManager, OMResponse.Builder omResponse,
       long trxnLogIndex) throws IOException {
@@ -351,11 +343,7 @@ public class OMKeyRenameRequestWithFSO extends OMKeyRenameRequest {
     String bucketKey = metadataMgr.getBucketKey(
         fromKeyValue.getVolumeName(), fromKeyValue.getBucketName());
 
-    // Cheap O(1) re-check of the source resolved in Phase 1 without the bucket lock. Under serial
-    // apply this always holds, so it is unreachable; it is kept because it is a point lookup and it
-    // fails the way the Phase 1 existence check does. It does not make Phase 1 safe under concurrent
-    // apply and cannot: a concurrent rename can invalidate the subdirectory check after Phase 1 ran it
-    // and leave a directory as its own ancestor. See the note on prepareRename.
+    // Re-check the resolved target before publishing.
     final boolean fromKeyStillExists = isRenameDirectory
         ? dirTable.isExist(dbFromKey)
         : metadataMgr.getKeyTable(getBucketLayout()).isExist(dbFromKey);
@@ -492,35 +480,4 @@ public class OMKeyRenameRequestWithFSO extends OMKeyRenameRequest {
     return validateAndNormalizeKey(keyArgs.getKeyName());
   }
 
-  /**
-   * Emits the audit log and the result log outside the bucket lock.
-   */
-  private void auditAndLogResult(OzoneManager ozoneManager, RenameKeyRequest renameKeyRequest,
-      Map<String, String> auditMap, Exception exception, Result result) {
-    markForAudit(ozoneManager.getAuditLogger(), buildAuditMessage(OMAction.RENAME_KEY, auditMap,
-            exception, getOmRequest().getUserInfo()));
-
-    KeyArgs keyArgs = renameKeyRequest.getKeyArgs();
-    String volumeName = keyArgs.getVolumeName();
-    String bucketName = keyArgs.getBucketName();
-    String fromKeyName = keyArgs.getKeyName();
-    String toKeyName = renameKeyRequest.getToKeyName();
-
-    switch (result) {
-    case SUCCESS:
-      LOG.debug("Rename Key is successfully completed for volume:{} bucket:{}" +
-                      " fromKey:{} toKey:{}. ", volumeName, bucketName,
-              fromKeyName, toKeyName);
-      break;
-    case FAILURE:
-      ozoneManager.getMetrics().incNumKeyRenameFails();
-      LOG.error("Rename key failed for volume:{} bucket:{} fromKey:{} " +
-                      "toKey:{}. Exception: {}.", volumeName, bucketName,
-              fromKeyName, toKeyName, exception.getMessage());
-      break;
-    default:
-      LOG.error("Unrecognized Result for OMKeyRenameRequest: {}",
-              renameKeyRequest);
-    }
-  }
 }

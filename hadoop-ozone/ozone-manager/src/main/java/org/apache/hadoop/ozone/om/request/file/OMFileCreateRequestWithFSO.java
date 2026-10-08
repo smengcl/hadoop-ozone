@@ -105,10 +105,7 @@ public class OMFileCreateRequestWithFSO extends OMFileCreateRequest {
           prepareFileCreate(ozoneManager, createFileRequest, trxnLogIndex);
       numKeysCreated = prepared.missingParentInfos.size();
 
-      // Phase 2 (bucket write lock): re-check the overwrite invariant, then apply the cache
-      // mutations and publish the quota copy. The lock is held only for this mutation tail, so
-      // bucket read-lock holders still observe each transaction atomically (all mutations or none),
-      // but are no longer blocked for the Phase 1 path walk.
+      // Publish quota and cache mutations under the bucket write lock.
       mergeOmLockDetails(omMetadataManager.getLock()
           .acquireWriteLock(BUCKET_LOCK, volumeName, bucketName));
       acquiredLock = getOmLockDetails().isLockAcquired();
@@ -134,24 +131,32 @@ public class OMFileCreateRequestWithFSO extends OMFileCreateRequest {
       }
     }
 
-    auditAndLogResult(ozoneManager, createFileRequest, auditMap, exception, result, numKeysCreated);
+    markForAudit(ozoneManager.getAuditLogger(), buildAuditMessage(
+        OMAction.CREATE_FILE, auditMap, exception,
+        getOmRequest().getUserInfo()));
+
+    switch (result) {
+    case SUCCESS:
+      ozoneManager.getMetrics().incNumKeys(numKeysCreated);
+      LOG.debug("File created. Volume:{}, Bucket:{}, Key:{}", volumeName,
+          bucketName, keyName);
+      break;
+    case FAILURE:
+      LOG.error("File create failed. Volume:{}, Bucket:{}, Key:{}.",
+          volumeName, bucketName, keyName, exception);
+      break;
+    default:
+      LOG.error("Unrecognized Result for OMFileCreateRequest: {}",
+          createFileRequest);
+    }
 
     return omClientResponse;
   }
 
   /**
-   * Phase 1 (no bucket lock): resolves the path and prepares the open-file entry, the missing parent
-   * directories and the quota delta. All of this reads committed state only. The OM apply path is
-   * single-threaded (OzoneManagerStateMachine uses a single-thread executor), so no other transaction
-   * can change what these reads observe before Phase 2 mutates; the double-buffer flush/cleanup
-   * threads only materialize already-committed epochs and never alter a key's visible value.
-   * <p>
-   * Keeping this walk out of the bucket write lock is the point of HDDS-16289: it stops the lone apply
-   * thread from gating readers of a hot bucket (getBucketInfo/getFileStatus/lookupKey) during the
-   * per-segment path resolution. This rests on the serial-apply invariant: if OM ever applies
-   * transactions in parallel per bucket/key, the re-check in {@link #applyFileCreate} is not enough and
-   * every read here needs re-validating under the lock, the walked ancestors and the missing-parent set
-   * as well as the leaf.
+   * Prepares private key copies and missing parents before acquiring the bucket lock.
+   * Serial OM apply keeps these reads stable; flush/cleanup only persists and evicts committed entries.
+   * Parallel apply would need to revalidate the ancestors, missing parents and overwrite state under the lock.
    */
   private PreparedFileCreate prepareFileCreate(OzoneManager ozoneManager,
       CreateFileRequest createFileRequest, long trxnLogIndex) throws IOException {
@@ -195,8 +200,7 @@ public class OMFileCreateRequestWithFSO extends OMFileCreateRequest {
     }
 
     // do open key
-    // Read-only copy, used here only to inherit ACLs, encryption and replication defaults. The quota
-    // read-modify-publish in Phase 2 takes its own getBucketInfoForUpdate copy under the lock.
+    // Quota updates take a separate bucket copy under the write lock.
     OmBucketInfo bucketInfo = omMetadataManager.getBucketTable().get(
         omMetadataManager.getBucketKey(volumeName, bucketName));
     // add all missing parents to dir table
@@ -223,10 +227,7 @@ public class OMFileCreateRequestWithFSO extends OMFileCreateRequest {
                 pathInfoFSO.getLastKnownParentId(),
                 pathInfoFSO.getLeafNodeName(), createFileRequest.getClientID());
 
-    // Key of the leaf in the file table, for the Phase 2 re-check. Built from the parent id
-    // getAllMissingParentDirInfo left on pathInfoFSO, so it addresses the leaf even when intermediate
-    // directories were missing and this transaction creates them. dbFileKey above predates that call
-    // and can still name the deepest pre-existing ancestor, which is a different directory.
+    // Missing-parent preparation may change the parent ID, so rebuild the leaf key for the re-check.
     final String dbLeafFileKey = omMetadataManager.getOzonePathKey(volumeId, bucketId,
         pathInfoFSO.getLastKnownParentId(), pathInfoFSO.getLeafNodeName());
 
@@ -244,11 +245,7 @@ public class OMFileCreateRequestWithFSO extends OMFileCreateRequest {
         missingParentInfos, dbOpenFileName, preAllocatedSpace);
   }
 
-  /**
-   * Phase 2 (under the bucket write lock): re-checks the overwrite guard resolved in Phase 1, then
-   * applies the open-file and directory cache entries and the bucket quota charge and publishes the
-   * bucket copy.
-   */
+  /** Publishes the prepared file and quota updates under the bucket write lock. */
   private OMClientResponse applyFileCreate(OMMetadataManager omMetadataManager,
       CreateFileRequest createFileRequest, PreparedFileCreate prepared, long trxnLogIndex,
       OMResponse.Builder omResponse) throws IOException {
@@ -257,10 +254,7 @@ public class OMFileCreateRequestWithFSO extends OMFileCreateRequest {
     String bucketName = keyArgs.getBucketName();
     String keyName = keyArgs.getKeyName();
 
-    // Cheap O(1) re-check of the overwrite guard resolved in Phase 1. Under serial apply this always
-    // holds, so it is unreachable; it is kept because it is a point lookup and it fails the way
-    // checkDirectoryResult would rather than silently overwriting. It does not make Phase 1 safe under
-    // concurrent apply: it re-reads the leaf, not the ancestor chain lastKnownParentId came from.
+    // Re-check the resolved target before publishing.
     if (!createFileRequest.getIsOverwrite()
         && omMetadataManager.getKeyTable(getBucketLayout()).isExist(prepared.dbLeafFileKey)) {
       throw new OMException("File " + keyName + " already exists",
@@ -301,11 +295,7 @@ public class OMFileCreateRequestWithFSO extends OMFileCreateRequest {
             omBucketInfo.copyObject(), prepared.volumeId);
   }
 
-  /**
-   * Phase 1 output of {@link #prepareFileCreate}, consumed by {@link #applyFileCreate} under the
-   * bucket write lock: the resolved path keys, the open file and missing parent directories to cache,
-   * and the quota deltas to charge.
-   */
+  /** Resolved file data passed to the mutation phase. */
   private static final class PreparedFileCreate {
     private final long volumeId;
     private final long bucketId;
@@ -327,33 +317,4 @@ public class OMFileCreateRequestWithFSO extends OMFileCreateRequest {
     }
   }
 
-  /**
-   * Emits the audit log and the result log outside the bucket lock.
-   */
-  private void auditAndLogResult(OzoneManager ozoneManager, CreateFileRequest createFileRequest,
-      Map<String, String> auditMap, Exception exception, Result result, int numKeysCreated) {
-    markForAudit(ozoneManager.getAuditLogger(), buildAuditMessage(
-        OMAction.CREATE_FILE, auditMap, exception,
-        getOmRequest().getUserInfo()));
-
-    KeyArgs keyArgs = createFileRequest.getKeyArgs();
-    String volumeName = keyArgs.getVolumeName();
-    String bucketName = keyArgs.getBucketName();
-    String keyName = keyArgs.getKeyName();
-
-    switch (result) {
-    case SUCCESS:
-      ozoneManager.getMetrics().incNumKeys(numKeysCreated);
-      LOG.debug("File created. Volume:{}, Bucket:{}, Key:{}", volumeName,
-          bucketName, keyName);
-      break;
-    case FAILURE:
-      LOG.error("File create failed. Volume:{}, Bucket:{}, Key:{}.",
-          volumeName, bucketName, keyName, exception);
-      break;
-    default:
-      LOG.error("Unrecognized Result for OMFileCreateRequest: {}",
-          createFileRequest);
-    }
-  }
 }
