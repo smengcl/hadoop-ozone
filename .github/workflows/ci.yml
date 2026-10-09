@@ -181,6 +181,7 @@ jobs:
           - java: 21
             os: macos-15
       fail-fast: false
+      max-parallel: 1
     uses: $/.github/workflows/check.yml
     with:
       java-version: ${{ matrix.java }}
@@ -223,7 +224,8 @@ jobs:
       - build-info
       - build
       - basic
-    if: contains(needs.build-info.outputs.basic-checks, 'errorprone')
+      - javadoc
+    if: ${{ !cancelled() && needs.build.result == 'success' && needs.basic.result == 'success' && contains(needs.build-info.outputs.basic-checks, 'errorprone') }}
     uses: $/.github/workflows/check.yml
     secrets:
       DEVELOCITY_ACCESS_KEY: ${{ secrets.DEVELOCITY_ACCESS_KEY }}
@@ -286,6 +288,8 @@ jobs:
       - basic
       - dependency
       - license
+      - errorprone
+    if: ${{ !cancelled() && needs.build.result == 'success' && needs.basic.result == 'success' && needs.dependency.result == 'success' && needs.license.result == 'success' }}
     uses: $/.github/workflows/check.yml
     secrets:
       DEVELOCITY_ACCESS_KEY: ${{ secrets.DEVELOCITY_ACCESS_KEY }}
@@ -333,7 +337,8 @@ jobs:
       - basic
       - dependency
       - license
-    if: needs.build-info.outputs.needs-kubernetes-tests == 'true'
+      - compile
+    if: ${{ !cancelled() && needs.build.result == 'success' && needs.basic.result == 'success' && needs.dependency.result == 'success' && needs.license.result == 'success' && needs.build-info.outputs.needs-kubernetes-tests == 'true' }}
     uses: $/.github/workflows/check.yml
     secrets:
       DEVELOCITY_ACCESS_KEY: ${{ secrets.DEVELOCITY_ACCESS_KEY }}
