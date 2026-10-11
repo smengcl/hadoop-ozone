@@ -120,7 +120,7 @@ public class TestLeaseManager {
 
   @Test
   public void testLeaseNotFound() throws LeaseException, InterruptedException {
-    LeaseManager<DummyResource> manager = new LeaseManager<>("Test", 5000);
+    LeaseManager<DummyResource> manager = new LeaseManager<>("Test", 1000);
     manager.start();
     DummyResource resourceOne = new DummyResource("one");
     DummyResource resourceTwo = new DummyResource("two");
@@ -183,7 +183,7 @@ public class TestLeaseManager {
   @Test
   public void testLeaseCallback() throws LeaseException, InterruptedException {
     Map<DummyResource, String> leaseStatus = new HashMap<>();
-    LeaseManager<DummyResource> manager = new LeaseManager<>("Test", 5000);
+    LeaseManager<DummyResource> manager = new LeaseManager<>("Test", 1000);
     manager.start();
     DummyResource resourceOne = new DummyResource("one");
     Lease<DummyResource> leaseOne = manager.acquire(resourceOne, () -> {
@@ -231,7 +231,7 @@ public class TestLeaseManager {
   public void testLeaseCallbackWithMultipleLeases()
       throws LeaseException, InterruptedException {
     Map<DummyResource, String> leaseStatus = new HashMap<>();
-    LeaseManager<DummyResource> manager = new LeaseManager<>("Test", 5000);
+    LeaseManager<DummyResource> manager = new LeaseManager<>("Test", 1000);
     manager.start();
     DummyResource resourceOne = new DummyResource("one");
     DummyResource resourceTwo = new DummyResource("two");
@@ -319,7 +319,7 @@ public class TestLeaseManager {
   @Test
   public void testReuseTimedOutLease()
       throws LeaseException, InterruptedException {
-    LeaseManager<DummyResource> manager = new LeaseManager<>("Test", 5000);
+    LeaseManager<DummyResource> manager = new LeaseManager<>("Test", 1000);
     manager.start();
     DummyResource resourceOne = new DummyResource("one");
     Lease<DummyResource> leaseOne = manager.acquire(resourceOne);
