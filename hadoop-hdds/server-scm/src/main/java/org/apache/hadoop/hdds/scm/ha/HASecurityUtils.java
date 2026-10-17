@@ -25,9 +25,11 @@ import static org.apache.hadoop.ozone.OzoneConsts.SCM_ROOT_CA_PREFIX;
 import java.io.IOException;
 import java.math.BigInteger;
 import java.net.InetAddress;
+import java.security.cert.CertificateException;
 import java.security.cert.X509Certificate;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.TimeUnit;
+import javax.net.ssl.X509TrustManager;
 import org.apache.hadoop.hdds.conf.OzoneConfiguration;
 import org.apache.hadoop.hdds.protocolPB.SCMSecurityProtocolClientSideTranslatorPB;
 import org.apache.hadoop.hdds.ratis.RatisHelper;
@@ -154,9 +156,44 @@ public final class  HASecurityUtils {
       CertificateClient certificateClient) throws IOException {
     if (conf.isSecurityEnabled() && conf.isGrpcTlsEnabled()) {
       return new GrpcTlsConfig(certificateClient.getKeyManager(),
-          certificateClient.getTrustManager(), true);
+          new ScmPeerTrustManager(certificateClient.getTrustManager()), true);
     }
     return null;
+  }
+
+  /**
+   * Trusts a peer only if the given trust manager trusts its chain and the peer certificate is a CA certificate.
+   * SCMs are the only services that hold CA certificates, so this limits SCM to SCM connections to SCMs.
+   */
+  static final class ScmPeerTrustManager implements X509TrustManager {
+    private final X509TrustManager delegate;
+
+    ScmPeerTrustManager(X509TrustManager delegate) {
+      this.delegate = delegate;
+    }
+
+    @Override
+    public void checkClientTrusted(X509Certificate[] chain, String authType) throws CertificateException {
+      delegate.checkClientTrusted(chain, authType);
+      checkScmCertificate(chain[0]);
+    }
+
+    @Override
+    public void checkServerTrusted(X509Certificate[] chain, String authType) throws CertificateException {
+      delegate.checkServerTrusted(chain, authType);
+      checkScmCertificate(chain[0]);
+    }
+
+    @Override
+    public X509Certificate[] getAcceptedIssuers() {
+      return delegate.getAcceptedIssuers();
+    }
+
+    private static void checkScmCertificate(X509Certificate cert) throws CertificateException {
+      if (cert.getBasicConstraints() < 0) {
+        throw new CertificateException("Not an SCM certificate: " + cert.getSubjectX500Principal());
+      }
+    }
   }
 
   /**
