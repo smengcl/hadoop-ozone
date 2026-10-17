@@ -17,6 +17,7 @@
 
 package org.apache.hadoop.hdds.scm.server;
 
+import static org.apache.hadoop.hdds.HddsConfigKeys.HDDS_DATANODE_KERBEROS_PRINCIPAL_KEY;
 import static org.apache.hadoop.hdds.protocol.proto.StorageContainerDatanodeProtocolProtos.SCMCommandProto.Type.closeContainerCommand;
 import static org.apache.hadoop.hdds.protocol.proto.StorageContainerDatanodeProtocolProtos.SCMCommandProto.Type.closePipelineCommand;
 import static org.apache.hadoop.hdds.protocol.proto.StorageContainerDatanodeProtocolProtos.SCMCommandProto.Type.createPipelineCommand;
@@ -45,8 +46,10 @@ import com.google.common.collect.Maps;
 import com.google.protobuf.BlockingService;
 import com.google.protobuf.TextFormat;
 import java.io.IOException;
+import java.net.InetAddress;
 import java.net.InetSocketAddress;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -72,6 +75,8 @@ import org.apache.hadoop.hdds.protocol.proto.StorageContainerDatanodeProtocolPro
 import org.apache.hadoop.hdds.scm.events.SCMEvents;
 import org.apache.hadoop.hdds.scm.ha.SCMContext;
 import org.apache.hadoop.hdds.scm.ha.SCMNodeDetails;
+import org.apache.hadoop.hdds.scm.node.DatanodeInfo;
+import org.apache.hadoop.hdds.scm.node.NodeManager;
 import org.apache.hadoop.hdds.scm.server.SCMDatanodeHeartbeatDispatcher.PipelineReportFromDatanode;
 import org.apache.hadoop.hdds.scm.server.SCMDatanodeHeartbeatDispatcher.ReportFromDatanode;
 import org.apache.hadoop.hdds.server.events.EventPublisher;
@@ -81,6 +86,7 @@ import org.apache.hadoop.io.IOUtils;
 import org.apache.hadoop.ipc_.ProtobufRpcEngine;
 import org.apache.hadoop.ipc_.RPC;
 import org.apache.hadoop.ipc_.Server;
+import org.apache.hadoop.ozone.OzoneSecurityUtil;
 import org.apache.hadoop.ozone.audit.AuditAction;
 import org.apache.hadoop.ozone.audit.AuditEventStatus;
 import org.apache.hadoop.ozone.audit.AuditLogger;
@@ -99,11 +105,15 @@ import org.apache.hadoop.ozone.protocol.commands.ReconcileContainerCommand;
 import org.apache.hadoop.ozone.protocol.commands.RefreshVolumeUsageCommand;
 import org.apache.hadoop.ozone.protocol.commands.RegisteredCommand;
 import org.apache.hadoop.ozone.protocol.commands.ReplicateContainerCommand;
+import org.apache.hadoop.ozone.protocol.commands.ReregisterCommand;
 import org.apache.hadoop.ozone.protocol.commands.SCMCommand;
 import org.apache.hadoop.ozone.protocol.commands.SetNodeOperationalStateCommand;
 import org.apache.hadoop.ozone.protocolPB.StorageContainerDatanodeProtocolPB;
 import org.apache.hadoop.ozone.protocolPB.StorageContainerDatanodeProtocolServerSideTranslatorPB;
+import org.apache.hadoop.security.AccessControlException;
+import org.apache.hadoop.security.UserGroupInformation;
 import org.apache.hadoop.security.authorize.PolicyProvider;
+import org.apache.hadoop.util.Time;
 import org.apache.ratis.protocol.exceptions.NotLeaderException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -133,6 +143,11 @@ public class SCMDatanodeProtocolServer implements
 
   private final SCMContext scmContext;
 
+  /** The Datanode service principal, or null if security is not enabled. */
+  private final String datanodePrincipal;
+  /** A registered Datanode may register from another address after this long without a heartbeat. */
+  private final long addressChangeMs;
+
   public SCMDatanodeProtocolServer(final OzoneConfiguration conf,
                                    OzoneStorageContainerManager scm,
                                    EventPublisher eventPublisher,
@@ -147,6 +162,9 @@ public class SCMDatanodeProtocolServer implements
     this.scm = scm;
     this.eventPublisher = eventPublisher;
     this.scmContext = scmContext;
+    this.datanodePrincipal = OzoneSecurityUtil.isSecurityEnabled(conf)
+        ? conf.get(HDDS_DATANODE_KERBEROS_PRINCIPAL_KEY, "") : null;
+    this.addressChangeMs = 2 * HddsServerUtil.getScmHeartbeatInterval(conf);
 
     heartbeatDispatcher = new SCMDatanodeHeartbeatDispatcher(
         scm.getScmNodeManager(), eventPublisher);
@@ -234,6 +252,12 @@ public class SCMDatanodeProtocolServer implements
       throws IOException {
     DatanodeDetails datanodeDetails = DatanodeDetails
         .getFromProtoBuf(extendedDatanodeDetailsProto);
+    final DatanodeInfo registered = checkDatanodeCaller(datanodeDetails);
+    if (registered != null && Time.monotonicNow() - registered.getLastHeartbeatTime() < addressChangeMs) {
+      throw new AccessControlException("Datanode " + datanodeDetails.getID() + " is registered from "
+          + registered.getIpAddress() + " and sent a recent heartbeat, it cannot register from "
+          + Server.getRemoteAddress());
+    }
     boolean auditSuccess = true;
     Map<String, String> auditMap = Maps.newHashMap();
     auditMap.put("datanodeDetails", datanodeDetails.toString());
@@ -267,6 +291,30 @@ public class SCMDatanodeProtocolServer implements
             buildAuditMessageForSuccess(SCMAction.REGISTER, auditMap));
       }
     }
+  }
+
+  /**
+   * In secure mode, only the Datanode service user may use this protocol, and a registered Datanode only from the
+   * address it registered from, until it stops sending heartbeats from there.
+   *
+   * @return the registered Datanode with the same ID if the caller is at a different address, otherwise null
+   */
+  private DatanodeInfo checkDatanodeCaller(DatanodeDetails datanode) throws IOException {
+    if (datanodePrincipal == null) {
+      return null;
+    }
+    final UserGroupInformation user = HddsServerUtil.getRemoteUser();
+    if (!HddsServerUtil.isServiceUser(user, datanodePrincipal)) {
+      throw new AccessControlException("User " + user.getUserName() + " is not allowed to act as a Datanode, it does"
+          + " not match the principal configured as " + HDDS_DATANODE_KERBEROS_PRINCIPAL_KEY + " on SCM.");
+    }
+    final InetAddress address = Server.getRemoteIp();
+    final NodeManager nodeManager = scm.getScmNodeManager();
+    if (address == null || !nodeManager.isNodeRegistered(datanode)) {
+      return null;
+    }
+    final DatanodeInfo registered = nodeManager.getNode(datanode.getID());
+    return registered == null || address.getHostAddress().equals(registered.getIpAddress()) ? null : registered;
   }
 
   @VisibleForTesting
@@ -303,7 +351,17 @@ public class SCMDatanodeProtocolServer implements
   public SCMHeartbeatResponseProto sendHeartbeat(
       SCMHeartbeatRequestProto heartbeat) throws IOException, TimeoutException {
     List<SCMCommandProto> cmdResponses = new ArrayList<>();
-    for (SCMCommand<?> cmd : heartbeatDispatcher.dispatch(heartbeat)) {
+    final DatanodeDetails datanode = DatanodeDetails.getFromProtoBuf(heartbeat.getDatanodeDetails());
+    final DatanodeInfo registered = checkDatanodeCaller(datanode);
+    final List<SCMCommand<?>> commands;
+    if (registered == null) {
+      commands = heartbeatDispatcher.dispatch(heartbeat);
+    } else {
+      LOG.warn("Datanode {} is registered from {}, asking the heartbeat from {} to register again",
+          datanode.getID(), registered.getIpAddress(), Server.getRemoteAddress());
+      commands = Collections.singletonList(new ReregisterCommand());
+    }
+    for (SCMCommand<?> cmd : commands) {
       cmdResponses.add(getCommandResponse(cmd, scm));
     }
     final OptionalLong term = getTermIfLeader();
