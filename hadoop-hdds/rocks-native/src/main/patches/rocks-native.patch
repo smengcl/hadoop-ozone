@@ -273,7 +273,7 @@ new file mode 100644
 index 000000000..5ba8a82ee
 --- /dev/null
 +++ b/tools/raw_sst_file_reader.cc
-@@ -0,0 +1,272 @@
+@@ -0,0 +1,270 @@
 +//  Copyright (c) 2011-present, Facebook, Inc.  All rights reserved.
 +//  This source code is licensed under both the GPLv2 (found in the
 +//  COPYING file in the root directory) and Apache 2.0 License
@@ -350,7 +350,6 @@ index 000000000..5ba8a82ee
 +
 +
 +extern const uint64_t kBlockBasedTableMagicNumber;
-+extern const uint64_t kLegacyBlockBasedTableMagicNumber;
 +extern const uint64_t kPlainTableMagicNumber;
 +extern const uint64_t kLegacyPlainTableMagicNumber;
 +
@@ -472,8 +471,7 @@ index 000000000..5ba8a82ee
 +Status RawSstFileReader::SetTableOptionsByMagicNumber(
 +    uint64_t table_magic_number) {
 +  assert(rep_->table_properties_);
-+  if (table_magic_number == kBlockBasedTableMagicNumber ||
-+      table_magic_number == kLegacyBlockBasedTableMagicNumber) {
++  if (table_magic_number == kBlockBasedTableMagicNumber) {
 +    BlockBasedTableFactory* bbtf = new BlockBasedTableFactory();
 +    // To force tail prefetching, we fake reporting two useful reads of 512KB
 +    // from the tail.
