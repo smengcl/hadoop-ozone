@@ -5267,8 +5267,9 @@
       dn/_HOST@REALM.TLD. Each Datanode will substitute _HOST with its
       own fully qualified hostname at startup. The _HOST placeholder
       allows using the same configuration setting on all Datanodes.
-      SCM issues a Datanode certificate only to this service user, so the
-      property must be set in the configuration of SCM as well.
+      SCM issues a Datanode certificate only to this service user, and accepts
+      Datanode registration and heartbeats only from it, so the property must
+      be set in the configuration of SCM (and Recon) as well.
     </description>
   </property>
   <property>
