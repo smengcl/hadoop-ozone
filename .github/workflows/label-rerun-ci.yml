@@ -1,0 +1,77 @@
+# Licensed to the Apache Software Foundation (ASF) under one or more
+# contributor license agreements.  See the NOTICE file distributed with
+# this work for additional information regarding copyright ownership.
+# The ASF licenses this file to You under the Apache License, Version 2.0
+# (the "License"); you may not use this file except in compliance with
+# the License.  You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# PR CI tests the PR merged with master as of the run. When master later changes
+# a file where concurrent edits can conflict semantically without a textual
+# conflict (version enums, layout features, protos), that CI result is stale.
+# This workflow labels open PRs touching the same files, so they get CI rerun
+# (by pushing or merging master) before being merged.
+
+name: label-rerun-ci
+
+on:
+  push:
+    branches:
+      - master
+  workflow_dispatch:
+    inputs:
+      before:
+        description: 'Base commit of the change to check'
+        required: true
+      after:
+        description: 'Head commit of the change to check'
+        required: true
+      dry-run:
+        description: 'Only print the PRs that would be labeled'
+        type: boolean
+        default: true
+
+permissions: { }
+
+jobs:
+  label:
+    permissions:
+      pull-requests: write
+    runs-on: ubuntu-slim
+    steps:
+      - name: "Label open PRs touching the same files"
+        run: |
+          watched=$(gh api "repos/${REPO}/compare/${BEFORE}...${AFTER}" --jq '.files[].filename' \
+              | grep -E '(Version\.java|/OMLayoutFeature\.java|\.proto)$' || true)
+          if [[ -z "${watched}" ]]; then
+            echo "No watched files changed"
+            exit 0
+          fi
+          echo "Watched files changed:"
+          echo "${watched}"
+
+          gh pr list --repo "$REPO" --base master --state open --limit 1000 --search "-label:${LABEL}" \
+              --json number,files --jq '.[] | .number as $n | .files[] | "\($n) \(.path)"' \
+            | awk 'NR == FNR { watched[$0]; next } $2 in watched { print $1 }' <(echo "${watched}") - \
+            | sort -un \
+            | while read -r pr; do
+                echo "PR #${pr}"
+                if [[ "${DRY_RUN}" != "true" ]]; then
+                  gh api -X POST "repos/${REPO}/issues/${pr}/labels" -f "labels[]=${LABEL}" > /dev/null
+                fi
+              done
+        env:
+          # use variables to sanitize input
+          BEFORE: ${{ inputs.before || github.event.before }}
+          AFTER: ${{ inputs.after || github.event.after }}
+          DRY_RUN: ${{ inputs.dry-run }}
+          LABEL: rerun-ci
+          REPO: ${{ github.repository }}
+          GH_TOKEN: ${{ github.token }}
