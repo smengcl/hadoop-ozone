@@ -1164,6 +1164,11 @@ message KeyArgs {
     // the given ETag for the operation to succeed. This is used for
     // S3 conditional writes with the If-Match header.
     optional string expectedETag = 24;
+
+    // IV of a multipart upload part in an encrypted bucket. Set by OM when the
+    // part is created, the part is encrypted with it instead of the IV in the
+    // FileEncryptionInfo, which is still used to decrypt the EDEK.
+    optional bytes partIv = 25;
 }
 
 message KeyLocation {
@@ -1182,6 +1187,9 @@ message KeyLocation {
     optional hadoop.hdds.Pipeline pipeline = 7;
 
     optional int32 partNumber = 9 [default = -1];
+    // IV of the multipart upload part this block belongs to. When set, it
+    // overrides the IV in the key's FileEncryptionInfo for this part.
+    optional bytes partIv = 10;
 }
 
 message KeyLocationList {
@@ -1257,6 +1265,8 @@ message KeyInfo {
   // This allows a key to be created an committed atomically if the original has not
   // been modified.
     optional uint64 expectedDataGeneration = 22;
+    // See KeyArgs.partIv. Only set on the open key of a multipart upload part.
+    optional bytes partIv = 23;
 }
 
 // KeyInfoProtoLight is a lightweight subset of KeyInfo message containing

@@ -80,6 +80,9 @@ public enum OzoneManagerVersion implements ComponentVersion {
           + "server-side when the request sets requireFileSystemLayout, so file "
           + "system clients no longer need the client-side InfoBucket layout "
           + "check for listStatus"),
+  MULTIPART_PART_IV(102,
+      "OzoneManager version that gives each multipart upload part in an "
+          + "encrypted bucket its own IV"),
 
   // Only operations included in the first release with version 102 may share it.
   // S3 volume context support added later needs a new version.
