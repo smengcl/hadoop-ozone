@@ -23,6 +23,8 @@ import { http, HttpResponse } from 'msw';
 import { vi } from 'vitest';
 
 import NamespaceUsage from '@/v2/pages/namespaceUsage/namespaceUsage';
+import NUPieChart from '@/v2/components/plots/nuPieChart';
+import { DiskUsage } from '@/views/diskUsage/diskUsage';
 import * as commonUtils from '@/utils/common';
 import {
   namespaceUsageServer,
@@ -34,8 +36,12 @@ import * as mockResponses from '@tests/mocks/namespaceUsageMocks/namespaceUsageR
 vi.spyOn(commonUtils, 'showDataFetchError');
 vi.spyOn(commonUtils, 'showInfoNotification');
 
+const { echart } = vi.hoisted(() => ({ echart: vi.fn() }));
 vi.mock('@/v2/components/eChart/eChart', () => ({
-  default: () => <div data-testid="nu-echart" />
+  default: (props: any) => { echart(props.option); return <div data-testid="nu-echart" />; }
+}));
+vi.mock('@/components/eChart/eChart', () => ({
+  EChart: (props: any) => { echart(props.option); return <div data-testid="du-echart" />; }
 }));
 
 vi.mock('@/v2/hooks/useAPIData.hook', async (importOriginal) => {
@@ -235,4 +241,26 @@ describe('Namespace Usage page (Disk Usage)', () => {
     expect(commonUtils.showInfoNotification).toHaveBeenCalledTimes(1);
     expect(commonUtils.showDataFetchError).not.toHaveBeenCalled();
   });
+
+  test('legacy Namespace Usage pie chart escapes the subpath name in the tooltip', async () => {
+    namespaceUsageServer.use(http.get('/api/v1/namespace/usage', () => HttpResponse.json({
+      ...mockResponses.RootNamespaceUsage, subPathCount: 1,
+      subPaths: [{ path: `/<i>"a"&'b'`, size: 10000, sizeWithReplica: -1, isKey: false }]
+    })));
+    render(<DiskUsage />);
+    await waitFor(() => expect(echart.mock.calls.at(-1)?.[0]?.series?.[0]?.data).toHaveLength(1));
+    const option = echart.mock.calls.at(-1)![0];
+    const html = option.tooltip.formatter({ dataIndex: 0, name: option.series[0].data[0].name, color: '#000' });
+    expect(html).toContain('&lt;i&gt;&quot;a&quot;&amp;&#39;b&#39;');
+    expect(html).not.toContain('<i>');
+  });
+});
+
+test('Namespace Usage pie chart escapes the subpath name in the tooltip', () => {
+  render(<NUPieChart path='/vol/bucket' limit={30} size={10} subPathCount={1} sizeWithReplica={30} loading={false}
+    subPaths={[{ path: `/vol/bucket/<i>"a"&'b'`, size: 10, sizeWithReplica: 30, isKey: true }]} />);
+  const option = echart.mock.calls[echart.mock.calls.length - 1][0];
+  const html = option.tooltip.formatter({ dataIndex: 0, name: option.series[0].data[0].name, color: '#000' });
+  expect(html).toContain('&lt;i&gt;&quot;a&quot;&amp;&#39;b&#39;');
+  expect(html).not.toContain('<i>');
 });

@@ -145,3 +145,13 @@ export const checkResponseError = (responses: Awaited<Promise<any>>[]) => {
     })
   }
 }
+
+// Use for names placed in HTML strings that chart tooltips render as markup.
+export const escapeHtml = (value: unknown): string => {
+  return String(value ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+};

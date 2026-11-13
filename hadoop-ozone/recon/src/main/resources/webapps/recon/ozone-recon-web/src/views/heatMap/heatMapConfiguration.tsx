@@ -18,7 +18,7 @@
 
 import React from 'react';
 import { AgChartsReact } from 'ag-charts-react';
-import { byteToSize } from '@/utils/common';
+import { byteToSize, escapeHtml } from '@/utils/common';
 
 interface ITreeResponse {
   label: string;
@@ -60,6 +60,7 @@ export default class HeatMapConfiguration extends React.Component<IHeatmapConfig
           tooltip: {
             renderer: (params) => {
               return {
+                title: escapeHtml(params.title),
                 content: this.tooltipContent(params)
               };
             }
@@ -126,7 +127,7 @@ export default class HeatMapConfiguration extends React.Component<IHeatmapConfig
     if (params.datum.label !== '') {
       tooltipContent += `<br/>
         Entity Name:
-        ${params.datum.label ? params.datum.label.split('/').slice(-1) : ''}
+        ${params.datum.label ? escapeHtml(params.datum.label.split('/').pop()) : ''}
       `;
     }
     tooltipContent += '</span>';

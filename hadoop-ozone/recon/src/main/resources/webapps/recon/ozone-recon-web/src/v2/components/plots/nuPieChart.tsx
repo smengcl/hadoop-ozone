@@ -20,7 +20,7 @@ import React from 'react';
 import type { EChartsOption } from 'echarts';
 
 import EChart from '@/v2/components/eChart/eChart';
-import { byteToSize } from '@/utils/common';
+import { byteToSize, escapeHtml } from '@/utils/common';
 import { NUSubpath } from '@/v2/types/namespaceUsage.types';
 
 //-------Types--------//
@@ -179,7 +179,7 @@ const NUPieChart: React.FC<PieChartProps> = ({
       trigger: 'item' as const,
       formatter: (params: any) => {
         const { dataIndex, name, color } = params;
-        const nameEl = `<strong style='color: ${color}'>${name}</strong><br>`;
+        const nameEl = `<strong style='color: ${color}'>${escapeHtml(name)}</strong><br>`;
         const dataEl = `Total Data Size: ${pieData[dataIndex]['size']}<br>`
         const percentageEl = `Percentage: ${pieData[dataIndex]['percentage']} %`
         return `${nameEl}${dataEl}${percentageEl}`

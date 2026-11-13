@@ -93,3 +93,16 @@ test.each(['v2', 'legacy'])('%s preserves zero-size handling for leaves with emp
   expect((hidden as any).normalizedSize).toBe(0);
   expect((visible as any).normalizedSize).toBe(1);
 });
+
+test.each(['v2', 'legacy'])('%s escapes the entity name in the tooltip', version => {
+  const data = tree(leaf(1));
+  render(version === 'v2'
+    ? <HeatmapPlot data={data as any} onClick={vi.fn()} colorScheme={[]} entityType='key' />
+    : <HeatMapConfiguration data={[data] as any} onClick={vi.fn()} colorScheme={[]} />);
+  const renderer = chart.mock.calls[chart.mock.calls.length - 1][0].series[0].tooltip.renderer;
+  const label = `/vol/bucket/<i>"a"&'b'`;
+  const { title, content } = renderer({ datum: { ...leaf(1), label }, title: label });
+  expect(title).toBe('/vol/bucket/&lt;i&gt;&quot;a&quot;&amp;&#39;b&#39;');
+  expect(content).toContain('&lt;i&gt;&quot;a&quot;&amp;&#39;b&#39;');
+  expect(content).not.toContain('<i>');
+});

@@ -18,7 +18,7 @@
 
 import React from 'react';
 import { AgChartsReact } from 'ag-charts-react';
-import { byteToSize } from '@/utils/common';
+import { byteToSize, escapeHtml } from '@/utils/common';
 import { HeatmapResponse } from '@/v2/types/heatmap.types';
 
 type HeatmapPlotProps = {
@@ -58,7 +58,7 @@ const HeatmapPlot: React.FC<HeatmapPlotProps> = ({
     if (params.datum.label !== '') {
       tooltipContent += `<br/>
         <strong>Entity Name</strong>:
-        ${params.datum.label ? params.datum.label.split('/').slice(-1) : ''}
+        ${params.datum.label ? escapeHtml(params.datum.label.split('/').pop()) : ''}
       `;
     }
     tooltipContent += '</span>';
@@ -75,6 +75,7 @@ const HeatmapPlot: React.FC<HeatmapPlotProps> = ({
     tooltip: {
       renderer: (params) => {
         return {
+          title: escapeHtml(params.title),
           content: tooltipContent(params)
         };
       }
