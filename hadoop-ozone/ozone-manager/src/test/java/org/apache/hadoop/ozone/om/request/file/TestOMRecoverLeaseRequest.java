@@ -18,6 +18,7 @@
 package org.apache.hadoop.ozone.om.request.file;
 
 import static org.apache.hadoop.ozone.om.protocolPB.OzoneManagerProtocolClientSideTranslatorPB.setReplicationConfig;
+import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
@@ -105,6 +106,38 @@ public class TestOMRecoverLeaseRequest extends OMKeyRequestTests {
     AuditMessage message = captor.getValue();
     assertEquals(OMAction.RECOVER_LEASE.getAction(), message.getOp());
     assertSame(e, message.getThrowable());
+  }
+
+  @ParameterizedTest
+  @ValueSource(strings = {"a/b/../c", "/a//c", "a/./c"})
+  public void preExecuteChecksAclOnNormalizedKeyName(String requestedKey) throws Exception {
+    List<String> checkedKeys = new ArrayList<>();
+    OMRecoverLeaseRequest req = recordingAclChecks(requestedKey, checkedKeys);
+
+    OMRequest modified = req.preExecute(ozoneManager);
+    assertThat(checkedKeys).containsExactly("a/c");
+    assertEquals("a/c", modified.getRecoverLeaseRequest().getKeyName());
+  }
+
+  @Test
+  public void preExecuteRejectsInvalidKeyNameBeforeAclCheck() {
+    List<String> checkedKeys = new ArrayList<>();
+    OMRecoverLeaseRequest req = recordingAclChecks("../x", checkedKeys);
+
+    OMException e = assertThrows(OMException.class, () -> req.preExecute(ozoneManager));
+    assertEquals(OMException.ResultCodes.INVALID_KEY_NAME, e.getResult());
+    assertThat(checkedKeys).isEmpty();
+  }
+
+  private OMRecoverLeaseRequest recordingAclChecks(String requestedKey, List<String> checkedKeys) {
+    return new OMRecoverLeaseRequest(createRecoverLeaseRequest(volumeName, bucketName, requestedKey, false)) {
+      @Override
+      protected void checkKeyAcls(OzoneManager ozoneManager, String volume,
+          String bucket, String key, IAccessAuthorizer.ACLType aclType,
+          OzoneObj.ResourceType type) {
+        checkedKeys.add(key);
+      }
+    };
   }
 
   /**
