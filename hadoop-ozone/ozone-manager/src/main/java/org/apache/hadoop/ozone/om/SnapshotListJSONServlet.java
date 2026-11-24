@@ -22,14 +22,17 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.SerializationFeature;
 import java.io.IOException;
 import java.io.PrintWriter;
+import java.security.PrivilegedExceptionAction;
 import javax.servlet.ServletException;
 import javax.servlet.http.HttpServlet;
 import javax.servlet.http.HttpServletRequest;
 import javax.servlet.http.HttpServletResponse;
 import org.apache.commons.lang3.StringUtils;
 import org.apache.hadoop.ozone.OzoneConsts;
+import org.apache.hadoop.ozone.om.exceptions.OMException;
 import org.apache.hadoop.ozone.om.helpers.SnapshotInfo;
 import org.apache.hadoop.ozone.snapshot.ListSnapshotResponse;
+import org.apache.hadoop.security.UserGroupInformation;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -69,6 +72,16 @@ public class SnapshotListJSONServlet extends HttpServlet {
         return;
       }
 
+      String user = request.getRemoteUser();
+      if (user == null && om.getAclsEnabled()) {
+        response.setStatus(HttpServletResponse.SC_FORBIDDEN);
+        response.getWriter().write("Authentication is required.");
+        return;
+      }
+      // Run as the HTTP caller, so that ACL checks in listSnapshot apply to the caller.
+      UserGroupInformation ugi = user != null ? UserGroupInformation.createRemoteUser(user)
+          : UserGroupInformation.getCurrentUser();
+
       String prefix = request.getParameter("prefix");
 
       final int maxKeys = 1000;
@@ -76,16 +89,25 @@ public class SnapshotListJSONServlet extends HttpServlet {
       ObjectMapper objectMapper = new ObjectMapper();
       objectMapper.addMixIn(SnapshotInfo.class, SnapshotInfoMixin.class);
       objectMapper.enable(SerializationFeature.INDENT_OUTPUT);
-      response.setContentType("application/json; charset=utf8");
-      try (PrintWriter writer = response.getWriter()) {
+      StringBuilder json = new StringBuilder();
+      ugi.doAs((PrivilegedExceptionAction<Void>) () -> {
         String lastSnapshot = null;
         do {
           ListSnapshotResponse listSnapshotResponse = om.listSnapshot(volume, bucket, prefix, lastSnapshot, maxKeys);
-          writer.write(objectMapper.writeValueAsString(listSnapshotResponse.getSnapshotInfos()));
+          json.append(objectMapper.writeValueAsString(listSnapshotResponse.getSnapshotInfos()));
           lastSnapshot = listSnapshotResponse.getLastSnapshot();
         } while (StringUtils.isNotEmpty(lastSnapshot));
+        return null;
+      });
+      response.setContentType("application/json; charset=utf8");
+      try (PrintWriter writer = response.getWriter()) {
+        writer.write(json.toString());
       }
     } catch (IOException e) {
+      if (e instanceof OMException && ((OMException) e).getResult() == OMException.ResultCodes.PERMISSION_DENIED) {
+        response.setStatus(HttpServletResponse.SC_FORBIDDEN);
+        return;
+      }
       LOG.error("Caught an exception while processing SnapshotList request", e);
       response.setStatus(HttpServletResponse.SC_INTERNAL_SERVER_ERROR);
     } catch (Exception e) {
